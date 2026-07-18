@@ -1,0 +1,16 @@
+{
+  "name": "@savvyedge/database",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./index.ts",
+  "scripts": {
+    "generate": "prisma generate",
+    "db:push": "prisma db push"
+  },
+  "dependencies": {
+    "@prisma/client": "latest"
+  },
+  "devDependencies": {
+    "prisma": "latest"
+  }
+}
