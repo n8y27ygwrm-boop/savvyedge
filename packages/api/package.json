@@ -1,0 +1,22 @@
+{
+  "name": "@savvyedge/api",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "verify-slice": "tsx scripts/verify-vertical-slice.ts"
+  },
+  "dependencies": {
+    "@savvyedge/database": "workspace:*",
+    "@savvyedge/types": "workspace:*",
+    "@savvyedge/ai-agents": "workspace:*"
+  },
+  "devDependencies": {
+    "@savvyedge/config": "workspace:*",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
+  }
+}

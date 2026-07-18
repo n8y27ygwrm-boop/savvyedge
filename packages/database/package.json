@@ -8,9 +8,10 @@
     "db:push": "prisma db push"
   },
   "dependencies": {
-    "@prisma/client": "latest"
+    "@prisma/client": "^5.22.0"
   },
   "devDependencies": {
-    "prisma": "latest"
+    "@types/node": "^20",
+    "prisma": "^5.22.0"
   }
 }
