@@ -44,21 +44,11 @@ export class DevAIProvider extends BaseAIProvider {
     // Smart heuristic matching for known schemas
     let result: unknown;
 
-    if (prompt.includes("casino ID") || prompt.includes("Bonus")) {
-      const matchCasinoId = prompt.match(/casino ID '([^']+)'/);
-      const casinoId = matchCasinoId ? matchCasinoId[1] : "00000000-0000-0000-0000-000000000000";
-
-      result = {
-        casino_id: casinoId,
-        type: "WELCOME_PACKAGE",
-        headline_value: "100% up to $500 + 100 Free Spins",
-        wagering_requirement: 35,
-        max_conversion: 1000,
-        valid_from: new Date(),
-        valid_until: null,
-        status: "ACTIVE",
-      };
-    } else if (prompt.includes("casino entity resolution") || prompt.includes("Target URL:") || prompt.includes("Casino")) {
+    if (
+      prompt.includes("Perform casino entity resolution") ||
+      prompt.includes("canonical Casino identity") ||
+      prompt.includes("Target URL:")
+    ) {
       const urlMatch = prompt.match(/Target URL:\s*(https?:\/\/[^\s\n]+)/) || prompt.match(/(https?:\/\/[^\s'"]+)/);
       const domainMatch = prompt.match(/Domain:\s*([^\s\n]+)/);
 
@@ -89,6 +79,20 @@ export class DevAIProvider extends BaseAIProvider {
         status: "ACTIVE",
         license_info: "MGA/B2C/888/2024",
         verified_at: new Date(),
+      };
+    } else if (prompt.includes("casino ID") || prompt.includes("Extract bonus")) {
+      const matchCasinoId = prompt.match(/casino ID '([^']+)'/);
+      const casinoId = matchCasinoId ? matchCasinoId[1] : "00000000-0000-0000-0000-000000000000";
+
+      result = {
+        casino_id: casinoId,
+        type: "WELCOME_PACKAGE",
+        headline_value: "100% up to $500 + 100 Free Spins",
+        wagering_requirement: 35,
+        max_conversion: 1000,
+        valid_from: new Date(),
+        valid_until: null,
+        status: "ACTIVE",
       };
     } else {
       result = {

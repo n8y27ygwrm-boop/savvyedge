@@ -22,6 +22,7 @@ model Casino {
   bonuses        Bonus[]
   reviews        Review[]
   history_events CasinoHistoryEvent[]
+  licenses       License[]
 
   @@index([slug])
 }
@@ -146,8 +147,83 @@ model ScrapeJob {
   started_at     DateTime @default(now())
   completed_at   DateTime?
   error_log      String?  @db.Text
+  snapshot_path  String?
+  retry_count    Int      @default(0)
   
   data_source    DataSource @relation(fields: [data_source_id], references: [id])
 
   @@index([data_source_id])
+}
+
+model Jurisdiction {
+  id          String      @id @default(uuid())
+  slug        String      @unique
+  name        String
+  country     String?
+  regulators  Regulator[]
+
+  @@index([slug])
+}
+
+model Regulator {
+  id              String       @id @default(uuid())
+  slug            String       @unique
+  name            String
+  jurisdiction_id String
+  website_url     String?
+  
+  jurisdiction    Jurisdiction @relation(fields: [jurisdiction_id], references: [id])
+  licenses        License[]
+
+  @@index([slug])
+  @@index([jurisdiction_id])
+}
+
+model License {
+  id           String    @id @default(uuid())
+  casino_id    String
+  regulator_id String
+  license_no   String
+  status       String    // e.g. "ACTIVE", "INACTIVE", "SUSPENDED"
+  verified_at  DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  casino       Casino    @relation(fields: [casino_id], references: [id])
+  regulator    Regulator @relation(fields: [regulator_id], references: [id])
+
+  @@index([casino_id])
+  @@index([regulator_id])
+  @@index([license_no])
+}
+
+model JobQueue {
+  id           String    @id @default(uuid())
+  queue_name   String    // e.g. "crawling-queue", "extraction-queue"
+  task_type    String    // e.g. "CRAWL_URL", "EXTRACT_BONUS"
+  payload      String    @db.Text // JSON string of arguments
+  status       String    // "PENDING", "PROCESSING", "COMPLETED", "FAILED"
+  attempts     Int       @default(0)
+  max_attempts Int       @default(3)
+  run_at       DateTime  @default(now())
+  locked_until DateTime?
+  error_log    String?   @db.Text
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  @@index([queue_name, status, run_at])
+}
+
+model DiscoveredUrl {
+  id             String   @id @default(uuid())
+  url            String   @unique
+  normalized_url String   @unique
+  domain         String
+  source_seed    String
+  status         String   // "DISCOVERED", "ENQUEUED", "FILTERED", "PROCESSED"
+  filter_reason  String?
+  discovered_at  DateTime @default(now())
+
+  @@index([domain])
+  @@index([status])
 }

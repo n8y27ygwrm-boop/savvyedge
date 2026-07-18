@@ -6,7 +6,9 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "verify-slice": "tsx scripts/verify-vertical-slice.ts"
+    "verify-slice": "tsx scripts/verify-vertical-slice.ts",
+    "verify-real-scraping": "tsx scripts/verify-real-scraping.ts",
+    "verify-discovery": "tsx scripts/verify-discovery-engine.ts"
   },
   "dependencies": {
     "@savvyedge/database": "workspace:*",
