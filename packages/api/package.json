@@ -8,7 +8,8 @@
     "build": "tsc",
     "verify-slice": "tsx scripts/verify-vertical-slice.ts",
     "verify-real-scraping": "tsx scripts/verify-real-scraping.ts",
-    "verify-discovery": "tsx scripts/verify-discovery-engine.ts"
+    "verify-discovery": "tsx scripts/verify-discovery-engine.ts",
+    "verify-orchestrator": "tsx scripts/verify-orchestrator.ts"
   },
   "dependencies": {
     "@savvyedge/database": "workspace:*",

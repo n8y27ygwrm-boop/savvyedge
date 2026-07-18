@@ -15,6 +15,9 @@ export interface PlaywrightScrapeResult {
   url: string;
   rawHtml: string;
   content: string;
+  htmlHash: string;
+  contentHash: string;
+  canonicalUrl?: string;
   metadata: {
     title?: string;
     siteName?: string;
@@ -134,6 +137,17 @@ export class PlaywrightScraper {
         // Short wait to ensure dynamic JS rendering / DOM hydration finishes
         await page.waitForTimeout(1500).catch(() => {});
 
+        // Extract canonical URL using Playwright locator
+        let canonicalUrl: string | undefined = undefined;
+        try {
+          const canonicalAttr = await page.locator("link[rel='canonical']").getAttribute("href");
+          if (canonicalAttr) {
+            canonicalUrl = canonicalAttr;
+          }
+        } catch {
+          // Ignore if canonical tag not present
+        }
+
         const rawHtml = await page.content();
         await browser.close();
         browser = null;
@@ -166,6 +180,10 @@ export class PlaywrightScraper {
           .filter((line) => line.length > 0)
           .join("\n");
 
+        // Compute SHA-256 hashes
+        const htmlHash = crypto.createHash("sha256").update(rawHtml).digest("hex");
+        const contentHash = crypto.createHash("sha256").update(cleanedText).digest("hex");
+
         // Store HTML snapshot on disk
         let snapshotPath: string | undefined;
         try {
@@ -196,6 +214,9 @@ export class PlaywrightScraper {
           url: options.url,
           rawHtml,
           content: cleanedText,
+          htmlHash,
+          contentHash,
+          canonicalUrl: canonicalUrl || ogUrl,
           metadata: {
             title: ogTitle || title,
             siteName: ogSiteName,

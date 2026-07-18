@@ -79,6 +79,9 @@ model Bonus {
   valid_from           DateTime?
   valid_until          DateTime?
   status               String
+  created_at           DateTime @default(now())
+  updated_at           DateTime @default(now()) @updatedAt
+  verified_at          DateTime?
   
   casino               Casino   @relation(fields: [casino_id], references: [id])
   history_events       BonusHistoryEvent[]
@@ -149,6 +152,9 @@ model ScrapeJob {
   error_log      String?  @db.Text
   snapshot_path  String?
   retry_count    Int      @default(0)
+  html_hash      String?
+  content_hash   String?
+  canonical_url  String?
   
   data_source    DataSource @relation(fields: [data_source_id], references: [id])
 
@@ -197,21 +203,40 @@ model License {
   @@index([license_no])
 }
 
+model WorkerNode {
+  id             String    @id @default(uuid())
+  worker_name    String    @unique
+  status         String    // "ACTIVE", "STOPPING", "DEAD"
+  active_jobs    Int       @default(0)
+  last_heartbeat DateTime  @default(now())
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  @@index([status, last_heartbeat])
+}
+
 model JobQueue {
   id           String    @id @default(uuid())
-  queue_name   String    // e.g. "crawling-queue", "extraction-queue"
-  task_type    String    // e.g. "CRAWL_URL", "EXTRACT_BONUS"
+  queue_name   String    // e.g. "crawling-queue", "extraction-queue", "orchestrator-queue"
+  task_type    String    // e.g. "DISCOVER_SEEDS", "INGEST_URL", "CRAWL_URL", "EXTRACT_BONUS", "VALIDATE_BONUS"
   payload      String    @db.Text // JSON string of arguments
   status       String    // "PENDING", "PROCESSING", "COMPLETED", "FAILED"
+  priority     String    @default("NORMAL") // "HIGH", "NORMAL", "LOW"
+  domain       String?
+  worker_id    String?
   attempts     Int       @default(0)
   max_attempts Int       @default(3)
   run_at       DateTime  @default(now())
   locked_until DateTime?
   error_log    String?   @db.Text
+  started_at   DateTime?
+  completed_at DateTime?
   created_at   DateTime  @default(now())
   updated_at   DateTime  @updatedAt
 
   @@index([queue_name, status, run_at])
+  @@index([queue_name, status, priority, run_at])
+  @@index([domain, status])
 }
 
 model DiscoveredUrl {

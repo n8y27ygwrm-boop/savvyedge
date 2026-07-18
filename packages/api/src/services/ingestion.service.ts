@@ -68,13 +68,49 @@ export class IngestionService {
     // Run Playwright Scraper
     const scrapeResult = await this.scraperAgent.run({ url });
 
-    // Update ScrapeJob with snapshot path
+    // Fetch current job to get data_source_id
+    const currentJob = await prisma.scrapeJob.findUniqueOrThrow({
+      where: { id: scrapeJobId },
+    });
+
+    // Update ScrapeJob with snapshot path, hashes, and canonical URL
     await prisma.scrapeJob.update({
       where: { id: scrapeJobId },
       data: {
         snapshot_path: scrapeResult.snapshotPath || null,
+        html_hash: scrapeResult.htmlHash || null,
+        content_hash: scrapeResult.contentHash || null,
+        canonical_url: scrapeResult.canonicalUrl || null,
       },
     });
+
+    // Look up previous successful ScrapeJob for the same DataSource
+    const previousJob = await prisma.scrapeJob.findFirst({
+      where: {
+        data_source_id: currentJob.data_source_id,
+        status: "COMPLETED",
+        id: { not: scrapeJobId },
+      },
+      orderBy: { completed_at: "desc" },
+    });
+
+    if (
+      previousJob &&
+      ((scrapeResult.contentHash && previousJob.content_hash === scrapeResult.contentHash) ||
+        (scrapeResult.htmlHash && previousJob.html_hash === scrapeResult.htmlHash))
+    ) {
+      console.log(
+        `[IngestionService] Content hash matches previous crawl. Short-circuiting ingestion. Skipping LLM parsing.`
+      );
+      await prisma.scrapeJob.update({
+        where: { id: scrapeJobId },
+        data: {
+          status: "COMPLETED",
+          completed_at: new Date(),
+        },
+      });
+      return;
+    }
 
     // Enqueue extraction step
     await JobQueueService.enqueue("ingestion-queue", "EXTRACT_BONUS", {
@@ -137,8 +173,8 @@ export class IngestionService {
       casino_id: activeCasino.id,
     });
 
-    // 4. Persist Bonus into PostgreSQL
-    const savedBonus = await BonusService.createBonus(bonusInput);
+    // 4. Persist Bonus into PostgreSQL with deduplication and source_url
+    const savedBonus = await BonusService.createBonus(bonusInput, url);
 
     // 5. Update ScrapeJob status to COMPLETED
     await prisma.scrapeJob.update({
@@ -174,6 +210,52 @@ export class IngestionService {
     // Execute crawl handler inline synchronously
     await this.handleCrawl({ scrapeJobId: scrapeJob.id, url, casinoId: casino_id });
     
+    // Mark enqueued CRAWL_URL job for this scrapeJob as COMPLETED since executed inline
+    await prisma.jobQueue.updateMany({
+      where: {
+        queue_name: "ingestion-queue",
+        payload: { contains: scrapeJob.id },
+        status: "PENDING",
+      },
+      data: { status: "COMPLETED" },
+    });
+
+    const updatedJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
+
+    if (updatedJob.status === "COMPLETED") {
+      console.log(`[IngestionService] Ingestion short-circuited for job ${scrapeJob.id}. Retrieving existing entities.`);
+      let domain = "example.com";
+      try {
+        domain = new URL(url).hostname.replace(/^www\./, "");
+      } catch {}
+
+      const casino = await prisma.casino.findFirstOrThrow({
+        where: {
+          OR: [
+            { website_url: { contains: domain, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { created_at: "desc" },
+      });
+
+      const bonus = await prisma.bonus.findFirstOrThrow({
+        where: { casino_id: casino.id },
+        orderBy: { created_at: "desc" },
+      });
+
+      return {
+        bonus,
+        casino,
+        scrapeJob: updatedJob,
+        meta: {
+          durationMs: Date.now() - startTime,
+          extractedContentLength: 0,
+          snapshotPath: updatedJob.snapshot_path,
+          shortCircuited: true,
+        },
+      };
+    }
+
     // Find the queued EXTRACT_BONUS job that was created by handleCrawl
     const queuedJob = await prisma.jobQueue.findFirst({
       where: {
@@ -194,13 +276,14 @@ export class IngestionService {
     // Mark queued jobs as COMPLETED
     await prisma.jobQueue.updateMany({
       where: {
-        id: { in: [queuedJob.id] },
+        queue_name: "ingestion-queue",
+        payload: { contains: scrapeJob.id },
       },
       data: { status: "COMPLETED" },
     });
 
     // Retrieve database results
-    const updatedJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
+    const finalJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
     
     // Find resolved casino & bonus
     let domain = "example.com";
@@ -219,17 +302,18 @@ export class IngestionService {
     
     const bonus = await prisma.bonus.findFirstOrThrow({
       where: { casino_id: casino.id },
-      orderBy: { id: "desc" },
+      orderBy: { created_at: "desc" },
     });
 
     return {
       bonus,
       casino,
-      scrapeJob: updatedJob,
+      scrapeJob: finalJob,
       meta: {
         durationMs: Date.now() - startTime,
         extractedContentLength: payload.scrapedContent.length,
-        snapshotPath: updatedJob.snapshot_path,
+        snapshotPath: finalJob.snapshot_path,
+        shortCircuited: false,
       },
     };
   }

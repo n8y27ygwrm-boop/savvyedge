@@ -1,21 +1,60 @@
 import { prisma } from "@savvyedge/database";
 
+export interface EnqueueOptions {
+  runAt?: Date;
+  maxAttempts?: number;
+  priority?: "HIGH" | "NORMAL" | "LOW";
+  domain?: string;
+  deduplicate?: boolean;
+}
+
+export interface ProcessJobOptions {
+  workerId?: string;
+  domainLimiter?: {
+    checkDomainAllowed: (domain: string) => boolean;
+    recordDomainAccess: (domain: string) => void;
+  };
+}
+
 export class JobQueueService {
   /**
-   * Enqueue a job into the database
+   * Enqueue a job into the database with priority, domain, and optional deduplication
    */
   public static async enqueue(
     queueName: string,
     taskType: string,
     payload: Record<string, any>,
-    options?: { runAt?: Date; maxAttempts?: number }
+    options?: EnqueueOptions
   ) {
+    const stringifiedPayload = JSON.stringify(payload);
+    const domain = options?.domain || payload.domain || this.extractDomainFromPayload(payload);
+    const priority = options?.priority || "NORMAL";
+
+    // Deduplication check
+    if (options?.deduplicate) {
+      const existing = await prisma.jobQueue.findFirst({
+        where: {
+          queue_name: queueName,
+          task_type: taskType,
+          status: { in: ["PENDING", "PROCESSING"] },
+          payload: stringifiedPayload,
+        },
+      });
+
+      if (existing) {
+        console.log(`[JobQueueService] Duplicate job skipped for ${taskType} (${existing.id})`);
+        return existing;
+      }
+    }
+
     return prisma.jobQueue.create({
       data: {
         queue_name: queueName,
         task_type: taskType,
-        payload: JSON.stringify(payload),
+        payload: stringifiedPayload,
         status: "PENDING",
+        priority,
+        domain,
         attempts: 0,
         max_attempts: options?.maxAttempts ?? 3,
         run_at: options?.runAt ?? new Date(),
@@ -24,51 +63,102 @@ export class JobQueueService {
   }
 
   /**
-   * Process the next available job in a queue
+   * Helper to extract domain from payload if present
+   */
+  private static extractDomainFromPayload(payload: Record<string, any>): string | undefined {
+    if (payload.url && typeof payload.url === "string") {
+      try {
+        return new URL(payload.url).hostname.replace(/^www\./, "");
+      } catch {}
+    }
+    return undefined;
+  }
+
+  /**
+   * Process the next available job in a queue based on priority (HIGH > NORMAL > LOW) and domain throttling
    */
   public static async processNextJob(
     queueName: string,
-    handlers: Record<string, (payload: any) => Promise<any>>
+    handlers: Record<string, (payload: any) => Promise<any>>,
+    options?: ProcessJobOptions
   ): Promise<boolean> {
     const now = new Date();
+    const workerId = options?.workerId || "worker-default";
 
-    // 1. Transactionally find and lock one pending job
-    const job = await prisma.$transaction(async (tx) => {
-      // Find a job that is PENDING, due to run, and not locked
-      const candidate = await tx.jobQueue.findFirst({
-        where: {
-          queue_name: queueName,
-          status: "PENDING",
-          run_at: { lte: now },
-          OR: [
-            { locked_until: null },
-            { locked_until: { lt: now } },
-          ],
-        },
-        orderBy: { run_at: "asc" },
+    // Priority order for candidate selection
+    const priorityOrder = ["HIGH", "NORMAL", "LOW"];
+
+    let candidateJob: any = null;
+
+    // Transactionally find and lock one candidate job respecting priority
+    for (const priority of priorityOrder) {
+      candidateJob = await prisma.$transaction(async (tx) => {
+        const candidate = await tx.jobQueue.findFirst({
+          where: {
+            queue_name: queueName,
+            status: "PENDING",
+            priority,
+            run_at: { lte: now },
+            OR: [
+              { locked_until: null },
+              { locked_until: { lt: now } },
+            ],
+          },
+          orderBy: { run_at: "asc" },
+        });
+
+        if (!candidate) return null;
+
+        // Domain rate limit check
+        if (candidate.domain && options?.domainLimiter) {
+          const allowed = options.domainLimiter.checkDomainAllowed(candidate.domain);
+          if (!allowed) {
+            return null; // Skip candidate due to rate limit, try next priority/job
+          }
+        }
+
+        const lockedUntil = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes lock
+        const updateResult = await tx.jobQueue.updateMany({
+          where: {
+            id: candidate.id,
+            status: "PENDING",
+            OR: [
+              { locked_until: null },
+              { locked_until: { lt: now } },
+            ],
+          },
+          data: {
+            status: "PROCESSING",
+            worker_id: workerId,
+            locked_until: lockedUntil,
+            started_at: now,
+            attempts: { increment: 1 },
+          },
+        });
+
+        if (updateResult.count === 0) {
+          // Another worker raced and locked this job first
+          return null;
+        }
+
+        return tx.jobQueue.findUnique({ where: { id: candidate.id } });
       });
 
-      if (!candidate) {
-        return null;
-      }
-
-      // Lock the job for 2 minutes to prevent other workers from picking it up
-      const lockedUntil = new Date(Date.now() + 2 * 60 * 1000);
-      return tx.jobQueue.update({
-        where: { id: candidate.id },
-        data: {
-          status: "PROCESSING",
-          locked_until: lockedUntil,
-          attempts: { increment: 1 },
-        },
-      });
-    });
-
-    if (!job) {
-      return false; // No jobs processed
+      if (candidateJob) break;
     }
 
-    console.log(`[JobQueueWorker] [${queueName}] Processing job ${job.id} (Type: ${job.task_type}, Attempt: ${job.attempts}/${job.max_attempts})`);
+    if (!candidateJob) {
+      return false; // No due/eligible jobs found
+    }
+
+    const job = candidateJob;
+    if (job.domain && options?.domainLimiter) {
+      options.domainLimiter.recordDomainAccess(job.domain);
+    }
+
+    console.log(
+      `[JobQueueWorker] [${queueName}] Worker ${workerId} processing job ${job.id} (Type: ${job.task_type}, Priority: ${job.priority}, Attempt: ${job.attempts}/${job.max_attempts})`
+    );
 
     const handler = handlers[job.task_type];
     if (!handler) {
@@ -80,14 +170,13 @@ export class JobQueueService {
 
     try {
       const parsedPayload = JSON.parse(job.payload);
-      // Execute handler
       await handler(parsedPayload);
 
-      // Mark completed
       await prisma.jobQueue.update({
         where: { id: job.id },
         data: {
           status: "COMPLETED",
+          completed_at: new Date(),
           locked_until: null,
           error_log: null,
         },
@@ -112,8 +201,7 @@ export class JobQueueService {
   ) {
     const isFinalFailure = attempts >= maxAttempts;
     const status = isFinalFailure ? "FAILED" : "PENDING";
-    
-    // Exponential backoff: 2^attempts seconds (e.g. 2s, 4s, 8s, 16s...)
+
     const backoffMs = Math.pow(2, attempts) * 1000;
     const runAt = new Date(Date.now() + backoffMs);
 
@@ -129,23 +217,111 @@ export class JobQueueService {
   }
 
   /**
+   * Stale Job Crash Recovery: Resets PROCESSING jobs locked by dead/crashed workers
+   */
+  public static async recoverStaleJobs(): Promise<number> {
+    const now = new Date();
+    const staleJobs = await prisma.jobQueue.findMany({
+      where: {
+        status: "PROCESSING",
+        locked_until: { lt: now },
+      },
+    });
+
+    for (const job of staleJobs) {
+      const isFinal = job.attempts >= job.max_attempts;
+      await prisma.jobQueue.update({
+        where: { id: job.id },
+        data: {
+          status: isFinal ? "FAILED" : "PENDING",
+          locked_until: null,
+          error_log: `Recovered from crashed/stale worker ${job.worker_id || "unknown"}`,
+        },
+      });
+    }
+
+    if (staleJobs.length > 0) {
+      console.log(`[JobQueueService] Crash Recovery: Recovered ${staleJobs.length} stale jobs.`);
+    }
+
+    return staleJobs.length;
+  }
+
+  /**
+   * Collect detailed job queue metrics
+   */
+  public static async getMetrics() {
+    const [queued, processing, completed, failed, totalJobs] = await Promise.all([
+      prisma.jobQueue.count({ where: { status: "PENDING" } }),
+      prisma.jobQueue.count({ where: { status: "PROCESSING" } }),
+      prisma.jobQueue.count({ where: { status: "COMPLETED" } }),
+      prisma.jobQueue.count({ where: { status: "FAILED" } }),
+      prisma.jobQueue.count(),
+    ]);
+
+    const completedWithDuration = await prisma.jobQueue.findMany({
+      where: {
+        status: "COMPLETED",
+        started_at: { not: null },
+        completed_at: { not: null },
+      },
+      take: 100,
+      orderBy: { completed_at: "desc" },
+    });
+
+    let totalDurationMs = 0;
+    for (const job of completedWithDuration) {
+      if (job.started_at && job.completed_at) {
+        totalDurationMs += job.completed_at.getTime() - job.started_at.getTime();
+      }
+    }
+    const avgExecutionTimeMs =
+      completedWithDuration.length > 0 ? Math.round(totalDurationMs / completedWithDuration.length) : 0;
+
+    // Jobs completed in last 1 minute
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+    const jobsLastMinute = await prisma.jobQueue.count({
+      where: {
+        status: "COMPLETED",
+        completed_at: { gte: oneMinuteAgo },
+      },
+    });
+
+    const totalRetriesResult = await prisma.jobQueue.aggregate({
+      _sum: { attempts: true },
+    });
+    const totalRetries = totalRetriesResult._sum.attempts || 0;
+
+    return {
+      queuedJobs: queued,
+      processingJobs: processing,
+      completedJobs: completed,
+      failedJobs: failed,
+      totalJobs,
+      totalRetries,
+      avgExecutionTimeMs,
+      jobsPerMinute: jobsLastMinute,
+    };
+  }
+
+  /**
    * Start polling loop in worker mode
    */
   public static startWorker(
     queueName: string,
     handlers: Record<string, (payload: any) => Promise<any>>,
-    pollIntervalMs: number = 1000
+    pollIntervalMs: number = 1000,
+    options?: ProcessJobOptions
   ) {
     let active = true;
 
     const runLoop = async () => {
       if (!active) return;
-      
+
       try {
         let processed = true;
-        // Keep processing jobs until queue is empty for this loop
         while (processed && active) {
-          processed = await this.processNextJob(queueName, handlers);
+          processed = await this.processNextJob(queueName, handlers, options);
         }
       } catch (err: any) {
         console.error(`[JobQueueWorker] [${queueName}] Error in run loop:`, err.message);
@@ -156,7 +332,6 @@ export class JobQueueService {
       }
     };
 
-    // Kick off loop
     runLoop();
 
     return {

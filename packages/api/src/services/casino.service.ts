@@ -10,6 +10,10 @@ export class CasinoService {
         skip,
         take: limit,
         orderBy: { verified_at: 'desc' },
+        include: {
+          bonuses: true,
+          licenses: true,
+        },
       }),
       prisma.casino.count(),
     ]);

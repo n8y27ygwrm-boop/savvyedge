@@ -116,6 +116,66 @@ async function verifyVerticalSlice() {
       throw new Error("Failed to retrieve both ingested bonuses from API layer.");
     }
 
+    console.log("\nStep 7: Verifying Content Fingerprinting & Pipeline Short-Circuiting...");
+    
+    // Count ScrapeJob records before re-run
+    const initialBonusCount = await prisma.bonus.count();
+
+    // Re-ingest casinoUrl1 asynchronously
+    console.log(` -> Re-enqueueing URL 1 (${casinoUrl1})...`);
+    const job2 = await IngestionService.enqueueIngestion({ url: casinoUrl1 });
+    
+    let processedAny2 = true;
+    let iterations2 = 0;
+    while (processedAny2 && iterations2 < 5) {
+      processedAny2 = await JobQueueService.processNextJob("ingestion-queue", handlers);
+      iterations2++;
+    }
+    console.log(` -> Re-crawling processed steps: ${iterations2 - 1}`);
+    
+    // Check if EXTRACT_BONUS was skipped due to short-circuiting
+    const reCrawlJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: job2.id } });
+    if (reCrawlJob.status !== "COMPLETED") {
+      throw new Error(`Short-circuit failed: ScrapeJob status is ${reCrawlJob.status}, expected COMPLETED.`);
+    }
+    if (!reCrawlJob.content_hash || !reCrawlJob.html_hash) {
+      throw new Error(`Content fingerprinting failed: content_hash or html_hash is missing from ScrapeJob.`);
+    }
+    console.log(` [PASS] Short-circuited successfully! ScrapeJob completed with content_hash: ${reCrawlJob.content_hash.substring(0, 12)}...`);
+
+    const finalBonusCount = await prisma.bonus.count();
+    if (finalBonusCount !== initialBonusCount) {
+      throw new Error(`Deduplication failed: Bonus count increased from ${initialBonusCount} to ${finalBonusCount} after short-circuiting!`);
+    }
+    console.log(` [PASS] No duplicate bonus created during short-circuited ingestion (Bonus count remained ${finalBonusCount}).`);
+
+    console.log("\nStep 8: Verifying Bonus Field Updates & History Audit Event Logging...");
+    // Simulate updating bonus fields with differing values
+    const updatedBonus = await BonusService.createBonus({
+      casino_id: casino1.id,
+      type: "WELCOME",
+      headline_value: "Exclusive 200% Bonus Up to $1000",
+      wagering_requirement: 40,
+      max_conversion: 500,
+      status: "ACTIVE",
+    }, casinoUrl1);
+
+    if (updatedBonus.id !== bonus1.id) {
+      throw new Error(`Deduplication failed: Updating fields created a new bonus ${updatedBonus.id} instead of updating ${bonus1.id}`);
+    }
+
+    const historyEvents = await prisma.bonusHistoryEvent.findMany({
+      where: { bonus_id: bonus1.id },
+    });
+
+    if (historyEvents.length === 0) {
+      throw new Error("Audit logging failed: No BonusHistoryEvent entries created during bonus update!");
+    }
+    console.log(` [PASS] Bonus updated in-place and ${historyEvents.length} BonusHistoryEvent records logged:`);
+    for (const event of historyEvents) {
+      console.log(`   - Field '${event.field_changed}': '${event.old_value}' -> '${event.new_value}' (Source: ${event.source_url})`);
+    }
+
     console.log("\n=================================================");
     console.log("      E2E VERTICAL SLICE VERIFICATION PASSED!     ");
     console.log("=================================================");

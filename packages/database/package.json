@@ -7,6 +7,9 @@
     "generate": "prisma generate",
     "db:push": "prisma db push"
   },
+  "prisma": {
+    "seed": "npx ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"moduleResolution\":\"node\"} prisma/seed.ts"
+  },
   "dependencies": {
     "@prisma/client": "^5.22.0"
   },
