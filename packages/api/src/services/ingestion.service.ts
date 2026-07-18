@@ -1,6 +1,7 @@
 import { prisma } from "@savvyedge/database";
-import { ScraperAgent, BonusAgent } from "@savvyedge/ai-agents";
+import { ScraperAgent, BonusAgent, CasinoResolutionAgent } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
+import { CasinoService } from "./casino.service";
 
 export interface IngestBonusInput {
   url: string;
@@ -10,46 +11,57 @@ export interface IngestBonusInput {
 export class IngestionService {
   private static scraperAgent = new ScraperAgent();
   private static bonusAgent = new BonusAgent();
+  private static casinoResolutionAgent = new CasinoResolutionAgent();
 
   public static async ingestBonusFromUrl({ url, casino_id }: IngestBonusInput) {
     const startTime = Date.now();
     console.log(`[IngestionService] Starting ingestion for URL: ${url}`);
 
-    // 1. Ensure a valid Casino ID exists
-    let activeCasinoId = casino_id;
-    if (!activeCasinoId) {
-      let defaultCasino = await prisma.casino.findFirst({
-        where: { slug: "canonical-benchmark-casino" },
-      });
-
-      if (!defaultCasino) {
-        defaultCasino = await prisma.casino.create({
-          data: {
-            slug: "canonical-benchmark-casino",
-            name: "Canonical Benchmark Casino",
-            status: "ACTIVE",
-            license_info: "MGA/B2C/100/2024",
-            website_url: "https://example-casino.com",
-            verified_at: new Date(),
-          },
-        });
-      }
-      activeCasinoId = defaultCasino.id;
-    }
-
-    // 2. Fetch and extract page text
+    // 1. Fetch and extract page text & HTML metadata
     const scrapeResult = await this.scraperAgent.run({ url });
 
-    // 3. Process raw text via BonusAgent -> Zod Validated CreateBonusInput
+    // 2. Extract domain from URL
+    let domain = "example.com";
+    try {
+      domain = new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      domain = url;
+    }
+
+    // 3. Resolve Casino Entity (no fallback to benchmark casino)
+    let activeCasino;
+    if (casino_id) {
+      activeCasino = await prisma.casino.findUnique({ where: { id: casino_id } });
+    }
+
+    if (!activeCasino) {
+      console.log(`[IngestionService] Resolving casino entity for domain '${domain}'...`);
+      const resolvedIdentity = await this.casinoResolutionAgent.run({
+        url,
+        domain,
+        pageMetadata: scrapeResult.metadata,
+        scrapedContentSnippet: scrapeResult.content,
+      });
+
+      activeCasino = await CasinoService.resolveOrCreateCasino({
+        name: resolvedIdentity.name,
+        slug: resolvedIdentity.slug,
+        domain: resolvedIdentity.domain || domain,
+        website_url: resolvedIdentity.website_url,
+        license_info: resolvedIdentity.license_info,
+      });
+    }
+
+    // 4. Process raw text via BonusAgent -> Zod Validated CreateBonusInput attached to activeCasino.id
     const bonusInput = await this.bonusAgent.run({
       rawBonusText: scrapeResult.content,
-      casino_id: activeCasinoId,
+      casino_id: activeCasino.id,
     });
 
-    // 4. Persist Bonus into PostgreSQL via BonusService
+    // 5. Persist Bonus into PostgreSQL via BonusService
     const savedBonus = await BonusService.createBonus(bonusInput);
 
-    // 5. Audit ScrapeJob entry in PostgreSQL
+    // 6. Audit ScrapeJob entry in PostgreSQL
     const durationMs = Date.now() - startTime;
     const dataSource = await prisma.dataSource.create({
       data: {
@@ -70,6 +82,7 @@ export class IngestionService {
 
     return {
       bonus: savedBonus,
+      casino: activeCasino,
       scrapeJob,
       meta: {
         durationMs,

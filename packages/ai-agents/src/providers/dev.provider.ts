@@ -58,10 +58,43 @@ export class DevAIProvider extends BaseAIProvider {
         valid_until: null,
         status: "ACTIVE",
       };
+    } else if (prompt.includes("casino entity resolution") || prompt.includes("Target URL:") || prompt.includes("Casino")) {
+      const urlMatch = prompt.match(/Target URL:\s*(https?:\/\/[^\s\n]+)/) || prompt.match(/(https?:\/\/[^\s'"]+)/);
+      const domainMatch = prompt.match(/Domain:\s*([^\s\n]+)/);
+
+      let rawUrl = urlMatch ? urlMatch[1] : "https://example-casino.com";
+      let host = domainMatch ? domainMatch[1] : "";
+      if (!host && urlMatch) {
+        try {
+          host = new URL(rawUrl).hostname.replace(/^www\./, "");
+        } catch {
+          host = "example-casino.com";
+        }
+      }
+      if (!host) host = "example-casino.com";
+
+      const baseBrand = host.split(".")[0] || "example-casino";
+      const name = baseBrand
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+      const slug = baseBrand.toLowerCase();
+      const website_url = `https://${host}`;
+
+      result = {
+        name,
+        slug,
+        domain: host,
+        website_url,
+        status: "ACTIVE",
+        license_info: "MGA/B2C/888/2024",
+        verified_at: new Date(),
+      };
     } else {
       result = {
         name: "Dev Extracted Casino",
         slug: "dev-extracted-casino",
+        domain: "example.com",
         status: "ACTIVE",
         license_info: "MGA/B2C/888/2024",
         website_url: "https://example.com",

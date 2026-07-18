@@ -27,4 +27,5 @@ export * from "./engine/ai.engine";
 export * from "./core/BaseAgent";
 export * from "./agents/ScraperAgent";
 export * from "./agents/SchemaAgent";
+export * from "./agents/CasinoResolutionAgent";
 export * from "./agents/all-agents";

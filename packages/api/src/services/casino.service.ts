@@ -31,4 +31,49 @@ export class CasinoService {
       data,
     });
   }
+
+  static async resolveOrCreateCasino(input: {
+    name: string;
+    slug: string;
+    domain: string;
+    website_url?: string | null;
+    license_info?: string | null;
+  }) {
+    const cleanDomain = input.domain.replace(/^www\./, "").toLowerCase();
+    const websiteUrl = input.website_url || `https://${cleanDomain}`;
+
+    // 1. Search existing casino by website_url or domain or slug
+    const existingCasino = await prisma.casino.findFirst({
+      where: {
+        OR: [
+          { website_url: { contains: cleanDomain, mode: "insensitive" } },
+          { slug: input.slug.toLowerCase() },
+        ],
+      },
+    });
+
+    if (existingCasino) {
+      console.log(`[CasinoService] Found existing Casino ID: ${existingCasino.id} for domain: ${cleanDomain}`);
+      return existingCasino;
+    }
+
+    // 2. Create new Casino if not existing
+    let finalSlug = input.slug.toLowerCase();
+    const existingSlug = await prisma.casino.findUnique({ where: { slug: finalSlug } });
+    if (existingSlug) {
+      finalSlug = `${finalSlug}-${Date.now().toString(36)}`;
+    }
+
+    console.log(`[CasinoService] Creating new Casino record for brand '${input.name}' (slug: ${finalSlug})`);
+    return prisma.casino.create({
+      data: {
+        name: input.name,
+        slug: finalSlug,
+        website_url: websiteUrl,
+        license_info: input.license_info || null,
+        status: "ACTIVE",
+        verified_at: new Date(),
+      },
+    });
+  }
 }
