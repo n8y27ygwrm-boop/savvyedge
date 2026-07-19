@@ -9,6 +9,7 @@
     "postinstall": "prisma generate"
   },
   "prisma": {
+    "schema": "./prisma/schema.prisma",
     "seed": "npx ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"moduleResolution\":\"node\"} prisma/seed.ts"
   },
   "dependencies": {
