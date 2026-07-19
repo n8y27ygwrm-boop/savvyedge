@@ -1,6 +1,30 @@
 import { prisma } from "@savvyedge/database";
 import { CreateBonusInput } from "@savvyedge/types";
 
+export const HOUSE_EDGE_ASSUMPTION = 0.03;
+
+export interface CalculateBonusEVInput {
+  depositAmount: number;
+  headlineValue?: string | null;
+  wageringRequirement?: number | null;
+  maxConversion?: number | null;
+  validUntil?: Date | string | null;
+  gameContributionPct: number;
+  slotRtp?: number | null;
+}
+
+export interface CalculateBonusEVOutput {
+  bonusAmount: number;
+  totalWageringRequired: number;
+  expectedValue: number;
+  cappedPayout: number;
+  daysUntilExpiry: number | null;
+  isCapped: boolean;
+  houseEdgeUsed: number;
+  houseEdgeSource: "slot_rtp" | "default_assumption";
+  isCalculable: boolean;
+}
+
 export class BonusService {
   static async getBonuses({ page = 1, limit = 50 }: { page?: number; limit?: number }) {
     const skip = (page - 1) * limit;
@@ -18,6 +42,87 @@ export class BonusService {
     ]);
 
     return { data, meta: { page, limit, total } };
+  }
+
+  public static calculateBonusEV(input: CalculateBonusEVInput): CalculateBonusEVOutput {
+    const {
+      depositAmount,
+      headlineValue,
+      wageringRequirement = 0,
+      maxConversion,
+      validUntil,
+      gameContributionPct,
+      slotRtp,
+    } = input;
+
+    let houseEdgeUsed: number = HOUSE_EDGE_ASSUMPTION;
+    let houseEdgeSource: "slot_rtp" | "default_assumption" = "default_assumption";
+
+    if (slotRtp !== undefined && slotRtp !== null) {
+      houseEdgeUsed = (100 - slotRtp) / 100;
+      houseEdgeSource = "slot_rtp";
+    }
+
+    const bonusAmount = this.parseBonusAmount(headlineValue, depositAmount);
+    const safeWageringReq = wageringRequirement ?? 0;
+    const safeContribPct = gameContributionPct > 0 ? gameContributionPct : 100;
+
+    const totalWageringRequired = (depositAmount + bonusAmount) * safeWageringReq * (100 / safeContribPct);
+    const expectedValue = bonusAmount - (totalWageringRequired * houseEdgeUsed);
+    const uncappedPayout = expectedValue + bonusAmount;
+    
+    const isCapped = maxConversion !== null && maxConversion !== undefined && uncappedPayout > maxConversion;
+    const cappedPayout = isCapped ? maxConversion! : uncappedPayout;
+
+    let daysUntilExpiry: number | null = null;
+    if (validUntil) {
+      const expiryDate = new Date(validUntil);
+      const now = new Date();
+      const diffMs = expiryDate.getTime() - now.getTime();
+      daysUntilExpiry = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+    }
+
+    let isCalculable = true;
+    if (headlineValue) {
+      const pctMatch = headlineValue.match(/(\d+(?:\.\d+)?)%/i);
+      if (!pctMatch) {
+        isCalculable = false;
+      }
+    }
+
+    return {
+      bonusAmount: Math.round(bonusAmount * 100) / 100,
+      totalWageringRequired: Math.round(totalWageringRequired * 100) / 100,
+      expectedValue: Math.round(expectedValue * 100) / 100,
+      cappedPayout: Math.round(cappedPayout * 100) / 100,
+      daysUntilExpiry,
+      isCapped,
+      houseEdgeUsed: Math.round(houseEdgeUsed * 10000) / 10000,
+      houseEdgeSource,
+      isCalculable,
+    };
+  }
+
+  public static parseBonusAmount(headlineValue?: string | null, depositAmount: number = 0): number {
+    if (!headlineValue) return 0;
+
+    const pctMatch = headlineValue.match(/(\d+(?:\.\d+)?)%/i);
+    const capMatch = headlineValue.match(/up\s+to\s+[$€£]?(\d+(?:\.\d+)?)/i);
+
+    if (pctMatch) {
+      const pct = parseFloat(pctMatch[1]) / 100;
+      const matchBonus = depositAmount * pct;
+      if (capMatch) {
+        const capValue = parseFloat(capMatch[1]);
+        return Math.min(matchBonus, capValue);
+      }
+      return matchBonus;
+    }
+
+    // No reliable %-match or up-to-cap pattern found in headline.
+    // Do not guess a monetary value from raw digits — return 0 to signal
+    // "not calculable" rather than fabricating a number.
+    return 0;
   }
 
   private static calculateTrueValueScore(headlineValue?: string | null, wageringReq?: number | null): number {
