@@ -226,14 +226,6 @@ export default async function CasinosPage({
                             {lastVerifiedStr}
                           </span>
                         </span>
-                        <span>&bull;</span>
-                        <Link
-                          href="/methodology"
-                          className="text-[#0ea5e9] hover:underline font-semibold flex items-center gap-1"
-                        >
-                          Rating:{" "}
-                          <span className="font-mono text-white">4.8/5</span>
-                        </Link>
                       </div>
 
                       {activeBonus && (
