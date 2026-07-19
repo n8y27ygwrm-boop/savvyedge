@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState, useMemo } from "react";
+import BonusCalculator from "./BonusCalculator";
 
 export interface BonusItem {
   id: string;
@@ -272,6 +273,15 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                     </span>
                   </div>
                 </div>
+
+                {/* Bonus Calculator */}
+                <BonusCalculator
+                  bonusId={bonus.id}
+                  headlineValue={bonus.headline_value}
+                  wageringRequirement={bonus.wagering_requirement}
+                  maxConversion={bonus.max_conversion}
+                  validUntil={bonus.valid_until}
+                />
 
                 {/* CTA */}
                 <Link

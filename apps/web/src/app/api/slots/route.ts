@@ -22,6 +22,7 @@ export async function GET() {
       rtp_current: s.rtp_current,
       volatility: s.volatility,
       max_win: s.max_win,
+      wagering_contribution_pct: s.wagering_contribution_pct,
       rtp_history: s.rtp_history.map((h) => h.rtp_value),
     }));
 

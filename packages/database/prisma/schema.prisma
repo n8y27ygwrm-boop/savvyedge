@@ -47,6 +47,7 @@ model Slot {
   volatility   String?
   max_win      Float?
   release_date DateTime?
+  wagering_contribution_pct Float @default(100)
   
   provider     Provider @relation(fields: [provider_id], references: [id])
   rtp_history  SlotRtpHistory[]
