@@ -1,7 +1,6 @@
 {
-  "buildCommand": "pnpm --filter @savvyedge/database exec prisma generate && pnpm --filter web build",
+  "buildCommand": "pnpm --filter @savvyedge/database exec prisma generate && pnpm turbo build --filter=web...",
   "installCommand": "pnpm install",
   "outputDirectory": "apps/web/.next",
   "framework": "nextjs"
 }
-
