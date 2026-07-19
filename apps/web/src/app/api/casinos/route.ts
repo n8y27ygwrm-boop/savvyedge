@@ -1,8 +1,68 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const slug = searchParams.get("slug");
+
+    if (slug) {
+      const casino = await prisma.casino.findUnique({
+        where: { slug },
+        include: {
+          bonuses: true,
+          licenses: {
+            include: {
+              regulator: {
+                include: {
+                  jurisdiction: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!casino) {
+        return NextResponse.json(
+          { error: "Casino not found" },
+          { status: 404, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      const license = casino.licenses[0];
+      const data = {
+        id: casino.id,
+        slug: casino.slug,
+        name: casino.name,
+        website_url: casino.website_url,
+        status: casino.status,
+        verified_at: casino.verified_at,
+        license: license
+          ? {
+              regulator_name: license.regulator.name,
+              jurisdiction_name: license.regulator.jurisdiction.name,
+              license_no: license.license_no,
+            }
+          : null,
+        bonuses: casino.bonuses.map((b) => ({
+          id: b.id,
+          type: b.type,
+          headline_value: b.headline_value,
+          wagering_requirement: b.wagering_requirement,
+          max_conversion: b.max_conversion,
+          true_value_score: b.true_value_score,
+          status: b.status,
+          valid_until: b.valid_until,
+          verified_at: b.verified_at,
+        })),
+      };
+
+      return NextResponse.json(data, {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     const casinos = await prisma.casino.findMany({
       take: 50,
       orderBy: { name: "asc" },
