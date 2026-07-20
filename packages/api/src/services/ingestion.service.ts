@@ -66,7 +66,20 @@ export class IngestionService {
     console.log(`[IngestionService] [Worker] Crawling URL: ${url}`);
 
     // Run Playwright Scraper
-    const scrapeResult = await this.scraperAgent.run({ url });
+    let scrapeResult;
+    try {
+      scrapeResult = await this.scraperAgent.run({ url });
+    } catch (err: any) {
+      await prisma.scrapeJob.update({
+        where: { id: scrapeJobId },
+        data: {
+          status: "FAILED",
+          error_log: err.stack || err.message || String(err),
+          completed_at: new Date(),
+        },
+      });
+      throw err;
+    }
 
     // Fetch current job to get data_source_id
     const currentJob = await prisma.scrapeJob.findUniqueOrThrow({

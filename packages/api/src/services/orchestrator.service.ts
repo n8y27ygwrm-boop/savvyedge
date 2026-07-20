@@ -254,13 +254,51 @@ export class OrchestratorService {
 
       VALIDATE_BONUS: async (payload: { bonusId: string; url: string }) => {
         console.log(`[PlatformOrchestrator] Validating Bonus ${payload.bonusId}...`);
-        const bonus = await prisma.bonus.findUnique({ where: { id: payload.bonusId } });
-        if (bonus) {
+        const bonus = await prisma.bonus.findUnique({
+          where: { id: payload.bonusId },
+          include: {
+            casino: {
+              include: {
+                licenses: {
+                  where: { status: "ACTIVE" },
+                },
+              },
+            },
+          },
+        });
+
+        if (!bonus) {
+          console.log(`[PlatformOrchestrator] [FAIL] Bonus ${payload.bonusId} not found.`);
+          return;
+        }
+
+        const failedChecks: string[] = [];
+
+        if (!bonus.headline_value || bonus.headline_value.trim() === "") {
+          failedChecks.push("headline_value is null or empty");
+        }
+
+        if (bonus.wagering_requirement === null || bonus.wagering_requirement <= 0 || bonus.wagering_requirement > 100) {
+          failedChecks.push(`wagering_requirement is invalid (${bonus.wagering_requirement})`);
+        }
+
+        if (bonus.max_conversion !== null && bonus.max_conversion <= 0) {
+          failedChecks.push(`max_conversion is invalid (${bonus.max_conversion})`);
+        }
+
+        const activeLicenses = bonus.casino?.licenses || [];
+        if (activeLicenses.length === 0) {
+          failedChecks.push("casino has no active license");
+        }
+
+        if (failedChecks.length > 0) {
+          console.log(`[PlatformOrchestrator] [FAIL] Bonus ${bonus.id} failed validation: ${failedChecks.join(", ")}`);
+        } else {
           await prisma.bonus.update({
             where: { id: bonus.id },
             data: { status: "VERIFIED" },
           });
-          console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified and set to ACTIVE/VERIFIED.`);
+          console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified and set to VERIFIED.`);
         }
       },
     };
