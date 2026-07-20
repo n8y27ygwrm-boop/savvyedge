@@ -47,6 +47,9 @@ export default function RootLayout({
               <Link href="/casinos" className="hover:text-[#0ea5e9] transition-colors">
                 Casinos
               </Link>
+              <Link href="/compare" className="hover:text-[#0ea5e9] transition-colors">
+                Compare
+              </Link>
               <Link href="/bonuses" className="hover:text-[#0ea5e9] transition-colors">
                 Bonuses
               </Link>
