@@ -23,6 +23,7 @@ model Casino {
   reviews        Review[]
   history_events CasinoHistoryEvent[]
   licenses       License[]
+  casino_slots   CasinoSlot[]
 
   @@index([slug])
 }
@@ -51,6 +52,7 @@ model Slot {
   
   provider     Provider @relation(fields: [provider_id], references: [id])
   rtp_history  SlotRtpHistory[]
+  casino_slots CasinoSlot[]
 
   @@index([slug])
   @@index([provider_id])
@@ -252,4 +254,20 @@ model DiscoveredUrl {
 
   @@index([domain])
   @@index([status])
+}
+
+model CasinoSlot {
+  id          String    @id @default(uuid())
+  casino_id   String
+  slot_id     String
+  source_url  String?
+  verified_at DateTime?
+  created_at  DateTime  @default(now())
+
+  casino      Casino    @relation(fields: [casino_id], references: [id])
+  slot        Slot      @relation(fields: [slot_id], references: [id])
+
+  @@unique([casino_id, slot_id])
+  @@index([casino_id])
+  @@index([slot_id])
 }
