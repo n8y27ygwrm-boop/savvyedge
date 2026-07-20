@@ -18,6 +18,7 @@ model Casino {
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt
   verified_at    DateTime?
+  data_source_type String   @default("SCRAPED")
   
   bonuses        Bonus[]
   reviews        Review[]
@@ -85,6 +86,7 @@ model Bonus {
   created_at           DateTime @default(now())
   updated_at           DateTime @default(now()) @updatedAt
   verified_at          DateTime?
+  data_source_type     String   @default("SCRAPED")
   
   casino               Casino   @relation(fields: [casino_id], references: [id])
   history_events       BonusHistoryEvent[]

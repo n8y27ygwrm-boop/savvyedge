@@ -1,5 +1,6 @@
 import { prisma } from "@savvyedge/database";
 import { CreateCasinoInput } from "@savvyedge/types";
+import { AIEngine } from "@savvyedge/ai-agents";
 
 export class CasinoService {
   static async getCasinos({ page = 1, limit = 50 }: { page?: number; limit?: number }) {
@@ -69,6 +70,8 @@ export class CasinoService {
     }
 
     console.log(`[CasinoService] Creating new Casino record for brand '${input.name}' (slug: ${finalSlug})`);
+    const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
+
     return prisma.casino.create({
       data: {
         name: input.name,
@@ -77,6 +80,7 @@ export class CasinoService {
         license_info: input.license_info || null,
         status: "ACTIVE",
         verified_at: new Date(),
+        data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
       },
     });
   }

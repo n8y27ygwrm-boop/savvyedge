@@ -12,6 +12,7 @@ export const CasinoSchema = z.object({
   created_at: z.date(),
   updated_at: z.date(),
   verified_at: z.date().nullable(),
+  data_source_type: z.string().optional().default("SCRAPED"),
 });
 
 export type Casino = z.infer<typeof CasinoSchema>;
@@ -20,6 +21,7 @@ export const CreateCasinoInputSchema = CasinoSchema.omit({
   id: true,
   created_at: true,
   updated_at: true,
+  data_source_type: true,
 });
 
 export type CreateCasinoInput = z.infer<typeof CreateCasinoInputSchema>;
@@ -37,6 +39,7 @@ export const BonusSchema = z.object({
   valid_from: z.date().nullable(),
   valid_until: z.date().nullable(),
   status: z.string(),
+  data_source_type: z.string().default("SCRAPED"),
 });
 
 export type Bonus = z.infer<typeof BonusSchema>;
@@ -44,6 +47,7 @@ export type Bonus = z.infer<typeof BonusSchema>;
 export const CreateBonusInputSchema = BonusSchema.omit({
   id: true,
   true_value_score: true, // Calculated by the server
+  data_source_type: true, // Set by the server
 });
 
 export type CreateBonusInput = z.infer<typeof CreateBonusInputSchema>;

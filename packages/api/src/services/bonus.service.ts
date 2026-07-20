@@ -1,5 +1,6 @@
 import { prisma } from "@savvyedge/database";
 import { CreateBonusInput } from "@savvyedge/types";
+import { AIEngine } from "@savvyedge/ai-agents";
 
 export const HOUSE_EDGE_ASSUMPTION = 0.03;
 
@@ -233,11 +234,14 @@ export class BonusService {
     }
 
     // No active bonus exists, create a new Bonus record with status ACTIVE
+    const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
+
     return prisma.bonus.create({
       data: {
         ...data,
         status: data.status || "ACTIVE",
         true_value_score: trueValueScore,
+        data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
         created_at: now,
         updated_at: now,
         verified_at: now,
