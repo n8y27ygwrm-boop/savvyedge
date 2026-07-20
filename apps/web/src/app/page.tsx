@@ -7,13 +7,6 @@ export const metadata = {
     "Autonomous casino data verification, bonus true value scoring, and real-time RTP monitoring. Never trust a casino's word again.",
 };
 
-const stats = [
-  { label: "Verified Casinos", value: "247" },
-  { label: "Bonus Records", value: "12,400+" },
-  { label: "Data Accuracy", value: "99.2%" },
-  { label: "Update Cycle", value: "Every 6h" },
-];
-
 const features = [
   {
     title: "True Value Score™",
@@ -35,13 +28,56 @@ const features = [
   },
 ];
 
-
+function formatInterval(ms: number): string {
+  const minutes = Math.floor(ms / (1000 * 60));
+  if (minutes < 60) {
+    return `Every ${minutes} min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `Every ${hours}h`;
+}
 
 export default async function HomePage() {
-  const recentCasinos = await prisma.casino.findMany({
-    take: 4,
-    orderBy: { verified_at: "desc" },
-  });
+  const discoveryIntervalMs = parseInt(
+    process.env.DISCOVERY_INTERVAL_MS || "300000",
+    10
+  );
+  const updateCycleLabel = formatInterval(discoveryIntervalMs);
+
+  const [casinoCount, activeBonusCount, jurisdictionCount, recentCasinos] =
+    await Promise.all([
+      prisma.casino.count(),
+      prisma.bonus.count({ where: { status: "ACTIVE" } }),
+      prisma.jurisdiction.count({
+        where: {
+          regulators: {
+            some: {
+              licenses: {
+                some: {},
+              },
+            },
+          },
+        },
+      }),
+      prisma.casino.findMany({
+        take: 4,
+        orderBy: { verified_at: "desc" },
+      }),
+    ]);
+
+  const stats = [
+    { label: "Verified Casinos", value: casinoCount.toLocaleString("en-US") },
+    {
+      label: "Active Bonuses Tracked",
+      value: activeBonusCount.toLocaleString("en-US"),
+    },
+    {
+      label: "Regulatory Jurisdictions",
+      value: jurisdictionCount.toLocaleString("en-US"),
+    },
+    { label: "Update Cycle", value: updateCycleLabel },
+  ];
+
   return (
     <div className="space-y-16 -mt-8">
       {/* ───── Hero Section ───── */}
@@ -157,7 +193,7 @@ export default async function HomePage() {
       {/* ───── Trust Strip ───── */}
       <section className="text-center px-4">
         <p className="text-sm italic text-slate-400 max-w-3xl mx-auto leading-relaxed">
-          Data sourced from 247 regulated casinos across 18 jurisdictions.
+          Data sourced from {casinoCount.toLocaleString("en-US")} regulated casinos across {jurisdictionCount.toLocaleString("en-US")} jurisdictions.
           Independently verified. No paid placements in rankings.
         </p>
       </section>
