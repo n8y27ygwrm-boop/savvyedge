@@ -126,16 +126,64 @@ export class BonusService {
     return 0;
   }
 
-  private static calculateTrueValueScore(headlineValue?: string | null, wageringReq?: number | null): number {
-    if (headlineValue && wageringReq && wageringReq > 0) {
-      const baseVal = parseFloat(headlineValue.replace(/[^0-9.]/g, '')) || 0;
-      return baseVal > 0 ? baseVal / wageringReq : 0;
+  public static extractNominalBonusValue(headlineValue?: string | null): number {
+    if (!headlineValue || typeof headlineValue !== "string") return 0;
+    const trimmed = headlineValue.trim();
+    if (!trimmed) return 0;
+
+    // Reject headlines with extra unvalued components (free spins, free bets, etc.)
+    if (/free\s*spins?|spins?|free\s*bets?|bet\s*credits?|chips?/i.test(trimmed)) {
+      return 0;
     }
-    return 0;
+
+    // Find all monetary caps (e.g. "up to $500", "up to €1,000", "$500")
+    const matches = Array.from(
+      trimmed.matchAll(/(?:up\s+to\s+[$€£]?|[$€£])\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)/gi)
+    );
+
+    // Only accept exactly one unambiguous monetary cap
+    if (matches.length !== 1) {
+      return 0;
+    }
+
+    const cleanStr = matches[0][1].replace(/,/g, "");
+    const val = parseFloat(cleanStr);
+    if (isNaN(val) || !isFinite(val) || val <= 0) {
+      return 0;
+    }
+
+    return val;
+  }
+
+  public static calculateTrueValueScore(
+    headlineValue?: string | null,
+    wageringReq?: number | null,
+    maxConversion?: number | null
+  ): number {
+    if (!headlineValue || wageringReq === undefined || wageringReq === null || wageringReq <= 0) {
+      return 0;
+    }
+
+    const baseVal = this.extractNominalBonusValue(headlineValue);
+    if (baseVal <= 0) {
+      return 0;
+    }
+
+    const rawScore = baseVal / wageringReq;
+
+    if (isNaN(rawScore) || !isFinite(rawScore) || rawScore <= 0) {
+      return 0;
+    }
+
+    return Math.round(rawScore * 100) / 100;
   }
 
   static async createBonus(data: CreateBonusInput, sourceUrl?: string) {
-    const trueValueScore = this.calculateTrueValueScore(data.headline_value, data.wagering_requirement);
+    const trueValueScore = this.calculateTrueValueScore(
+      data.headline_value,
+      data.wagering_requirement,
+      data.max_conversion
+    );
     const now = new Date();
 
     // Look up any existing active Bonus record for the casino
