@@ -1,5 +1,5 @@
 import { prisma } from "@savvyedge/database";
-import { ScraperAgent, BonusAgent, CasinoResolutionAgent } from "@savvyedge/ai-agents";
+import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
 import { CasinoService } from "./casino.service";
 import { JobQueueService } from "./job-queue.service";
@@ -7,19 +7,27 @@ import { JobQueueService } from "./job-queue.service";
 export interface IngestBonusInput {
   url: string;
   casino_id?: string;
+  taskContext?: "BONUS" | "GAME_LIST";
 }
 
 export class IngestionService {
   private static scraperAgent = new ScraperAgent();
   private static bonusAgent = new BonusAgent();
   private static casinoResolutionAgent = new CasinoResolutionAgent();
+  private static gameListAgent = new GameListAgent();
 
   /**
    * Enqueues an ingestion pipeline for a given URL.
    * This is the asynchronous entrypoint.
    */
-  public static async enqueueIngestion({ url, casino_id }: IngestBonusInput) {
-    console.log(`[IngestionService] Enqueueing ingestion for URL: ${url}`);
+  public static async enqueueIngestion({ url, casino_id, taskContext = "BONUS" }: IngestBonusInput) {
+    console.log(`[IngestionService] Enqueueing ingestion for URL: ${url} (context: ${taskContext})`);
+
+    if (taskContext === "GAME_LIST" && !casino_id) {
+      throw new Error("GAME_LIST ingestion requires a casino_id");
+    }
+
+    const sourceType = taskContext === "GAME_LIST" ? "CASINO_GAME_LOBBY_PAGE" : "CASINO_PROMOTION_PAGE";
 
     // 1. Find or create DataSource
     let dataSource = await prisma.dataSource.findFirst({ where: { url } });
@@ -27,7 +35,7 @@ export class IngestionService {
       dataSource = await prisma.dataSource.create({
         data: {
           url,
-          source_type: "CASINO_PROMOTION_PAGE",
+          source_type: sourceType,
           last_scraped_at: new Date(),
         },
       });
@@ -53,6 +61,7 @@ export class IngestionService {
       scrapeJobId: scrapeJob.id,
       url,
       casinoId: casino_id,
+      taskContext,
     });
 
     return scrapeJob;
@@ -61,9 +70,14 @@ export class IngestionService {
   /**
    * The crawl handler (Step 1)
    */
-  public static async handleCrawl(payload: { scrapeJobId: string; url: string; casinoId?: string }) {
-    const { scrapeJobId, url, casinoId } = payload;
-    console.log(`[IngestionService] [Worker] Crawling URL: ${url}`);
+  public static async handleCrawl(payload: {
+    scrapeJobId: string;
+    url: string;
+    casinoId?: string;
+    taskContext?: "BONUS" | "GAME_LIST";
+  }) {
+    const { scrapeJobId, url, casinoId, taskContext = "BONUS" } = payload;
+    console.log(`[IngestionService] [Worker] Crawling URL: ${url} (context: ${taskContext})`);
 
     // Run Playwright Scraper
     let scrapeResult;
@@ -125,18 +139,30 @@ export class IngestionService {
       return;
     }
 
-    // Enqueue extraction step
-    await JobQueueService.enqueue("ingestion-queue", "EXTRACT_BONUS", {
-      scrapeJobId,
-      url,
-      casinoId,
-      scrapedContent: scrapeResult.content,
-      scrapedMetadata: scrapeResult.metadata,
-    });
+    // Enqueue extraction step based on taskContext
+    if (taskContext === "GAME_LIST") {
+      if (!casinoId) {
+        throw new Error("GAME_LIST crawl payload missing mandatory casinoId");
+      }
+      await JobQueueService.enqueue("ingestion-queue", "EXTRACT_GAME_LIST", {
+        scrapeJobId,
+        url,
+        casinoId,
+        scrapedContent: scrapeResult.content,
+      });
+    } else {
+      await JobQueueService.enqueue("ingestion-queue", "EXTRACT_BONUS", {
+        scrapeJobId,
+        url,
+        casinoId,
+        scrapedContent: scrapeResult.content,
+        scrapedMetadata: scrapeResult.metadata,
+      });
+    }
   }
 
   /**
-   * The extraction handler (Step 2)
+   * The extraction handler (Step 2 - Bonus)
    */
   public static async handleExtraction(payload: {
     scrapeJobId: string;
@@ -202,12 +228,91 @@ export class IngestionService {
   }
 
   /**
+   * The extraction handler (Step 2 - Game List)
+   */
+  public static async handleGameListExtraction(payload: {
+    scrapeJobId: string;
+    url: string;
+    casinoId: string;
+    scrapedContent: string;
+  }) {
+    const { scrapeJobId, url, casinoId, scrapedContent } = payload;
+    console.log(`[IngestionService] [Worker] Extracting game list for Casino ${casinoId} from URL: ${url}`);
+
+    const gameListResult = await this.gameListAgent.run({
+      url,
+      casinoId,
+      scrapedContent,
+    });
+
+    const existingSlots = await prisma.slot.findMany();
+
+    const normalizeGameName = (name: string): string => {
+      return name
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/['’\.]/g, "");
+    };
+
+    const slotMap = new Map<string, string>();
+    for (const slot of existingSlots) {
+      slotMap.set(normalizeGameName(slot.name), slot.id);
+    }
+
+    let matchedCount = 0;
+    const unmatchedNames: string[] = [];
+
+    for (const game of gameListResult.games) {
+      const normalizedInputName = normalizeGameName(game.name);
+      const matchedSlotId = slotMap.get(normalizedInputName);
+
+      if (matchedSlotId) {
+        matchedCount++;
+        await prisma.casinoSlot.upsert({
+          where: {
+            casino_id_slot_id: {
+              casino_id: casinoId,
+              slot_id: matchedSlotId,
+            },
+          },
+          update: {
+            source_url: url,
+            verified_at: new Date(),
+          },
+          create: {
+            casino_id: casinoId,
+            slot_id: matchedSlotId,
+            source_url: url,
+            verified_at: new Date(),
+          },
+        });
+      } else {
+        unmatchedNames.push(game.name);
+      }
+    }
+
+    console.log(
+      `[GameListExtraction] Casino ${casinoId}: ${gameListResult.games.length} games extracted, ${matchedCount} matched to existing slots, ${unmatchedNames.length} unmatched: [${unmatchedNames.join(", ")}]`
+    );
+
+    await prisma.scrapeJob.update({
+      where: { id: scrapeJobId },
+      data: {
+        status: "COMPLETED",
+        completed_at: new Date(),
+      },
+    });
+  }
+
+  /**
    * Returns a map of handlers for the worker
    */
   public static getQueueHandlers() {
     return {
       CRAWL_URL: (payload: any) => this.handleCrawl(payload),
       EXTRACT_BONUS: (payload: any) => this.handleExtraction(payload),
+      EXTRACT_GAME_LIST: (payload: any) => this.handleGameListExtraction(payload),
     };
   }
 

@@ -252,6 +252,15 @@ export class OrchestratorService {
         }
       },
 
+      EXTRACT_GAME_LIST: async (payload: {
+        scrapeJobId: string;
+        url: string;
+        casinoId: string;
+        scrapedContent: string;
+      }) => {
+        await IngestionService.handleGameListExtraction(payload);
+      },
+
       VALIDATE_BONUS: async (payload: { bonusId: string; url: string }) => {
         console.log(`[PlatformOrchestrator] Validating Bonus ${payload.bonusId}...`);
         const bonus = await prisma.bonus.findUnique({
