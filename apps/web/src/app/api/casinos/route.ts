@@ -20,6 +20,13 @@ export async function GET(request: Request) {
               },
             },
           },
+          casino_slots: {
+            include: {
+              slot: {
+                include: { provider: true },
+              },
+            },
+          },
         },
       });
 
@@ -55,6 +62,13 @@ export async function GET(request: Request) {
           status: b.status,
           valid_until: b.valid_until,
           verified_at: b.verified_at,
+        })),
+        games: casino.casino_slots.map((cs) => ({
+          slot_name: cs.slot.name,
+          provider_name: cs.slot.provider.name,
+          rtp_current: cs.slot.rtp_current,
+          volatility: cs.slot.volatility,
+          verified_at: cs.verified_at,
         })),
       };
 

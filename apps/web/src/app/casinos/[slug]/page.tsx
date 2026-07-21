@@ -12,6 +12,14 @@ interface Bonus {
   verified_at: string | null;
 }
 
+interface Game {
+  slot_name: string;
+  provider_name: string;
+  rtp_current: number | null;
+  volatility: string | null;
+  verified_at: string | null;
+}
+
 interface CasinoDetail {
   id: string;
   slug: string;
@@ -25,6 +33,7 @@ interface CasinoDetail {
     license_no: string;
   } | null;
   bonuses: Bonus[];
+  games?: Game[];
 }
 
 function tvsColor(score: number): string {
@@ -293,6 +302,73 @@ export default async function CasinoDetailPage({
                         {validUntilStr}
                       </span>
                     </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Verified Games & RTP Section */}
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-bold text-white tracking-tight">
+            Verified Games &amp; RTP
+          </h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Games we&apos;ve independently verified this casino offers, with RTP tracked over time. This shows the game&apos;s published RTP — not a casino-specific comparison.
+          </p>
+        </div>
+
+        {!casino.games || casino.games.length === 0 ? (
+          <div className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-8 text-center text-slate-400 text-sm">
+            We haven&apos;t verified specific games for this casino yet. Our verified game catalog is actively expanding — check back soon.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {casino.games.map((game, idx) => {
+              const rtpStr = game.rtp_current !== null ? `${game.rtp_current}%` : "RTP not available";
+              const verifiedDate = game.verified_at
+                ? new Date(game.verified_at).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })
+                : "Verified";
+
+              return (
+                <div
+                  key={idx}
+                  className="bg-[#161e2e] border border-white/[0.06] rounded-2xl p-5 space-y-3 transition-all duration-300 hover:border-slate-700"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-bold text-white leading-snug">
+                        {game.slot_name}
+                      </h3>
+                      <p className="text-xs text-slate-400 font-medium">
+                        by {game.provider_name}
+                      </p>
+                    </div>
+                    {game.volatility && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-slate-800 text-slate-300 border border-slate-700/60 shrink-0">
+                        {game.volatility}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="bg-[#0b0f19] rounded-xl p-3 border border-slate-800/60 flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+                      Tracked RTP
+                    </span>
+                    <span className="text-sm font-extrabold font-mono text-[#0ea5e9]">
+                      {rtpStr}
+                    </span>
+                  </div>
+
+                  <div className="text-[10px] text-slate-500 font-mono text-right">
+                    Verified: {verifiedDate}
                   </div>
                 </div>
               );
