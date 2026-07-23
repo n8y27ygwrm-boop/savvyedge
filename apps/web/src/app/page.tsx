@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
 import { PublicationGateService } from "@savvyedge/api";
+import VerificationBadge from "@/components/VerificationBadge";
 
 export const metadata = {
-  title: "SavvyEdge | Verified Casino Intelligence",
+  title: "SavvyEdge | Casino Intelligence",
   description:
-    "Autonomous casino data verification, bonus true value scoring, and real-time RTP monitoring. Never trust a casino's word again.",
+    "Autonomous casino data review, bonus true value scoring, and real-time RTP monitoring. Never trust a casino's word again.",
 };
 
 const features = [
@@ -22,9 +23,9 @@ const features = [
     icon: "⬡",
   },
   {
-    title: "License Verification",
+    title: "License Source Checks",
     description:
-      "Every casino's regulatory license is cross-referenced against official regulator databases daily.",
+      "Casino regulatory licenses are cross-referenced against available regulator records before publication.",
     icon: "⛨",
   },
 ];
@@ -95,7 +96,7 @@ export default async function HomePage() {
   const recentCasinos = eligibleCasinos.slice(0, 4);
 
   const stats = [
-    { label: "Verified Casinos", value: casinoCount.toLocaleString("en-US") },
+    { label: "Eligible Casinos", value: casinoCount.toLocaleString("en-US") },
     {
       label: "Active Bonuses Tracked",
       value: activeBonusCount.toLocaleString("en-US"),
@@ -141,7 +142,7 @@ export default async function HomePage() {
 
         <div className="max-w-3xl space-y-6">
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white tracking-tight leading-[1.1]">
-            Verified Casino Intelligence.{" "}
+            Casino Intelligence.{" "}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#0ea5e9] to-[#10b981]">
               Not Guesswork.
             </span>
@@ -223,15 +224,15 @@ export default async function HomePage() {
       <section className="text-center px-4">
         <p className="text-sm italic text-slate-400 max-w-3xl mx-auto leading-relaxed">
           Data sourced from {casinoCount.toLocaleString("en-US")} regulated casinos across {jurisdictionCount.toLocaleString("en-US")} jurisdictions.
-          Independently verified. No paid placements in rankings.
+          Source checked. No paid placements in rankings.
         </p>
       </section>
 
-      {/* ───── Recent Verifications Feed ───── */}
+      {/* ───── Recent Source Checks Feed ───── */}
       <section className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold text-white">
-            Recent Verifications
+            Recent Source Checks
           </h2>
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <span
@@ -247,7 +248,7 @@ export default async function HomePage() {
           <div className="grid grid-cols-4 gap-4 px-5 py-3 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800/60 bg-[#0b0f19]">
             <span>Casino</span>
             <span>Type</span>
-            <span>Verified</span>
+            <span>Last checked</span>
             <span>Status</span>
           </div>
           {recentCasinos.map((c, i) => (
@@ -263,13 +264,11 @@ export default async function HomePage() {
               <span className="font-mono text-slate-300 text-xs">
                 Just now
               </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-4 h-4 rounded-full bg-[#10b981]/15 text-[#10b981] flex items-center justify-center text-[10px] font-bold">
-                  ✓
-                </span>
-                <span className="text-[#10b981] text-xs font-semibold">
-                  Verified
-                </span>
+              <span>
+                <VerificationBadge
+                  eligible={PublicationGateService.isVerificationBadgeEligible(c)}
+                  compact
+                />
               </span>
             </div>
           ))}

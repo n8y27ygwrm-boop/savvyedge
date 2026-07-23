@@ -5,7 +5,7 @@ import SlotsClient from "./SlotsClient";
 export const metadata = {
   title: "Live RTP Tracker | SavvyEdge",
   description:
-    "Monitor real-time Return to Player percentages for popular online slots. Independently verified RTP data updated every 6 hours.",
+    "Monitor source-tracked Return to Player percentages for popular online slots, updated every 6 hours.",
 };
 
 export default async function SlotsPage() {
@@ -32,7 +32,11 @@ export default async function SlotsPage() {
 
   const eligibleSlots = rawSlots
     .filter((s) => PublicationGateService.isSlotPubliclyEligible(s))
-    .slice(0, 50);
+    .slice(0, 50)
+    .map((slot) => ({
+      ...slot,
+      is_verified: PublicationGateService.isVerificationBadgeEligible(slot),
+    }));
 
   return <SlotsClient slots={eligibleSlots} />;
 }

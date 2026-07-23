@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { verifyApiAuthorization } from "../src/utils/auth.utils";
 import { PublicationGateService } from "../src/services/publication-gate.service";
 import { BonusService } from "../src/services/bonus.service";
+import { prisma } from "@savvyedge/database";
+import VerificationBadge from "../../../apps/web/src/components/VerificationBadge";
 
 // Import real route handlers for direct integration execution testing
 import { POST as postCasinosV1, GET as getCasinosV1 } from "../../../apps/web/src/app/api/v1/casinos/route";
@@ -11,6 +13,7 @@ import { POST as postIngestV1 } from "../../../apps/web/src/app/api/v1/bonuses/i
 import { GET as getDiscoveryV1, POST as postDiscoveryV1 } from "../../../apps/web/src/app/api/v1/discovery/route";
 import { GET as getMetricsV1 } from "../../../apps/web/src/app/api/v1/orchestrator/metrics/route";
 import { POST as calculateBonusV1 } from "../../../apps/web/src/app/api/v1/bonuses/[id]/calculate/route";
+import { GET as getCasinoComparisonV1 } from "../../../apps/web/src/app/api/v1/casinos/compare/route";
 
 describe("Phase 1: Real Protected Route Handler Auth Tests (Complete)", () => {
   const originalSecret = process.env.INTERNAL_API_SECRET;
@@ -317,6 +320,169 @@ describe("Phase 1: Verification Badge Fail-Closed Presentation Policy Test", () 
     const bonus = { id: "b-1", verified_at: new Date() };
     expect(PublicationGateService.isVerificationBadgeEligible(casino)).toBe(false);
     expect(PublicationGateService.isVerificationBadgeEligible(bonus)).toBe(false);
+  });
+
+  it("renders no Verified claim or green styling when centralized badge eligibility is false", () => {
+    const eligible = PublicationGateService.isVerificationBadgeEligible({
+      id: "c-public-surface",
+      verified_at: new Date(),
+    });
+    const badge = VerificationBadge({ eligible }) as any;
+    const renderedText = badge.props.children;
+
+    expect(renderedText).toBe("Verification pending");
+    expect(renderedText).not.toContain("Verified");
+    expect(badge.props.className).not.toContain("#10b981");
+  });
+});
+
+describe("Phase 1: Public Casino Comparison Runtime Gate Regression Tests", () => {
+  const checkedAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  function makeCasino(slug: string) {
+    return {
+      id: `casino-${slug}`,
+      slug,
+      name: slug
+        .split("-")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" "),
+      website_url: `https://${slug}.example.com`,
+      status: "ACTIVE",
+      data_source_type: "MANUAL_AUDIT",
+      verified_at: checkedAt,
+      history_events: [
+        {
+          event_type: "VERIFICATION",
+          source_url: `https://regulator.example.com/${slug}`,
+          occurred_at: checkedAt,
+        },
+      ],
+      licenses: [
+        {
+          status: "ACTIVE",
+          verified_at: checkedAt,
+          license_no: `LIC-${slug}`,
+          regulator: {
+            name: "Test Regulator",
+            jurisdiction: {
+              name: "Test Jurisdiction",
+              country: "Test Country",
+            },
+          },
+        },
+      ],
+      bonuses: [] as any[],
+    };
+  }
+
+  function makeBonus(headline: string, eligible = true) {
+    return {
+      id: `bonus-${headline}`,
+      headline_value: headline,
+      wagering_requirement: 35,
+      max_conversion: 500,
+      true_value_score: 70,
+      status: "ACTIVE",
+      data_source_type: "MANUAL_AUDIT",
+      valid_until: null,
+      verified_at: checkedAt,
+      created_at: checkedAt,
+      history_events: [
+        {
+          field_changed: eligible ? "verified_at" : "status",
+          new_value: eligible ? checkedAt.toISOString() : "ACTIVE",
+          source_url: "https://operator.example.com/terms",
+          changed_at: checkedAt,
+        },
+      ],
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("excludes prefilter-only casinos and ineligible bonuses while preserving eligible comparison data", async () => {
+    const firstCasino = makeCasino("eligible-one");
+    firstCasino.bonuses = [
+      makeBonus("Ineligible newest bonus", false),
+      makeBonus("Eligible older bonus"),
+    ];
+    const secondCasino = makeCasino("eligible-two");
+    secondCasino.bonuses = [makeBonus("Second eligible bonus")];
+    const prefilterOnlyCasino = {
+      ...makeCasino("prefilter-only"),
+      history_events: [
+        {
+          event_type: "INGESTION",
+          source_url: "https://operator.example.com/import",
+          occurred_at: checkedAt,
+        },
+      ],
+    };
+
+    const findMany = vi
+      .spyOn(prisma.casino, "findMany")
+      .mockResolvedValue([
+        firstCasino,
+        secondCasino,
+        prefilterOnlyCasino,
+      ] as never);
+    vi.spyOn(prisma.bonusHistoryEvent, "count").mockResolvedValue(0);
+
+    const response = await getCasinoComparisonV1(
+      new Request(
+        "http://localhost/api/v1/casinos/compare?slugs=eligible-one,eligible-two,prefilter-only"
+      )
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.error).toBeNull();
+    expect(body.data).toHaveLength(2);
+    expect(body.data.map((casino: any) => casino.slug)).toEqual([
+      "eligible-one",
+      "eligible-two",
+    ]);
+    expect(body.data[0].activeBonus.headline_value).toBe(
+      "Eligible older bonus"
+    );
+    expect(
+      body.data.some(
+        (casino: any) =>
+          casino.activeBonus?.headline_value === "Ineligible newest bonus"
+      )
+    ).toBe(false);
+
+    const query = findMany.mock.calls[0][0] as any;
+    expect(query.include.history_events).toBe(true);
+    expect(query.include.licenses).toBeDefined();
+    expect(query.include.bonuses.include.history_events).toBe(true);
+  });
+
+  it("fails safely when fewer than two requested casinos pass the runtime gate", async () => {
+    const eligibleCasino = makeCasino("eligible-one");
+    const prefilterOnlyCasino = {
+      ...makeCasino("prefilter-only"),
+      history_events: [],
+    };
+
+    vi.spyOn(prisma.casino, "findMany").mockResolvedValue([
+      eligibleCasino,
+      prefilterOnlyCasino,
+    ] as never);
+
+    const response = await getCasinoComparisonV1(
+      new Request(
+        "http://localhost/api/v1/casinos/compare?slugs=eligible-one,prefilter-only"
+      )
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.data).toBeNull();
+    expect(body.error.message).toContain("Fewer than two");
   });
 });
 

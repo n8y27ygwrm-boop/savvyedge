@@ -17,7 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "SavvyEdge | Verifiable Casino & Bonus Intelligence",
-  description: "Autonomous casino data verification, bonus true value scoring, and real-time RTP monitoring.",
+  description: "Autonomous casino data review, bonus true value scoring, and real-time RTP monitoring.",
 };
 
 export default function RootLayout({
@@ -122,7 +122,7 @@ export default function RootLayout({
                   </li>
                   <li>
                     <Link href="/bonuses" className="hover:text-[#0ea5e9] transition-colors">
-                      Verified Bonuses
+                      Bonuses
                     </Link>
                   </li>
                   <li>

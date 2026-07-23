@@ -50,6 +50,7 @@ export async function GET(request: Request) {
         website_url: casino.website_url,
         status: casino.status,
         verified_at: casino.verified_at,
+        is_verified: PublicationGateService.isVerificationBadgeEligible(casino),
         license: license
           ? {
               regulator_name: license.regulator.name,

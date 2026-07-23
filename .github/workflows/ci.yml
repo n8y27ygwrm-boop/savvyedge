@@ -22,6 +22,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate Prisma Types
         run: pnpm --filter @savvyedge/database generate
+      - name: Test Phase 1 Trust Regressions
+        run: pnpm --filter @savvyedge/api test
       - name: Build
         run: pnpm turbo build
       - name: Lint

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState, useMemo } from "react";
+import VerificationBadge from "@/components/VerificationBadge";
 
 export interface SlotItem {
   id: string;
@@ -10,6 +11,7 @@ export interface SlotItem {
   volatility: string | null;
   rtp_current: number | null;
   max_win: number | null;
+  is_verified: boolean;
   provider: {
     id: string;
     name: string;
@@ -159,15 +161,14 @@ export default function SlotsClient({ slots }: { slots: SlotItem[] }) {
       <div className="border-b border-slate-800/80 pb-6 space-y-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-[#0ea5e9] uppercase tracking-wider">
           <span>RTP Monitoring</span> &bull; <span>Provider Data</span> &bull;{" "}
-          <span>Verified</span>
+          <span>Source Tracked</span>
         </div>
         <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
           Live RTP Tracker
         </h1>
         <p className="text-slate-400 text-sm max-w-2xl leading-relaxed">
-          Real-time Return to Player percentages scraped and verified every 6
-          hours against official provider specifications. No guesswork, no
-          estimates.
+          Return to Player percentages checked every 6 hours against official
+          provider specifications. No guesswork, no estimates.
         </p>
       </div>
 
@@ -322,12 +323,7 @@ export default function SlotsClient({ slots }: { slots: SlotItem[] }) {
                     </span>
                   </div>
                   <div className="bg-[#0b0f19] rounded-xl p-3 text-center border border-slate-800/60">
-                    <span className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 block mb-1">
-                      Verified
-                    </span>
-                    <span className="text-xs font-mono text-slate-300">
-                      Recently
-                    </span>
+                    <VerificationBadge eligible={slot.is_verified} compact />
                   </div>
                 </div>
               </div>

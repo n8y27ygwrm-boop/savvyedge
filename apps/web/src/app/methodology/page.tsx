@@ -27,7 +27,7 @@ export default function MethodologyPage() {
           <span className="w-8 h-8 rounded-lg bg-[#0ea5e9]/10 text-[#0ea5e9] border border-[#0ea5e9]/30 flex items-center justify-center text-sm font-extrabold">
             1
           </span>
-          Data Provenance & Autonomous Verification
+          Data Provenance &amp; Autonomous Review
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-6 space-y-3">
@@ -101,7 +101,7 @@ export default function MethodologyPage() {
               <thead className="bg-[#0b0f19] text-xs uppercase tracking-wider text-slate-400 border-b border-slate-800">
                 <tr>
                   <th className="px-6 py-4">Evaluation Metric</th>
-                  <th className="px-6 py-4">Verification Method</th>
+                  <th className="px-6 py-4">Review Method</th>
                   <th className="px-6 py-4">Audit Event Logging</th>
                   <th className="px-6 py-4">Standard Threshold</th>
                 </tr>
@@ -111,7 +111,7 @@ export default function MethodologyPage() {
                   <td className="px-6 py-4 font-semibold text-white">License Status</td>
                   <td className="px-6 py-4">Cross-referenced with regulatory registries (MGA, UKGC, NVGC).</td>
                   <td className="px-6 py-4 font-mono text-[#0ea5e9]">CasinoHistoryEvent</td>
-                  <td className="px-6 py-4">Active & Verified</td>
+                  <td className="px-6 py-4">Active &amp; source checked</td>
                 </tr>
                 <tr className="hover:bg-slate-800/30 transition-colors">
                   <td className="px-6 py-4 font-semibold text-white">Wagering Requirement</td>
@@ -126,10 +126,10 @@ export default function MethodologyPage() {
                   <td className="px-6 py-4">&ge; 96.0% Baseline</td>
                 </tr>
                 <tr className="hover:bg-slate-800/30 transition-colors">
-                  <td className="px-6 py-4 font-semibold text-white">Verification Recency</td>
-                  <td className="px-6 py-4">Automated job queue re-verification interval.</td>
+                  <td className="px-6 py-4 font-semibold text-white">Review Recency</td>
+                  <td className="px-6 py-4">Automated job queue source-check interval.</td>
                   <td className="px-6 py-4 font-mono text-[#0ea5e9]">ScrapeJob</td>
-                  <td className="px-6 py-4">Re-verified &lt; 24 hours</td>
+                  <td className="px-6 py-4">Source checked &lt; 24 hours</td>
                 </tr>
               </tbody>
             </table>

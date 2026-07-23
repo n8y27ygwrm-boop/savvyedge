@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PublicationGateService } from "@savvyedge/api";
+import VerificationBadge from "@/components/VerificationBadge";
 
 interface Bonus {
   id: string;
@@ -28,6 +28,7 @@ interface CasinoDetail {
   website_url: string;
   status: string;
   verified_at: string | null;
+  is_verified: boolean;
   license: {
     regulator_name: string;
     jurisdiction_name: string;
@@ -96,9 +97,9 @@ export async function generateMetadata({
     };
   }
   return {
-    title: `${casino.name} — Verified Data & Intelligence | SavvyEdge`,
+    title: `${casino.name} — Casino Data & Intelligence | SavvyEdge`,
     description: `Independently audited intelligence and active bonus terms for ${casino.name}. Licensed by ${
-      casino.license?.regulator_name || "verified authorities"
+      casino.license?.regulator_name || "the listed licensing authorities"
     }.`,
   };
 }
@@ -120,7 +121,7 @@ export default async function CasinoDetailPage({
           </div>
           <h1 className="text-2xl font-extrabold text-white">Casino Not Found</h1>
           <p className="text-slate-400 text-sm">
-            We couldn&apos;t locate any verified casino record for &quot;{slug}&quot;.
+            We couldn&apos;t locate an eligible casino record for &quot;{slug}&quot;.
           </p>
           <div className="pt-2">
             <Link
@@ -135,13 +136,13 @@ export default async function CasinoDetailPage({
     );
   }
 
-  const verifiedDateStr = casino.verified_at
+  const lastCheckedDateStr = casino.verified_at
     ? new Date(casino.verified_at).toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
         year: "numeric",
       })
-    : "Verification Pending";
+    : "Not available";
 
   return (
     <div className="space-y-8">
@@ -170,9 +171,7 @@ export default async function CasinoDetailPage({
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
                   {casino.name}
                 </h1>
-                <span className="bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/30 font-semibold text-xs px-3 py-1 rounded-full tracking-wider uppercase flex items-center gap-1">
-                  <span>✓</span> Verified
-                </span>
+                <VerificationBadge eligible={casino.is_verified} />
               </div>
               <p className="text-xs sm:text-sm text-slate-400">
                 {casino.license ? (
@@ -191,7 +190,7 @@ export default async function CasinoDetailPage({
                     </span>
                   </>
                 ) : (
-                  "Active Operating License Verified"
+                  "License details unavailable"
                 )}
               </p>
             </div>
@@ -207,8 +206,8 @@ export default async function CasinoDetailPage({
               Visit Operator ↗
             </a>
             <span className="text-xs text-slate-400">
-              Verified Date:{" "}
-              <span className="font-mono text-slate-200">{verifiedDateStr}</span>
+              Last checked:{" "}
+              <span className="font-mono text-slate-200">{lastCheckedDateStr}</span>
             </span>
           </div>
         </div>
@@ -220,7 +219,7 @@ export default async function CasinoDetailPage({
         <div>
           <span className="font-semibold">Data Transparency Notice:</span>{" "}
           Sourced from public operator terms and regulatory records. Last checked:{" "}
-          <span className="font-mono text-amber-200">{verifiedDateStr}</span>.
+          <span className="font-mono text-amber-200">{lastCheckedDateStr}</span>.
         </div>
       </div>
 
@@ -310,32 +309,32 @@ export default async function CasinoDetailPage({
         )}
       </div>
 
-      {/* Verified Games & RTP Section */}
+      {/* Tracked Games & RTP Section */}
       <div className="space-y-4">
         <div>
           <h2 className="text-xl font-bold text-white tracking-tight">
-            Verified Games &amp; RTP
+            Tracked Games &amp; RTP
           </h2>
           <p className="text-xs text-slate-400 mt-1">
-            Games we&apos;ve independently verified this casino offers, with RTP tracked over time. This shows the game&apos;s published RTP — not a casino-specific comparison.
+            Games recorded for this casino, with RTP tracked over time. This shows the game&apos;s published RTP — not a casino-specific comparison.
           </p>
         </div>
 
         {!casino.games || casino.games.length === 0 ? (
           <div className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-8 text-center text-slate-400 text-sm">
-            We haven&apos;t verified specific games for this casino yet. Our verified game catalog is actively expanding — check back soon.
+            We don&apos;t have tracked games for this casino yet. Our game catalog is actively expanding — check back soon.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
             {casino.games.map((game, idx) => {
               const rtpStr = game.rtp_current !== null ? `${game.rtp_current}%` : "RTP not available";
-              const verifiedDate = game.verified_at
+              const lastCheckedDate = game.verified_at
                 ? new Date(game.verified_at).toLocaleDateString("en-US", {
                     month: "short",
                     day: "numeric",
                     year: "numeric",
                   })
-                : "Verified";
+                : "Not available";
 
               return (
                 <div
@@ -368,7 +367,7 @@ export default async function CasinoDetailPage({
                   </div>
 
                   <div className="text-[10px] text-slate-500 font-mono text-right">
-                    Verified: {verifiedDate}
+                    Last checked: {lastCheckedDate}
                   </div>
                 </div>
               );

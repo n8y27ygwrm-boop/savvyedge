@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useMemo } from "react";
 import BonusCalculator from "./BonusCalculator";
+import VerificationBadge from "@/components/VerificationBadge";
 
 export interface BonusItem {
   id: string;
@@ -106,14 +107,14 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
       <div className="border-b border-slate-800/80 pb-6 space-y-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-[#10b981] uppercase tracking-wider">
           <span>Intelligence</span> &bull; <span>True Value Scoring</span>{" "}
-          &bull; <span>Verified</span>
+          &bull; <span>Source Tracked</span>
         </div>
         <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
-          Verified Bonus Intelligence
+          Bonus Intelligence
         </h1>
         <p className="text-slate-400 text-sm max-w-2xl leading-relaxed">
           Every bonus is scraped directly from operator T&amp;Cs, scored with
-          our True Value formula, and independently verified. No casino pays for
+          our True Value formula, and checked against source evidence. No casino pays for
           placement.
         </p>
       </div>
@@ -216,15 +217,10 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                         {bonus.casino.name}
                       </Link>
                       <div>
-                        {bonus.is_verified ? (
-                          <span className="bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/30 font-semibold text-[9px] px-1.5 py-0.5 rounded-full tracking-wider uppercase">
-                            Verified
-                          </span>
-                        ) : (
-                          <span className="bg-zinc-800 text-zinc-400 border border-zinc-700/60 font-medium text-[9px] px-1.5 py-0.5 rounded-full tracking-wider uppercase">
-                            Verification Pending
-                          </span>
-                        )}
+                        <VerificationBadge
+                          eligible={Boolean(bonus.is_verified)}
+                          compact
+                        />
                       </div>
                     </div>
                   </div>

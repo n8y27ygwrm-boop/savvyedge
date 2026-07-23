@@ -81,7 +81,7 @@ export default function CompareClient({ casinos }: { casinos: CasinoBasic[] }) {
           <div>
             <h2 className="text-base font-bold text-white">Select Casinos to Compare</h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Choose 2 or 3 operators from the verified directory ({selectedSlugs.length}/3 selected).
+              Choose 2 or 3 operators from the eligible directory ({selectedSlugs.length}/3 selected).
             </p>
           </div>
           <button
@@ -148,7 +148,7 @@ export default function CompareClient({ casinos }: { casinos: CasinoBasic[] }) {
       {comparisonData && !loading && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {comparisonData.map((item) => {
-            const lastVerifiedStr = item.verified_at
+            const lastCheckedStr = item.verified_at
               ? new Date(item.verified_at).toLocaleDateString("en-US", {
                   month: "short",
                   day: "numeric",
@@ -185,7 +185,7 @@ export default function CompareClient({ casinos }: { casinos: CasinoBasic[] }) {
                     )}
                   </div>
                   <div className="text-xs text-slate-400">
-                    Last Verified: <span className="font-mono text-slate-300">{lastVerifiedStr}</span>
+                    Last checked: <span className="font-mono text-slate-300">{lastCheckedStr}</span>
                   </div>
                 </div>
 
@@ -198,7 +198,7 @@ export default function CompareClient({ casinos }: { casinos: CasinoBasic[] }) {
                     </span>
                     {item.license ? (
                       <div className="space-y-1">
-                        <span className="bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/30 font-semibold px-2 py-0.5 rounded-full inline-block">
+                        <span className="bg-slate-800 text-slate-300 border border-slate-700/60 font-semibold px-2 py-0.5 rounded-full inline-block">
                           {item.license.regulator_name} ({item.license.jurisdiction_name})
                         </span>
                         <div className="text-slate-400 font-mono text-[11px]">
@@ -207,7 +207,7 @@ export default function CompareClient({ casinos }: { casinos: CasinoBasic[] }) {
                       </div>
                     ) : (
                       <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold px-2.5 py-1 rounded-lg inline-block">
-                        Unlicensed / Unverified
+                        License details unavailable
                       </span>
                     )}
                   </div>

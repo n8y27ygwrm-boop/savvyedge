@@ -32,12 +32,13 @@ export async function GET(request: Request) {
 
     const publicCasinoWhere = PublicationGateService.whereCasinoPublic();
 
-    // Fetch casinos based on slugs and public gate
-    const casinos = await prisma.casino.findMany({
+    // Database predicates reduce the candidate set; runtime predicates remain authoritative.
+    const candidateCasinos = await prisma.casino.findMany({
       where: {
         AND: [{ slug: { in: slugs } }, publicCasinoWhere],
       },
       include: {
+        history_events: true,
         licenses: {
           include: {
             regulator: {
@@ -50,21 +51,24 @@ export async function GET(request: Request) {
         bonuses: {
           where: PublicationGateService.whereBonusPublic(),
           orderBy: { created_at: "desc" },
-          take: 1,
+          include: {
+            history_events: true,
+          },
         },
       },
     });
 
-    const foundSlugs = casinos.map((c) => c.slug.toLowerCase());
-    const missingSlugs = slugs.filter((s) => !foundSlugs.includes(s.toLowerCase()));
+    const casinos = candidateCasinos.filter((casino) =>
+      PublicationGateService.isCasinoPubliclyEligible(casino)
+    );
 
-    if (missingSlugs.length > 0) {
+    if (casinos.length < 2) {
       return NextResponse.json(
         {
           data: null,
           meta: null,
           error: {
-            message: `The following casino slugs were not found: ${missingSlugs.join(", ")}`,
+            message: "Fewer than two requested casinos are currently eligible for comparison",
           },
         },
         { status: 400 }
@@ -83,7 +87,9 @@ export async function GET(request: Request) {
           },
         });
 
-        const activeLicense = casino.licenses[0];
+        const activeLicense = casino.licenses.find(
+          (license) => license.status === "ACTIVE" && license.verified_at !== null
+        );
         let licensePayload = null;
         if (activeLicense) {
           licensePayload = {
@@ -95,7 +101,9 @@ export async function GET(request: Request) {
           };
         }
 
-        const activeBonus = casino.bonuses[0];
+        const activeBonus = casino.bonuses.find((bonus) =>
+          PublicationGateService.isBonusPubliclyEligible(bonus, casino)
+        );
         let activeBonusPayload = null;
         if (activeBonus) {
           activeBonusPayload = {
@@ -123,9 +131,12 @@ export async function GET(request: Request) {
     );
 
     // Keep the order of returned casinos same as requested slugs
-    const orderedData = slugs.map((slug) =>
-      formattedData.find((c) => c.slug.toLowerCase() === slug.toLowerCase())
-    );
+    const orderedData = slugs.flatMap((slug) => {
+      const casino = formattedData.find(
+        (candidate) => candidate.slug.toLowerCase() === slug.toLowerCase()
+      );
+      return casino ? [casino] : [];
+    });
 
     return NextResponse.json({ data: orderedData, meta: null, error: null });
   } catch (error) {

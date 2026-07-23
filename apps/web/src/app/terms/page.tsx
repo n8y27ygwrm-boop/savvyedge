@@ -53,14 +53,14 @@ export default function TermsPage() {
         <section className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-6 space-y-3">
           <h2 className="text-lg font-bold text-white">3. Data Accuracy Disclaimer</h2>
           <p>
-            While our autonomous intelligence engine continuously verifies operator data against source T&amp;Cs, bonus terms and licensing details are controlled by third-party operators and may change without notice. Users are responsible for confirming terms directly on operator websites prior to depositing funds.
+            While our autonomous intelligence engine continuously checks operator data against source T&amp;Cs, bonus terms and licensing details are controlled by third-party operators and may change without notice. Users are responsible for confirming terms directly on operator websites prior to depositing funds.
           </p>
         </section>
 
         <section className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-6 space-y-3">
           <h2 className="text-lg font-bold text-white">4. Affiliate Disclosure</h2>
           <p>
-            SavvyEdge maintains commercial affiliate relationships with certain featured operators. Clicking links on our platform may generate referral commissions. Referral agreements do not influence mathematical scoring algorithms, True Value ratings, or audit verification statuses.
+            SavvyEdge maintains commercial affiliate relationships with certain featured operators. Clicking links on our platform may generate referral commissions. Referral agreements do not influence mathematical scoring algorithms, True Value ratings, or audit review statuses.
           </p>
         </section>
 

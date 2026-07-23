@@ -3,9 +3,9 @@ import { prisma } from "@savvyedge/database";
 import { PublicationGateService } from "@savvyedge/api";
 
 export const metadata = {
-  title: "Verified Casino Directory | SavvyEdge",
+  title: "Casino Directory | SavvyEdge",
   description:
-    "Browse verified online casinos with audited licenses, active bonuses, and real-time data transparency.",
+    "Browse publication-eligible online casinos with reviewed licenses, active bonuses, and real-time data transparency.",
 };
 
 export default async function CasinosPage({
@@ -75,7 +75,7 @@ export default async function CasinosPage({
         </div>
         <div className="bg-[#161e2e] border border-slate-800 px-4 py-2 rounded-xl text-xs font-mono text-[#0ea5e9] shrink-0 self-start sm:self-auto">
           Showing{" "}
-          <span className="font-bold text-white">{total}</span> verified
+          <span className="font-bold text-white">{total}</span> eligible
           operators
         </div>
       </div>
@@ -179,7 +179,7 @@ export default async function CasinosPage({
                 🔍
               </div>
               <h3 className="text-lg font-bold text-white">
-                No Verified Casinos Found
+                No Eligible Casinos Found
               </h3>
               <p className="text-sm text-slate-400 max-w-md mx-auto">
                 No casino records matched your current page query. Try resetting
@@ -199,13 +199,13 @@ export default async function CasinosPage({
               const licenseLabel = license
                 ? `${license.regulator.name}`
                 : casino.license_info || "License Pending";
-              const lastVerifiedStr = casino.verified_at
+              const lastCheckedStr = casino.verified_at
                 ? new Date(casino.verified_at).toLocaleDateString("en-US", {
                     month: "short",
                     day: "numeric",
                     year: "numeric",
                   })
-                : "Verification Pending";
+                : "Not available";
 
               return (
                 <div
@@ -224,16 +224,16 @@ export default async function CasinosPage({
                         <h3 className="text-lg font-bold text-white group-hover:text-[#0ea5e9] transition-colors">
                           {casino.name}
                         </h3>
-                        <span className="bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/30 font-semibold text-[10px] px-2 py-0.5 rounded-full tracking-wider uppercase">
+                        <span className="bg-slate-800 text-slate-300 border border-slate-700/60 font-semibold text-[10px] px-2 py-0.5 rounded-full tracking-wider uppercase">
                           {licenseLabel}
                         </span>
                       </div>
 
                       <div className="flex items-center gap-4 text-xs text-slate-400">
                         <span>
-                          Last Verified:{" "}
+                          Last checked:{" "}
                           <span className="font-mono text-slate-300">
-                            {lastVerifiedStr}
+                            {lastCheckedStr}
                           </span>
                         </span>
                       </div>
@@ -259,7 +259,7 @@ export default async function CasinosPage({
                       href={`/casinos/${casino.slug}`}
                       className="bg-[#0ea5e9] hover:bg-[#0ea5e9]/90 text-slate-950 font-bold px-5 py-2.5 rounded-xl text-xs text-center shadow-md shadow-[#0ea5e9]/10 transition-all hover:scale-[1.02]"
                     >
-                      See Verified Data
+                      See Casino Data
                     </Link>
                     <span className="text-[10px] text-slate-500 italic text-center md:text-right">
                       *We may earn a commission

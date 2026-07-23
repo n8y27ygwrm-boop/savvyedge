@@ -3,7 +3,7 @@ import Link from "next/link";
 export const metadata = {
   title: "About SavvyEdge | Verifiable Casino & Bonus Intelligence",
   description:
-    "Learn about SavvyEdge — an autonomous iGaming data engine delivering verified casino ratings, bonus analysis, and transparent metrics.",
+    "Learn about SavvyEdge — an autonomous iGaming data engine delivering source-tracked casino ratings, bonus analysis, and transparent metrics.",
 };
 
 export default function AboutPage() {
@@ -46,7 +46,7 @@ export default function AboutPage() {
         <section className="bg-[#161e2e] border border-slate-800/80 rounded-2xl p-6 space-y-3">
           <h2 className="text-lg font-bold text-white">Our Mission</h2>
           <p>
-            To give every player access to the same quality of verified, structured
+            To give every player access to the same quality of source-tracked, structured
             gambling intelligence that was previously only available to industry
             insiders. We replace guesswork and marketing hype with objective,
             timestamped metrics.
@@ -70,7 +70,7 @@ export default function AboutPage() {
             </div>
             <div className="bg-[#0b0f19] p-4 rounded-xl border border-slate-800">
               <span className="text-[#0ea5e9] font-bold text-xs uppercase tracking-wider block mb-1">
-                2. Fingerprinting &amp; Verification
+                2. Fingerprinting &amp; Source Review
               </span>
               <p className="text-xs text-slate-400">
                 Every extracted offer is cryptographically fingerprinted (SHA-256) to detect silent term modifications.

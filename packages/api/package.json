@@ -11,7 +11,8 @@
     "verify-discovery": "tsx scripts/verify-discovery-engine.ts",
     "verify-orchestrator": "tsx scripts/verify-orchestrator.ts",
     "verify-tvs": "tsx scripts/verify-tvs-calculator.ts",
-    "verify-trust": "tsx scripts/verify-phase1-trust.ts"
+    "verify-trust": "tsx scripts/verify-phase1-trust.ts",
+    "test": "vitest run tests --maxWorkers=1"
   },
   "dependencies": {
     "@savvyedge/database": "workspace:*",
@@ -22,6 +23,7 @@
     "@savvyedge/config": "workspace:*",
     "@types/node": "^20.0.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.10"
   }
 }

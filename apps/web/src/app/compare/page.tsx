@@ -5,7 +5,7 @@ import CompareClient from "./CompareClient";
 
 export const metadata = {
   title: "Compare Online Casinos | SavvyEdge",
-  description: "Compare verified online casino operators side by side.",
+  description: "Compare publication-eligible online casino operators side by side.",
 };
 
 export default async function ComparePage() {
@@ -46,7 +46,7 @@ export default async function ComparePage() {
             Compare Casinos
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            Side-by-side comparison of verified online casino operators, licensing, and bonus terms.
+            Side-by-side comparison of eligible online casino operators, licensing, and bonus terms.
           </p>
         </div>
       </div>

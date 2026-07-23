@@ -45,7 +45,7 @@ export default function DisclaimerPage() {
             <span>⚙️</span> Autonomous Data Sourcing
           </h2>
           <p>
-            Bonus values, RTP figures, and licensing details are sourced from public operator terms and autonomously verified by our software engine. While we strive for 100% accuracy, operator terms can change dynamically. Always confirm terms on the operator website before playing.
+            Bonus values, RTP figures, and licensing details are sourced from public operator terms and checked against available source records by our software engine. While we strive for 100% accuracy, operator terms can change dynamically. Always confirm terms on the operator website before playing.
           </p>
         </div>
 
@@ -63,7 +63,7 @@ export default function DisclaimerPage() {
             <span>🤝</span> Independent Rankings &amp; Commercial Relationships
           </h2>
           <p>
-            SavvyEdge receives referral commissions from featured partner casinos. However, commercial partnerships have zero impact on data verification, True Value Score calculations, or automated license checks.
+            SavvyEdge receives referral commissions from featured partner casinos. However, commercial partnerships have zero impact on data review, True Value Score calculations, or automated license checks.
           </p>
         </div>
 
