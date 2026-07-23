@@ -14,6 +14,7 @@ export interface BonusItem {
   status: string;
   valid_until: Date | string | null;
   verified_at: Date | string | null;
+  is_verified?: boolean;
   casino: {
     id: string;
     slug: string;
@@ -33,7 +34,7 @@ function tvsColor(score: number): string {
 function typeBadgeColor(type: string): string {
   switch (type) {
     case "WELCOME":
-      return "#0ea5e9";
+      return "#10b981";
     case "FREE_SPINS":
       return "#a855f7";
     case "RELOAD":
@@ -103,7 +104,7 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
 
       {/* Page Header */}
       <div className="border-b border-slate-800/80 pb-6 space-y-3">
-        <div className="flex items-center gap-2 text-xs font-semibold text-[#0ea5e9] uppercase tracking-wider">
+        <div className="flex items-center gap-2 text-xs font-semibold text-[#10b981] uppercase tracking-wider">
           <span>Intelligence</span> &bull; <span>True Value Scoring</span>{" "}
           &bull; <span>Verified</span>
         </div>
@@ -126,7 +127,7 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by casino name..."
-            className="w-full bg-[#161e2e] text-sm text-[#f3f4f6] placeholder-slate-400 px-4 py-2.5 rounded-xl border border-slate-700/80 focus:outline-none focus:border-[#0ea5e9] focus:ring-1 focus:ring-[#0ea5e9] transition-all"
+            className="w-full bg-[#161e2e] text-sm text-[#f3f4f6] placeholder-slate-400 px-4 py-2.5 rounded-xl border border-slate-700/80 focus:outline-none focus:border-[#10b981]/50 focus:ring-1 focus:ring-[#10b981]/30 transition-all"
           />
           {searchQuery && (
             <button
@@ -148,7 +149,7 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                 onClick={() => setActivePill(pill)}
                 className={`px-4 py-1.5 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
                   isActive
-                    ? "bg-[#0ea5e9] text-slate-950 border-[#0ea5e9]"
+                    ? "bg-[#10b981]/20 text-[#10b981] border-[#10b981]/40"
                     : "bg-[#161e2e] text-slate-300 border-slate-700/60 hover:border-slate-600 hover:text-white"
                 }`}
               >
@@ -175,7 +176,7 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                 setActivePill("All");
                 setSearchQuery("");
               }}
-              className="inline-block bg-[#0ea5e9] text-slate-950 font-semibold px-4 py-2 rounded-lg text-xs hover:bg-[#0ea5e9]/90 transition-all"
+              className="inline-block bg-[#10b981] text-slate-950 font-semibold px-4 py-2 rounded-lg text-xs hover:bg-[#10b981]/90 transition-all"
             >
               Reset Filters
             </button>
@@ -197,27 +198,33 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                 key={bonus.id}
                 className="bg-[#161e2e] border border-white/[0.06] rounded-2xl p-6 space-y-4 transition-all duration-300 hover:-translate-y-1 hover:border-slate-700"
                 style={{
-                  borderLeft: "3px solid #0ea5e9",
+                  borderLeft: "3px solid #10b981",
                   animation: `fade-up 0.4s ease ${i * 0.08}s both`,
                 }}
               >
                 {/* Casino Name + Badges */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#0b0f19] border border-slate-800 flex items-center justify-center text-[#0ea5e9] font-extrabold text-lg">
+                    <div className="w-10 h-10 rounded-xl bg-[#0b0f19] border border-slate-800 flex items-center justify-center text-[#10b981] font-extrabold text-lg">
                       {bonus.casino.name.charAt(0)}
                     </div>
                     <div>
                       <Link
                         href={`/casinos/${bonus.casino.slug}`}
-                        className="text-base font-bold text-white hover:text-[#0ea5e9] transition-colors"
+                        className="text-base font-bold text-white hover:text-[#10b981] transition-colors"
                       >
                         {bonus.casino.name}
                       </Link>
                       <div>
-                        <span className="bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/30 font-semibold text-[9px] px-1.5 py-0.5 rounded-full tracking-wider uppercase">
-                          Verified
-                        </span>
+                        {bonus.is_verified ? (
+                          <span className="bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/30 font-semibold text-[9px] px-1.5 py-0.5 rounded-full tracking-wider uppercase">
+                            Verified
+                          </span>
+                        ) : (
+                          <span className="bg-zinc-800 text-zinc-400 border border-zinc-700/60 font-medium text-[9px] px-1.5 py-0.5 rounded-full tracking-wider uppercase">
+                            Verification Pending
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -286,9 +293,9 @@ export default function BonusesClient({ bonuses }: { bonuses: BonusItem[] }) {
                 {/* CTA */}
                 <Link
                   href={`/casinos/${bonus.casino.slug}`}
-                  className="block text-center bg-[#0b0f19] hover:bg-slate-800 border border-slate-700/60 text-[#0ea5e9] font-semibold text-xs py-2.5 rounded-xl transition-all hover:border-[#0ea5e9]/40"
+                  className="block text-center bg-zinc-900/60 hover:bg-zinc-800/80 border border-white/[0.08] hover:border-emerald-500/30 text-zinc-300 hover:text-emerald-400 font-medium text-xs py-2 rounded-lg transition-all"
                 >
-                  View Full Terms →
+                  Verify Terms ↗
                 </Link>
               </div>
             );

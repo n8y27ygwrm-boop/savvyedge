@@ -1,4 +1,5 @@
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 import BonusesClient from "./BonusesClient";
 
 export const metadata = {
@@ -8,19 +9,27 @@ export const metadata = {
 };
 
 export default async function BonusesPage() {
-  const bonuses = await prisma.bonus.findMany({
-    take: 50,
+  const rawBonuses = await prisma.bonus.findMany({
+    where: PublicationGateService.whereBonusPublic(),
     orderBy: { true_value_score: "desc" },
     include: {
+      history_events: true,
       casino: {
-        select: {
-          id: true,
-          slug: true,
-          name: true,
+        include: {
+          history_events: true,
+          licenses: true,
         },
       },
     },
   });
 
-  return <BonusesClient bonuses={bonuses} />;
+  const eligibleBonuses = rawBonuses
+    .filter((b) => PublicationGateService.isBonusPubliclyEligible(b))
+    .slice(0, 50)
+    .map((b) => ({
+      ...b,
+      is_verified: PublicationGateService.isVerificationBadgeEligible(b),
+    }));
+
+  return <BonusesClient bonuses={eligibleBonuses} />;
 }

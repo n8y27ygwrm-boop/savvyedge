@@ -1,15 +1,26 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export async function GET() {
   try {
-    const bonuses = await prisma.bonus.findMany({
-      take: 50,
+    const rawBonuses = await prisma.bonus.findMany({
+      where: PublicationGateService.whereBonusPublic(),
       orderBy: { true_value_score: "desc" },
       include: {
-        casino: true,
+        history_events: true,
+        casino: {
+          include: {
+            history_events: true,
+            licenses: true,
+          },
+        },
       },
     });
+
+    const bonuses = rawBonuses
+      .filter((b) => PublicationGateService.isBonusPubliclyEligible(b))
+      .slice(0, 50);
 
     const data = bonuses.map((b) => ({
       id: b.id,

@@ -1,4 +1,5 @@
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 import SlotsClient from "./SlotsClient";
 
 export const metadata = {
@@ -8,16 +9,30 @@ export const metadata = {
 };
 
 export default async function SlotsPage() {
-  const slots = await prisma.slot.findMany({
-    take: 50,
+  const rawSlots = await prisma.slot.findMany({
+    where: PublicationGateService.whereSlotPublic(),
     orderBy: { rtp_current: "desc" },
     include: {
       provider: true,
       rtp_history: {
         orderBy: { recorded_at: "asc" },
       },
+      casino_slots: {
+        include: {
+          casino: {
+            include: {
+              history_events: true,
+              licenses: true,
+            },
+          },
+        },
+      },
     },
   });
 
-  return <SlotsClient slots={slots} />;
+  const eligibleSlots = rawSlots
+    .filter((s) => PublicationGateService.isSlotPubliclyEligible(s))
+    .slice(0, 50);
+
+  return <SlotsClient slots={eligibleSlots} />;
 }

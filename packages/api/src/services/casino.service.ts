@@ -27,7 +27,9 @@ export class CasinoService {
       where: { slug },
       include: {
         bonuses: true,
-      }
+        licenses: true,
+        history_events: true,
+      },
     });
   }
 

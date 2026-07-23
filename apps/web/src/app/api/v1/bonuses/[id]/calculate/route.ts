@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { BonusService } from "@savvyedge/api";
+import { BonusService, PublicationGateService } from "@savvyedge/api";
 import { prisma } from "@savvyedge/database";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -11,6 +11,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const bonus = await prisma.bonus.findUnique({
       where: { id },
+      include: {
+        history_events: true,
+        casino: {
+          include: {
+            history_events: true,
+            licenses: true,
+          },
+        },
+      },
     });
 
     if (!bonus) {
@@ -20,17 +29,52 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       );
     }
 
+    const validation = PublicationGateService.validateCalculatorEligibility(bonus, bonus.casino);
+    if (validation.status !== "VALID") {
+      const statusCode = validation.status === "INELIGIBLE_BONUS" ? 403 : 400;
+      return NextResponse.json(
+        {
+          data: null,
+          meta: null,
+          error: { message: validation.reason || "Bonus is ineligible for public calculation", code: validation.status },
+        },
+        { status: statusCode }
+      );
+    }
+
     let gameContributionPct = 100;
     let slotRtp: number | null = null;
 
     if (slotId) {
       const slot = await prisma.slot.findUnique({
         where: { id: slotId },
+        include: {
+          casino_slots: {
+            include: {
+              casino: {
+                include: {
+                  history_events: true,
+                  licenses: true,
+                },
+              },
+            },
+          },
+        },
       });
-      if (slot) {
-        gameContributionPct = slot.wagering_contribution_pct;
-        slotRtp = slot.rtp_current;
+
+      if (!slot || !PublicationGateService.isSlotPubliclyEligible(slot)) {
+        return NextResponse.json(
+          {
+            data: null,
+            meta: null,
+            error: { message: "Requested game is ineligible for public calculation", code: "INELIGIBLE_SLOT" },
+          },
+          { status: 403 }
+        );
       }
+
+      gameContributionPct = slot.wagering_contribution_pct;
+      slotRtp = slot.rtp_current;
     }
 
     const result = BonusService.calculateBonusEV({

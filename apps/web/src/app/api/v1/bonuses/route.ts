@@ -1,15 +1,44 @@
 import { NextResponse } from "next/server";
-import { BonusService } from "@savvyedge/api";
+import { BonusService, PublicationGateService, verifyApiAuthorization } from "@savvyedge/api";
 import { CreateBonusInputSchema } from "@savvyedge/types";
+import { prisma } from "@savvyedge/database";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "1", 10);
     const limit = parseInt(searchParams.get("limit") || "50", 10);
+    const skip = (page - 1) * limit;
 
-    const result = await BonusService.getBonuses({ page, limit });
-    return NextResponse.json({ data: result.data, meta: result.meta, error: null });
+    const whereClause = PublicationGateService.whereBonusPublic();
+
+    const rawBonuses = await prisma.bonus.findMany({
+      where: whereClause,
+      orderBy: { true_value_score: "desc" },
+      include: {
+        history_events: true,
+        casino: {
+          include: {
+            history_events: true,
+            licenses: true,
+          },
+        },
+      },
+    });
+
+    const eligibleBonuses = rawBonuses.filter((b) =>
+      PublicationGateService.isBonusPubliclyEligible(b)
+    );
+
+    const total = eligibleBonuses.length;
+    const bonuses = eligibleBonuses.slice(skip, skip + limit);
+    const totalPages = Math.ceil(total / limit) || 1;
+
+    return NextResponse.json({
+      data: bonuses,
+      meta: { page, limit, total, totalPages },
+      error: null,
+    });
   } catch (error) {
     return NextResponse.json(
       { data: null, meta: null, error: { message: "Internal server error" } },
@@ -19,12 +48,17 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = verifyApiAuthorization(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { data: null, meta: null, error: { message: auth.errorMessage } },
+      { status: auth.statusCode || 401 }
+    );
+  }
+
   try {
     const body = await request.json();
-    
-    // Convert date strings back to Date objects for validation if necessary,
-    // but Zod handles this if we use .coerce.date() in the schema.
-    // For now, let's assume body contains valid ISO date strings for date fields
+
     const parsed = CreateBonusInputSchema.safeParse({
       ...body,
       valid_from: body.valid_from ? new Date(body.valid_from) : null,

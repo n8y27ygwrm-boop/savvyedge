@@ -10,7 +10,8 @@
     "verify-real-scraping": "tsx scripts/verify-real-scraping.ts",
     "verify-discovery": "tsx scripts/verify-discovery-engine.ts",
     "verify-orchestrator": "tsx scripts/verify-orchestrator.ts",
-    "verify-tvs": "tsx scripts/verify-tvs-calculator.ts"
+    "verify-tvs": "tsx scripts/verify-tvs-calculator.ts",
+    "verify-trust": "tsx scripts/verify-phase1-trust.ts"
   },
   "dependencies": {
     "@savvyedge/database": "workspace:*",

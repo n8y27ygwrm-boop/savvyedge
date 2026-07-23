@@ -4,4 +4,5 @@ export * from "./services/ingestion.service";
 export * from "./services/job-queue.service";
 export * from "./services/discovery.service";
 export * from "./services/orchestrator.service";
-
+export * from "./services/publication-gate.service";
+export * from "./utils/auth.utils";

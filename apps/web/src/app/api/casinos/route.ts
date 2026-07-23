@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export async function GET(request: Request) {
   try {
@@ -10,7 +11,11 @@ export async function GET(request: Request) {
       const casino = await prisma.casino.findUnique({
         where: { slug },
         include: {
-          bonuses: true,
+          history_events: true,
+          bonuses: {
+            where: PublicationGateService.whereBonusPublic(),
+            include: { history_events: true },
+          },
           licenses: {
             include: {
               regulator: {
@@ -30,7 +35,7 @@ export async function GET(request: Request) {
         },
       });
 
-      if (!casino) {
+      if (!casino || !PublicationGateService.isCasinoPubliclyEligible(casino)) {
         return NextResponse.json(
           { error: "Casino not found" },
           { status: 404, headers: { "Content-Type": "application/json" } }
@@ -52,17 +57,19 @@ export async function GET(request: Request) {
               license_no: license.license_no,
             }
           : null,
-        bonuses: casino.bonuses.map((b) => ({
-          id: b.id,
-          type: b.type,
-          headline_value: b.headline_value,
-          wagering_requirement: b.wagering_requirement,
-          max_conversion: b.max_conversion,
-          true_value_score: b.true_value_score,
-          status: b.status,
-          valid_until: b.valid_until,
-          verified_at: b.verified_at,
-        })),
+        bonuses: casino.bonuses
+          .filter((b) => PublicationGateService.isBonusPubliclyEligible(b, casino))
+          .map((b) => ({
+            id: b.id,
+            type: b.type,
+            headline_value: b.headline_value,
+            wagering_requirement: b.wagering_requirement,
+            max_conversion: b.max_conversion,
+            true_value_score: b.true_value_score,
+            status: b.status,
+            valid_until: b.valid_until,
+            verified_at: b.verified_at,
+          })),
         games: casino.casino_slots.map((cs) => ({
           slot_name: cs.slot.name,
           provider_name: cs.slot.provider.name,
@@ -77,10 +84,11 @@ export async function GET(request: Request) {
       });
     }
 
-    const casinos = await prisma.casino.findMany({
-      take: 50,
+    const rawCasinos = await prisma.casino.findMany({
+      where: PublicationGateService.whereCasinoPublic(),
       orderBy: { name: "asc" },
       include: {
+        history_events: true,
         licenses: {
           include: {
             regulator: {
@@ -92,6 +100,10 @@ export async function GET(request: Request) {
         },
       },
     });
+
+    const casinos = rawCasinos
+      .filter((c) => PublicationGateService.isCasinoPubliclyEligible(c))
+      .slice(0, 50);
 
     const data = casinos.map((c) => {
       const license = c.licenses[0];

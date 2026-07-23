@@ -30,33 +30,33 @@ export default function RootLayout({
       lang="en"
       className={`${outfit.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-[#0b0f19] text-[#f3f4f6] font-sans selection:bg-[#0ea5e9]/30 selection:text-[#0ea5e9]">
+      <body className="min-h-full flex flex-col bg-[#0b0f19] text-[#f3f4f6] font-sans selection:bg-[#10b981]/30 selection:text-[#10b981]">
         {/* Sticky Navbar (64px) */}
         <header className="sticky top-0 z-50 h-16 bg-[#0b0f19]/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-8 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <Link href="/" className="flex items-center gap-2 group">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#0ea5e9] to-[#10b981] flex items-center justify-center font-bold text-slate-950 text-lg shadow-md shadow-[#0ea5e9]/20 group-hover:scale-105 transition-transform">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#10b981] to-emerald-600 flex items-center justify-center font-bold text-slate-950 text-lg shadow-md shadow-emerald-500/20 group-hover:scale-105 transition-transform">
                 S
               </div>
-              <span className="font-extrabold text-xl tracking-tight text-white group-hover:text-[#0ea5e9] transition-colors">
-                Savvy<span className="text-[#0ea5e9]">Edge</span>
+              <span className="font-extrabold text-xl tracking-tight text-white group-hover:text-[#10b981] transition-colors">
+                Savvy<span className="text-[#10b981]">Edge</span>
               </span>
             </Link>
 
             <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
-              <Link href="/casinos" className="hover:text-[#0ea5e9] transition-colors">
+              <Link href="/casinos" className="hover:text-[#10b981] transition-colors">
                 Casinos
               </Link>
-              <Link href="/compare" className="hover:text-[#0ea5e9] transition-colors">
+              <Link href="/compare" className="hover:text-[#10b981] transition-colors">
                 Compare
               </Link>
-              <Link href="/bonuses" className="hover:text-[#0ea5e9] transition-colors">
+              <Link href="/bonuses" className="hover:text-[#10b981] transition-colors">
                 Bonuses
               </Link>
-              <Link href="/slots" className="hover:text-[#0ea5e9] transition-colors">
+              <Link href="/slots" className="hover:text-[#10b981] transition-colors">
                 Slots
               </Link>
-              <Link href="/methodology" className="hover:text-[#0ea5e9] transition-colors">
+              <Link href="/methodology" className="hover:text-[#10b981] transition-colors">
                 Methodology
               </Link>
             </nav>
@@ -67,14 +67,14 @@ export default function RootLayout({
               <input
                 type="text"
                 placeholder="Search casinos, bonuses..."
-                className="bg-[#161e2e] text-sm text-[#f3f4f6] placeholder-[#9ca3af] px-3 py-1.5 rounded-lg border border-slate-700/60 focus:outline-none focus:border-[#0ea5e9] focus:ring-1 focus:ring-[#0ea5e9] w-48 lg:w-64 transition-all"
+                className="bg-[#161e2e] text-sm text-[#f3f4f6] placeholder-[#9ca3af] px-3 py-1.5 rounded-lg border border-slate-700/60 focus:outline-none focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] w-48 lg:w-64 transition-all"
               />
             </div>
             <Link
               href="/casinos"
-              className="bg-[#0ea5e9] hover:bg-[#0ea5e9]/90 text-slate-950 font-semibold px-4 py-1.5 rounded-lg text-sm shadow-sm transition-all"
+              className="bg-zinc-900/80 hover:bg-zinc-800 border border-white/[0.08] hover:border-emerald-500/30 text-zinc-200 hover:text-emerald-400 font-medium px-3.5 py-1.5 rounded-lg text-xs transition-all"
             >
-              Verify Now
+              Verify Now ↗
             </Link>
           </div>
         </header>

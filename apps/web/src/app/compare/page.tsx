@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 import CompareClient from "./CompareClient";
 
 export const metadata = {
@@ -8,16 +9,24 @@ export const metadata = {
 };
 
 export default async function ComparePage() {
-  const casinos = await prisma.casino.findMany({
-    select: {
-      id: true,
-      slug: true,
-      name: true,
+  const rawCasinos = await prisma.casino.findMany({
+    where: PublicationGateService.whereCasinoPublic(),
+    include: {
+      history_events: true,
+      licenses: true,
     },
     orderBy: {
       name: "asc",
     },
   });
+
+  const casinos = rawCasinos
+    .filter((c) => PublicationGateService.isCasinoPubliclyEligible(c))
+    .map((c) => ({
+      id: c.id,
+      slug: c.slug,
+      name: c.name,
+    }));
 
   return (
     <div className="space-y-8">

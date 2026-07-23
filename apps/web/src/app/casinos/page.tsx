@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export const metadata = {
   title: "Verified Casino Directory | SavvyEdge",
@@ -17,26 +18,37 @@ export default async function CasinosPage({
   const limit = parseInt(params.limit || "50", 10);
   const skip = (page - 1) * limit;
 
-  const [casinos, total] = await Promise.all([
-    prisma.casino.findMany({
-      skip,
-      take: limit,
-      orderBy: { name: "asc" },
-      include: {
-        bonuses: true,
-        licenses: {
-          include: {
-            regulator: {
-              include: {
-                jurisdiction: true,
-              },
+  const publicWhere = PublicationGateService.whereCasinoPublic();
+
+  const allPublicCasinos = await prisma.casino.findMany({
+    where: publicWhere,
+    orderBy: { name: "asc" },
+    include: {
+      history_events: true,
+      bonuses: {
+        where: PublicationGateService.whereBonusPublic(),
+        include: {
+          history_events: true,
+        },
+      },
+      licenses: {
+        include: {
+          regulator: {
+            include: {
+              jurisdiction: true,
             },
           },
         },
       },
-    }),
-    prisma.casino.count(),
-  ]);
+    },
+  });
+
+  const eligibleCasinos = allPublicCasinos.filter((c) =>
+    PublicationGateService.isCasinoPubliclyEligible(c)
+  );
+
+  const total = eligibleCasinos.length;
+  const casinos = eligibleCasinos.slice(skip, skip + limit);
 
   const totalPages = Math.ceil(total / limit) || 1;
 
@@ -182,20 +194,18 @@ export default async function CasinosPage({
             </div>
           ) : (
             casinos.map((casino) => {
-              const activeBonus =
-                casino.bonuses?.find((b) => b.status === "ACTIVE") ||
-                casino.bonuses?.[0];
+              const activeBonus = casino.bonuses?.[0];
               const license = casino.licenses?.[0];
               const licenseLabel = license
                 ? `${license.regulator.name}`
-                : casino.license_info || "VERIFIED LICENSE";
+                : casino.license_info || "License Pending";
               const lastVerifiedStr = casino.verified_at
                 ? new Date(casino.verified_at).toLocaleDateString("en-US", {
                     month: "short",
                     day: "numeric",
                     year: "numeric",
                   })
-                : "Recently";
+                : "Verification Pending";
 
               return (
                 <div

@@ -78,24 +78,26 @@ export default function BonusCalculator({
   const selectedSlot = slots.find((s) => s.id === selectedSlotId);
 
   return (
-    <div className="mt-4 border-t border-slate-800/80 pt-3">
+    <div className="mt-3 pt-2 border-t border-white/[0.06]">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between text-xs font-semibold text-[#0ea5e9] hover:text-[#0ea5e9]/80 py-1 transition-colors cursor-pointer"
+        className="w-full flex items-center justify-between text-[11px] font-medium text-zinc-400 hover:text-emerald-400 py-1.5 px-3 rounded-lg bg-zinc-900/50 border border-white/[0.08] backdrop-blur-sm transition-all cursor-pointer"
       >
-        <span className="flex items-center gap-1.5">
-          <span>🧮</span>
-          <span>{isOpen ? "Hide Value Calculator" : "Calculate My Value"}</span>
+        <span className="flex items-center gap-2">
+          <span className="text-zinc-500">🧮</span>
+          <span className="tracking-wide text-zinc-300">
+            {isOpen ? "Hide EV Calculator" : "Calculate Value (EV)"}
+          </span>
         </span>
-        <span>{isOpen ? "▲" : "▼"}</span>
+        <span className="text-[10px] text-zinc-500">{isOpen ? "▲" : "▼"}</span>
       </button>
 
       {isOpen && (
-        <div className="mt-3 bg-[#0b0f19] border border-slate-800/80 rounded-xl p-4 space-y-4 text-xs">
+        <div className="mt-2 bg-[#090d14]/90 border border-white/[0.08] rounded-xl p-3 space-y-2.5 backdrop-blur-md shadow-xl shadow-black/50">
           {/* Inputs */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
-              <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
+              <label className="block text-[10px] font-medium uppercase tracking-wider text-zinc-400 mb-1">
                 Deposit Amount (€)
               </label>
               <input
@@ -103,19 +105,19 @@ export default function BonusCalculator({
                 min="1"
                 value={depositAmount}
                 onChange={(e) => setDepositAmount(Math.max(1, Number(e.target.value)))}
-                className="w-full bg-[#161e2e] border border-slate-700/80 rounded-lg px-3 py-1.5 text-slate-200 text-xs focus:outline-none focus:border-[#0ea5e9] focus:ring-1 focus:ring-[#0ea5e9]"
+                className="w-full bg-zinc-900/70 border border-white/[0.08] focus:border-[#10b981]/50 focus:ring-1 focus:ring-[#10b981]/30 rounded-lg px-2.5 py-1 text-xs font-mono tabular-nums text-zinc-200 focus:outline-none backdrop-blur-sm transition-all"
               />
             </div>
 
             {slots.length > 0 && (
               <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                <label className="block text-[10px] font-medium uppercase tracking-wider text-zinc-400 mb-1">
                   Game / Slot (Optional)
                 </label>
                 <select
                   value={selectedSlotId}
                   onChange={(e) => setSelectedSlotId(e.target.value)}
-                  className="w-full bg-[#161e2e] border border-slate-700/80 rounded-lg px-3 py-1.5 text-slate-200 text-xs focus:outline-none focus:border-[#0ea5e9] focus:ring-1 focus:ring-[#0ea5e9]"
+                  className="w-full bg-zinc-900/70 border border-white/[0.08] focus:border-[#10b981]/50 focus:ring-1 focus:ring-[#10b981]/30 rounded-lg px-2.5 py-1 text-xs text-zinc-200 focus:outline-none backdrop-blur-sm transition-all"
                 >
                   <option value="">Default Slots (100% contribution)</option>
                   {slots.map((slot) => (
@@ -130,51 +132,66 @@ export default function BonusCalculator({
 
           {/* Results Output */}
           {result && (
-            <div className="space-y-3 pt-1">
+            <div className="space-y-2 pt-0.5">
               {result.isCalculable === false ? (
-                <div className="bg-[#161e2e] p-4 rounded-xl border border-[#f59e0b]/30 text-center mt-3">
-                  <p className="text-[#f59e0b] text-xs font-semibold mb-1">Cannot Calculate Expected Value</p>
-                  <p className="text-slate-400 text-[10px]">
-                    The bonus headline format is not currently supported by our automatic EV calculator.
+                <div className="bg-amber-500/10 p-2.5 rounded-lg border border-amber-500/20 text-center">
+                  <p className="text-amber-400 text-[11px] font-medium mb-0.5">
+                    Expected Value Not Calculable
+                  </p>
+                  <p className="text-zinc-400 text-[10px]">
+                    This headline format contains ambiguous terms or non-standard structures.
                   </p>
                 </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3 border-t border-slate-800/60">
-                    {/* Total Wagering Required */}
-                    <div className="bg-[#161e2e] p-2.5 rounded-lg border border-slate-800/80 text-center">
-                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block mb-0.5">
-                        Wagering Required
+                  {/* Main Result Panel */}
+                  <div
+                    className="bg-zinc-900/80 border rounded-lg p-2.5 flex items-center justify-between backdrop-blur-md transition-all"
+                    style={{
+                      borderColor: result.expectedValue >= 0 ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
+                    }}
+                  >
+                    <div>
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 block">
+                        Estimated Expected Value (EV)
                       </span>
-                      <span className="text-sm font-extrabold font-mono text-white">
-                        €{result.totalWageringRequired.toLocaleString()}
+                      <span className="text-[10px] text-zinc-500 block">
+                        Net value after turnover &amp; house edge
                       </span>
                     </div>
-
-                    {/* Estimated EV */}
-                    <div className="bg-[#161e2e] p-2.5 rounded-lg border border-slate-800/80 text-center">
-                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block mb-0.5">
-                        Estimated EV
-                      </span>
+                    <div className="text-right">
                       <span
-                        className="text-sm font-extrabold font-mono"
+                        className="text-xl sm:text-2xl font-bold font-mono tabular-nums block"
                         style={{
-                          color: result.expectedValue >= 0 ? "#10b981" : "#ef4444",
+                          color: result.expectedValue >= 0 ? "#10b981" : "#f87171",
                         }}
                       >
                         {result.expectedValue >= 0 ? "+" : ""}€{result.expectedValue.toFixed(2)}
                       </span>
                     </div>
+                  </div>
+
+                  {/* Supporting Metrics Grid */}
+                  <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-white/[0.06]">
+                    {/* Total Wagering Required */}
+                    <div className="bg-zinc-900/40 p-2 rounded-lg border border-white/[0.06] text-center">
+                      <span className="text-[10px] font-medium text-zinc-400 block mb-0.5">
+                        Turnover Req.
+                      </span>
+                      <span className="text-xs sm:text-[13px] font-semibold font-mono tabular-nums text-zinc-200">
+                        €{result.totalWageringRequired.toLocaleString()}
+                      </span>
+                    </div>
 
                     {/* Capped Payout */}
-                    <div className="bg-[#161e2e] p-2.5 rounded-lg border border-slate-800/80 text-center">
-                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block mb-0.5">
-                        Capped Payout
+                    <div className="bg-zinc-900/40 p-2 rounded-lg border border-white/[0.06] text-center">
+                      <span className="text-[10px] font-medium text-zinc-400 block mb-0.5">
+                        Max Payout
                       </span>
-                      <span className="text-sm font-extrabold font-mono text-slate-200">
+                      <span className="text-xs sm:text-[13px] font-semibold font-mono tabular-nums text-zinc-200">
                         €{result.cappedPayout.toFixed(2)}
                         {result.isCapped && (
-                          <span className="text-[9px] text-[#f59e0b] block font-sans font-normal">
+                          <span className="text-[9px] text-amber-400 block font-sans font-medium">
                             Capped
                           </span>
                         )}
@@ -182,36 +199,29 @@ export default function BonusCalculator({
                     </div>
 
                     {/* Days Left */}
-                    <div className="bg-[#161e2e] p-2.5 rounded-lg border border-slate-800/80 text-center">
-                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block mb-0.5">
-                        Days Left
+                    <div className="bg-zinc-900/40 p-2 rounded-lg border border-white/[0.06] text-center">
+                      <span className="text-[10px] font-medium text-zinc-400 block mb-0.5">
+                        Validity
                       </span>
                       {result.daysUntilExpiry !== null ? (
-                        <div className="flex flex-col items-center">
-                          <span className="text-sm font-extrabold font-mono text-slate-200">
-                            {result.daysUntilExpiry} days
-                          </span>
-                          {result.daysUntilExpiry < 7 && (
-                            <span className="bg-[#f59e0b]/20 text-[#f59e0b] border border-[#f59e0b]/40 text-[8px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider mt-0.5">
-                              Expiring soon
-                            </span>
-                          )}
-                        </div>
+                        <span className="text-xs sm:text-[13px] font-semibold font-mono tabular-nums text-zinc-200 block">
+                          {result.daysUntilExpiry}d
+                        </span>
                       ) : (
-                        <span className="text-xs font-mono text-slate-400">Ongoing</span>
+                        <span className="text-xs sm:text-[13px] font-mono text-zinc-400 block">Ongoing</span>
                       )}
                     </div>
                   </div>
 
-                  {/* Disclaimer */}
-                  <p className="text-[10px] text-slate-400 italic text-center leading-normal">
+                  {/* Disclaimer / Footnote */}
+                  <p className="text-[10px] text-zinc-500 font-mono text-center pt-1 border-t border-white/[0.04]">
                     {result.houseEdgeSource === "slot_rtp" && selectedSlot ? (
                       <>
-                        Based on <strong className="text-slate-300 not-italic">{selectedSlot.name}</strong>'s actual RTP ({selectedSlot.rtp_current ?? (100 - result.houseEdgeUsed * 100).toFixed(1)}%)
+                        RTP: <span className="text-zinc-300">{selectedSlot.name}</span> ({selectedSlot.rtp_current ?? (100 - result.houseEdgeUsed * 100).toFixed(1)}%)
                       </>
                     ) : (
                       <>
-                        Based on average slot house edge ({(result.houseEdgeUsed * 100).toFixed(0)}%) — select a specific game for a more accurate estimate.
+                        Slot House Edge: {(result.houseEdgeUsed * 100).toFixed(0)}% (Baseline)
                       </>
                     )}
                   </p>

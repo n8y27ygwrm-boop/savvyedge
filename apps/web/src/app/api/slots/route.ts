@@ -1,18 +1,33 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export async function GET() {
   try {
-    const slots = await prisma.slot.findMany({
-      take: 50,
+    const rawSlots = await prisma.slot.findMany({
+      where: PublicationGateService.whereSlotPublic(),
       orderBy: { rtp_current: "desc" },
       include: {
         provider: true,
         rtp_history: {
           orderBy: { recorded_at: "asc" },
         },
+        casino_slots: {
+          include: {
+            casino: {
+              include: {
+                history_events: true,
+                licenses: true,
+              },
+            },
+          },
+        },
       },
     });
+
+    const slots = rawSlots
+      .filter((s) => PublicationGateService.isSlotPubliclyEligible(s))
+      .slice(0, 50);
 
     const data = slots.map((s) => ({
       id: s.id,

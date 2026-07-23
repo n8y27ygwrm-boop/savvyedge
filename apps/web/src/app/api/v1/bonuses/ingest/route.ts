@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { IngestionService } from "@savvyedge/api";
+import { IngestionService, verifyApiAuthorization } from "@savvyedge/api";
 import { z } from "zod";
 
 const IngestRequestBodySchema = z.object({
@@ -8,6 +8,14 @@ const IngestRequestBodySchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const auth = verifyApiAuthorization(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { data: null, meta: null, error: { message: auth.errorMessage } },
+      { status: auth.statusCode || 401 }
+    );
+  }
+
   try {
     const body = await request.json();
     const parsed = IngestRequestBodySchema.safeParse(body);

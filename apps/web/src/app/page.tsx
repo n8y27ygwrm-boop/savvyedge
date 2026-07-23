@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export const metadata = {
   title: "SavvyEdge | Verified Casino Intelligence",
@@ -44,26 +45,54 @@ export default async function HomePage() {
   );
   const updateCycleLabel = formatInterval(discoveryIntervalMs);
 
-  const [casinoCount, activeBonusCount, jurisdictionCount, recentCasinos] =
-    await Promise.all([
-      prisma.casino.count(),
-      prisma.bonus.count({ where: { status: "ACTIVE" } }),
-      prisma.jurisdiction.count({
-        where: {
-          regulators: {
-            some: {
-              licenses: {
-                some: {},
+  const [rawCasinos, rawBonuses, jurisdictionCount] = await Promise.all([
+    prisma.casino.findMany({
+      where: PublicationGateService.whereCasinoPublic(),
+      orderBy: { verified_at: "desc" },
+      include: {
+        history_events: true,
+        licenses: {
+          include: {
+            regulator: {
+              include: {
+                jurisdiction: true,
               },
             },
           },
         },
-      }),
-      prisma.casino.findMany({
-        take: 4,
-        orderBy: { verified_at: "desc" },
-      }),
-    ]);
+      },
+    }),
+    prisma.bonus.findMany({
+      where: PublicationGateService.whereBonusPublic(),
+      include: {
+        history_events: true,
+        casino: {
+          include: {
+            history_events: true,
+            licenses: true,
+          },
+        },
+      },
+    }),
+    prisma.jurisdiction.count({
+      where: {
+        regulators: {
+          some: {
+            licenses: {
+              some: { status: "ACTIVE", verified_at: { not: null } },
+            },
+          },
+        },
+      },
+    }),
+  ]);
+
+  const eligibleCasinos = rawCasinos.filter((c) => PublicationGateService.isCasinoPubliclyEligible(c));
+  const eligibleBonuses = rawBonuses.filter((b) => PublicationGateService.isBonusPubliclyEligible(b));
+
+  const casinoCount = eligibleCasinos.length;
+  const activeBonusCount = eligibleBonuses.length;
+  const recentCasinos = eligibleCasinos.slice(0, 4);
 
   const stats = [
     { label: "Verified Casinos", value: casinoCount.toLocaleString("en-US") },

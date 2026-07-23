@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PublicationGateService } from "@savvyedge/api";
 
 interface Bonus {
   id: string;
@@ -140,7 +141,7 @@ export default async function CasinoDetailPage({
         day: "numeric",
         year: "numeric",
       })
-    : "Recently";
+    : "Verification Pending";
 
   return (
     <div className="space-y-8">
@@ -217,9 +218,8 @@ export default async function CasinoDetailPage({
       <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-center gap-3 text-amber-300 text-xs sm:text-sm">
         <span className="text-base">🛡️</span>
         <div>
-          <span className="font-semibold">Autonomous Verification Notice:</span>{" "}
-          All data on this page is autonomously verified by the SavvyEdge
-          intelligence engine. Last verification:{" "}
+          <span className="font-semibold">Data Transparency Notice:</span>{" "}
+          Sourced from public operator terms and regulatory records. Last checked:{" "}
           <span className="font-mono text-amber-200">{verifiedDateStr}</span>.
         </div>
       </div>

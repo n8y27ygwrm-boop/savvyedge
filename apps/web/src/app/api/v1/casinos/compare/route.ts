@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
+import { PublicationGateService } from "@savvyedge/api";
 
 export async function GET(request: Request) {
   try {
@@ -29,9 +30,13 @@ export async function GET(request: Request) {
       );
     }
 
-    // Fetch casinos based on slugs
+    const publicCasinoWhere = PublicationGateService.whereCasinoPublic();
+
+    // Fetch casinos based on slugs and public gate
     const casinos = await prisma.casino.findMany({
-      where: { slug: { in: slugs } },
+      where: {
+        AND: [{ slug: { in: slugs } }, publicCasinoWhere],
+      },
       include: {
         licenses: {
           include: {
@@ -43,7 +48,7 @@ export async function GET(request: Request) {
           },
         },
         bonuses: {
-          where: { status: "ACTIVE" },
+          where: PublicationGateService.whereBonusPublic(),
           orderBy: { created_at: "desc" },
           take: 1,
         },

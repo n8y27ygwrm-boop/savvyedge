@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
-import { DiscoveryService } from "@savvyedge/api";
+import { DiscoveryService, verifyApiAuthorization } from "@savvyedge/api";
 
 export async function GET(request: Request) {
+  const auth = verifyApiAuthorization(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { data: null, meta: null, error: { message: auth.errorMessage } },
+      { status: auth.statusCode || 401 }
+    );
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "1", 10);
@@ -18,6 +26,14 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = verifyApiAuthorization(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { data: null, meta: null, error: { message: auth.errorMessage } },
+      { status: auth.statusCode || 401 }
+    );
+  }
+
   try {
     const body = await request.json();
     const seedUrls = body.seedUrls;

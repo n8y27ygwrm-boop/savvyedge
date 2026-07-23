@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { CasinoService } from "@savvyedge/api";
+import { CasinoService, PublicationGateService } from "@savvyedge/api";
 
 export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
     const slug = (await params).slug;
     const casino = await CasinoService.getCasinoBySlug(slug);
 
-    if (!casino) {
+    if (!casino || !PublicationGateService.isCasinoPubliclyEligible(casino)) {
       return NextResponse.json(
         { data: null, meta: null, error: { message: "Casino not found", code: "NOT_FOUND" } },
         { status: 404 }
