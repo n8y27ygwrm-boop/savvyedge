@@ -8,55 +8,184 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum ReviewStatus {
+  NEW
+  AWAITING_REVIEW
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  QUARANTINED
+  SUPERSEDED
+}
+
+enum PublicationStatus {
+  UNPUBLISHED
+  PUBLISHED
+  WITHDRAWN
+}
+
+enum ActorKind {
+  HUMAN
+  SERVICE
+  SYSTEM
+  MIGRATION
+}
+
+enum EvidenceType {
+  OPERATOR_PAGE
+  REGULATOR_REGISTER
+  PROVIDER_PAGE
+  TEST_LAB_REPORT
+  FIRST_PARTY_API
+  LEGACY_HISTORY_PROXY
+}
+
+enum EvidenceVerdict {
+  SUPPORTS
+  CONTRADICTS
+  INCONCLUSIVE
+}
+
+enum QuarantineReason {
+  DEV_MOCK
+  AGGREGATOR_IDENTITY
+  UNKNOWN_SOURCE
+  INVALID_IDENTITY
+  DUPLICATE
+  CONFLICTING_EVIDENCE
+  EXPIRED_EVIDENCE
+  UNVERIFIED_LICENSE
+  MANUAL_HOLD
+}
+
+enum WorkflowEventType {
+  INGESTED
+  REVIEW_REQUESTED
+  REVIEW_STARTED
+  APPROVED
+  REJECTED
+  QUARANTINED
+  QUARANTINE_CLEARED
+  MATERIAL_CHANGE_DETECTED
+  PUBLISHED
+  UNPUBLISHED
+  WITHDRAWN
+  SUPERSEDED
+  MERGED
+}
+
+enum GovernedSubjectType {
+  CASINO
+  BONUS
+  SLOT
+  LICENSE
+}
+
+enum CasinoEvidenceField {
+  NAME
+  WEBSITE_HOST
+  LICENSE_ASSOCIATION
+}
+
+enum BonusEvidenceField {
+  TYPE
+  HEADLINE_VALUE
+  WAGERING_REQUIREMENT
+  MAX_CONVERSION
+  VALID_FROM
+  VALID_UNTIL
+}
+
+enum SlotEvidenceField {
+  NAME
+  PROVIDER
+  RTP
+  VOLATILITY
+  MAX_WIN
+  RELEASE_DATE
+  CASINO_AVAILABILITY
+}
+
+enum LicenseEvidenceField {
+  LICENSE_NUMBER
+  STATUS
+  REGULATOR
+  CASINO_ASSOCIATION
+  VALID_UNTIL
+}
+
 model Casino {
-  id             String    @id @default(uuid())
-  slug           String    @unique
-  name           String
-  license_info   String?
-  status         String
-  website_url    String?
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
-  verified_at    DateTime?
-  data_source_type String   @default("SCRAPED")
-  
-  bonuses        Bonus[]
-  reviews        Review[]
-  history_events CasinoHistoryEvent[]
-  licenses       License[]
-  casino_slots   CasinoSlot[]
+  id                 String            @id @default(uuid())
+  slug               String            @unique
+  name               String
+  license_info       String?
+  status             String
+  website_url        String?
+  created_at         DateTime          @default(now())
+  updated_at         DateTime          @updatedAt
+  verified_at        DateTime?
+  data_source_type   String            @default("SCRAPED")
+  review_status      ReviewStatus      @default(NEW)
+  publication_status PublicationStatus @default(UNPUBLISHED)
+  quarantine_reason  QuarantineReason?
+  governance_version Int               @default(0)
+  duplicate_of_id    String?
+
+  bonuses           Bonus[]
+  reviews           Review[]
+  history_events    CasinoHistoryEvent[]
+  licenses          License[]
+  casino_slots      CasinoSlot[]
+  evidence_claims   CasinoEvidenceClaim[]
+  domain_candidates CasinoDomain[]
+  workflow_events   WorkflowAuditEvent[]
+  duplicate_of      Casino?               @relation("CasinoDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates        Casino[]              @relation("CasinoDuplicates")
 
   @@index([slug])
+  @@index([review_status, publication_status])
+  @@index([duplicate_of_id])
 }
 
 model Provider {
-  id          String @id @default(uuid())
-  slug        String @unique
+  id          String  @id @default(uuid())
+  slug        String  @unique
   name        String
   website_url String?
-  
-  slots       Slot[]
+
+  slots Slot[]
 
   @@index([slug])
 }
 
 model Slot {
-  id           String   @id @default(uuid())
-  slug         String   @unique
-  name         String
-  provider_id  String
-  rtp_current  Float?
-  volatility   String?
-  max_win      Float?
-  release_date DateTime?
-  wagering_contribution_pct Float @default(100)
-  
-  provider     Provider @relation(fields: [provider_id], references: [id])
-  rtp_history  SlotRtpHistory[]
-  casino_slots CasinoSlot[]
+  id                        String            @id @default(uuid())
+  slug                      String            @unique
+  name                      String
+  provider_id               String
+  rtp_current               Float?
+  volatility                String?
+  max_win                   Float?
+  release_date              DateTime?
+  wagering_contribution_pct Float             @default(100)
+  review_status             ReviewStatus      @default(NEW)
+  publication_status        PublicationStatus @default(UNPUBLISHED)
+  quarantine_reason         QuarantineReason?
+  governance_version        Int               @default(0)
+  duplicate_of_id           String?
+
+  provider        Provider             @relation(fields: [provider_id], references: [id])
+  rtp_history     SlotRtpHistory[]
+  casino_slots    CasinoSlot[]
+  evidence_claims SlotEvidenceClaim[]
+  workflow_events WorkflowAuditEvent[]
+  duplicate_of    Slot?                @relation("SlotDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates      Slot[]               @relation("SlotDuplicates")
 
   @@index([slug])
   @@index([provider_id])
+  @@index([review_status, publication_status])
+  @@index([duplicate_of_id])
 }
 
 model SlotRtpHistory {
@@ -65,15 +194,15 @@ model SlotRtpHistory {
   rtp_value   Float
   recorded_at DateTime @default(now())
   source_url  String?
-  
-  slot        Slot     @relation(fields: [slot_id], references: [id])
+
+  slot Slot @relation(fields: [slot_id], references: [id])
 
   @@index([slot_id])
   @@index([slot_id, recorded_at])
 }
 
 model Bonus {
-  id                   String   @id @default(uuid())
+  id                   String            @id @default(uuid())
   casino_id            String
   type                 String
   headline_value       String?
@@ -83,15 +212,28 @@ model Bonus {
   valid_from           DateTime?
   valid_until          DateTime?
   status               String
-  created_at           DateTime @default(now())
-  updated_at           DateTime @default(now()) @updatedAt
+  created_at           DateTime          @default(now())
+  updated_at           DateTime          @default(now()) @updatedAt
   verified_at          DateTime?
-  data_source_type     String   @default("SCRAPED")
-  
-  casino               Casino   @relation(fields: [casino_id], references: [id])
-  history_events       BonusHistoryEvent[]
+  data_source_type     String            @default("SCRAPED")
+  source_offer_key     String?
+  review_status        ReviewStatus      @default(NEW)
+  publication_status   PublicationStatus @default(UNPUBLISHED)
+  quarantine_reason    QuarantineReason?
+  governance_version   Int               @default(0)
+  duplicate_of_id      String?
+
+  casino          Casino               @relation(fields: [casino_id], references: [id])
+  history_events  BonusHistoryEvent[]
+  evidence_claims BonusEvidenceClaim[]
+  workflow_events WorkflowAuditEvent[]
+  duplicate_of    Bonus?               @relation("BonusDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates      Bonus[]              @relation("BonusDuplicates")
 
   @@index([casino_id])
+  @@index([source_offer_key])
+  @@index([review_status, publication_status])
+  @@index([duplicate_of_id])
 }
 
 model BonusHistoryEvent {
@@ -102,8 +244,8 @@ model BonusHistoryEvent {
   new_value     String?
   changed_at    DateTime @default(now())
   source_url    String?
-  
-  bonus         Bonus    @relation(fields: [bonus_id], references: [id])
+
+  bonus Bonus @relation(fields: [bonus_id], references: [id])
 
   @@index([bonus_id])
   @@index([bonus_id, changed_at])
@@ -116,116 +258,133 @@ model CasinoHistoryEvent {
   description String
   occurred_at DateTime @default(now())
   source_url  String?
-  
-  casino      Casino   @relation(fields: [casino_id], references: [id])
+
+  casino Casino @relation(fields: [casino_id], references: [id])
 
   @@index([casino_id])
   @@index([casino_id, occurred_at])
 }
 
 model Review {
-  id                  String   @id @default(uuid())
+  id                  String    @id @default(uuid())
   casino_id           String
   author_type         String
-  content             String   @db.Text
+  content             String    @db.Text
   rating              Float
   methodology_version String?
   published_at        DateTime?
   last_verified_at    DateTime?
-  
-  casino              Casino   @relation(fields: [casino_id], references: [id])
+
+  casino Casino @relation(fields: [casino_id], references: [id])
 
   @@index([casino_id])
 }
 
 model DataSource {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   url               String
+  normalized_url    String?
   source_type       String
   last_scraped_at   DateTime?
   reliability_score Float?
-  
-  scrape_jobs       ScrapeJob[]
+
+  scrape_jobs      ScrapeJob[]
+  evidence_records EvidenceRecord[]
+
+  @@index([normalized_url])
 }
 
 model ScrapeJob {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   data_source_id String
   status         String
-  started_at     DateTime @default(now())
+  started_at     DateTime  @default(now())
   completed_at   DateTime?
-  error_log      String?  @db.Text
+  error_log      String?   @db.Text
   snapshot_path  String?
-  retry_count    Int      @default(0)
+  retry_count    Int       @default(0)
   html_hash      String?
   content_hash   String?
   canonical_url  String?
-  
-  data_source    DataSource @relation(fields: [data_source_id], references: [id])
+
+  data_source      DataSource       @relation(fields: [data_source_id], references: [id])
+  evidence_records EvidenceRecord[]
 
   @@index([data_source_id])
 }
 
 model Jurisdiction {
-  id          String      @id @default(uuid())
-  slug        String      @unique
-  name        String
-  country     String?
-  regulators  Regulator[]
+  id         String      @id @default(uuid())
+  slug       String      @unique
+  name       String
+  country    String?
+  regulators Regulator[]
 
   @@index([slug])
 }
 
 model Regulator {
-  id              String       @id @default(uuid())
-  slug            String       @unique
+  id              String  @id @default(uuid())
+  slug            String  @unique
   name            String
   jurisdiction_id String
   website_url     String?
-  
-  jurisdiction    Jurisdiction @relation(fields: [jurisdiction_id], references: [id])
-  licenses        License[]
+
+  jurisdiction Jurisdiction @relation(fields: [jurisdiction_id], references: [id])
+  licenses     License[]
 
   @@index([slug])
   @@index([jurisdiction_id])
 }
 
 model License {
-  id           String    @id @default(uuid())
-  casino_id    String
-  regulator_id String
-  license_no   String
-  status       String    // e.g. "ACTIVE", "INACTIVE", "SUSPENDED"
-  verified_at  DateTime?
-  created_at   DateTime  @default(now())
-  updated_at   DateTime  @updatedAt
+  id                    String            @id @default(uuid())
+  casino_id             String
+  regulator_id          String
+  license_no            String
+  normalized_license_no String?
+  status                String // e.g. "ACTIVE", "INACTIVE", "SUSPENDED"
+  verified_at           DateTime?
+  created_at            DateTime          @default(now())
+  updated_at            DateTime          @updatedAt
+  review_status         ReviewStatus      @default(NEW)
+  quarantine_reason     QuarantineReason?
+  governance_version    Int               @default(0)
+  duplicate_of_id       String?
 
-  casino       Casino    @relation(fields: [casino_id], references: [id])
-  regulator    Regulator @relation(fields: [regulator_id], references: [id])
+  casino          Casino                 @relation(fields: [casino_id], references: [id])
+  regulator       Regulator              @relation(fields: [regulator_id], references: [id])
+  evidence_claims LicenseEvidenceClaim[]
+  workflow_events WorkflowAuditEvent[]
+  duplicate_of    License?               @relation("LicenseDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates      License[]              @relation("LicenseDuplicates")
 
   @@index([casino_id])
   @@index([regulator_id])
   @@index([license_no])
+  @@index([normalized_license_no])
+  @@index([review_status])
+  @@index([duplicate_of_id])
 }
 
 model WorkerNode {
-  id             String    @id @default(uuid())
-  worker_name    String    @unique
-  status         String    // "ACTIVE", "STOPPING", "DEAD"
-  active_jobs    Int       @default(0)
-  last_heartbeat DateTime  @default(now())
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
+  id             String   @id @default(uuid())
+  worker_name    String   @unique
+  status         String // "ACTIVE", "STOPPING", "DEAD"
+  active_jobs    Int      @default(0)
+  last_heartbeat DateTime @default(now())
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
 
   @@index([status, last_heartbeat])
 }
 
 model JobQueue {
   id           String    @id @default(uuid())
-  queue_name   String    // e.g. "crawling-queue", "extraction-queue", "orchestrator-queue"
-  task_type    String    // e.g. "DISCOVER_SEEDS", "INGEST_URL", "CRAWL_URL", "EXTRACT_BONUS", "VALIDATE_BONUS"
+  queue_name   String // e.g. "crawling-queue", "extraction-queue", "orchestrator-queue"
+  task_type    String // e.g. "DISCOVER_SEEDS", "INGEST_URL", "CRAWL_URL", "EXTRACT_BONUS", "VALIDATE_BONUS"
   payload      String    @db.Text // JSON string of arguments
-  status       String    // "PENDING", "PROCESSING", "COMPLETED", "FAILED"
+  status       String // "PENDING", "PROCESSING", "COMPLETED", "FAILED"
   priority     String    @default("NORMAL") // "HIGH", "NORMAL", "LOW"
   domain       String?
   worker_id    String?
@@ -250,7 +409,7 @@ model DiscoveredUrl {
   normalized_url String   @unique
   domain         String
   source_seed    String
-  status         String   // "DISCOVERED", "ENQUEUED", "FILTERED", "PROCESSED"
+  status         String // "DISCOVERED", "ENQUEUED", "FILTERED", "PROCESSED"
   filter_reason  String?
   discovered_at  DateTime @default(now())
 
@@ -266,10 +425,201 @@ model CasinoSlot {
   verified_at DateTime?
   created_at  DateTime  @default(now())
 
-  casino      Casino    @relation(fields: [casino_id], references: [id])
-  slot        Slot      @relation(fields: [slot_id], references: [id])
+  casino Casino @relation(fields: [casino_id], references: [id])
+  slot   Slot   @relation(fields: [slot_id], references: [id])
 
   @@unique([casino_id, slot_id])
   @@index([casino_id])
   @@index([slot_id])
+}
+
+model ReviewActor {
+  id               String    @id @default(uuid())
+  kind             ActorKind
+  stable_key       String    @unique
+  display_name     String
+  external_subject String?   @unique
+  active           Boolean   @default(true)
+  created_at       DateTime  @default(now())
+
+  created_evidence EvidenceRecord[]
+  workflow_events  WorkflowAuditEvent[]
+
+  @@index([kind, active])
+}
+
+model EvidenceRecord {
+  id             String       @id @default(uuid())
+  data_source_id String
+  scrape_job_id  String?
+  evidence_type  EvidenceType
+  source_url     String
+  snapshot_path  String?
+  html_hash      String?
+  content_hash   String?
+  extraction_key String?
+  observed_at    DateTime
+  extracted_at   DateTime
+  valid_from     DateTime?
+  expires_at     DateTime?
+  created_by_id  String
+  created_at     DateTime     @default(now())
+
+  data_source    DataSource             @relation(fields: [data_source_id], references: [id])
+  scrape_job     ScrapeJob?             @relation(fields: [scrape_job_id], references: [id])
+  created_by     ReviewActor            @relation(fields: [created_by_id], references: [id])
+  casino_claims  CasinoEvidenceClaim[]
+  bonus_claims   BonusEvidenceClaim[]
+  slot_claims    SlotEvidenceClaim[]
+  license_claims LicenseEvidenceClaim[]
+
+  @@index([data_source_id, observed_at])
+  @@index([scrape_job_id])
+  @@index([expires_at])
+  @@index([content_hash])
+}
+
+model CasinoEvidenceClaim {
+  id                    String              @id @default(uuid())
+  evidence_id           String
+  casino_id             String
+  field                 CasinoEvidenceField
+  observed_value        String              @db.Text
+  normalized_value_hash String
+  verdict               EvidenceVerdict
+  created_at            DateTime            @default(now())
+
+  evidence              EvidenceRecord       @relation(fields: [evidence_id], references: [id])
+  casino                Casino               @relation(fields: [casino_id], references: [id])
+  workflow_event_claims WorkflowEventClaim[]
+  domain_candidates     CasinoDomain[]
+
+  @@unique([evidence_id, casino_id, field])
+  @@index([casino_id, field, verdict])
+  @@index([normalized_value_hash])
+}
+
+model BonusEvidenceClaim {
+  id                    String             @id @default(uuid())
+  evidence_id           String
+  bonus_id              String
+  field                 BonusEvidenceField
+  observed_value        String             @db.Text
+  normalized_value_hash String
+  verdict               EvidenceVerdict
+  created_at            DateTime           @default(now())
+
+  evidence              EvidenceRecord       @relation(fields: [evidence_id], references: [id])
+  bonus                 Bonus                @relation(fields: [bonus_id], references: [id])
+  workflow_event_claims WorkflowEventClaim[]
+
+  @@unique([evidence_id, bonus_id, field])
+  @@index([bonus_id, field, verdict])
+  @@index([normalized_value_hash])
+}
+
+model SlotEvidenceClaim {
+  id                    String            @id @default(uuid())
+  evidence_id           String
+  slot_id               String
+  field                 SlotEvidenceField
+  observed_value        String            @db.Text
+  normalized_value_hash String
+  verdict               EvidenceVerdict
+  created_at            DateTime          @default(now())
+
+  evidence              EvidenceRecord       @relation(fields: [evidence_id], references: [id])
+  slot                  Slot                 @relation(fields: [slot_id], references: [id])
+  workflow_event_claims WorkflowEventClaim[]
+
+  @@unique([evidence_id, slot_id, field])
+  @@index([slot_id, field, verdict])
+  @@index([normalized_value_hash])
+}
+
+model LicenseEvidenceClaim {
+  id                    String               @id @default(uuid())
+  evidence_id           String
+  license_id            String
+  field                 LicenseEvidenceField
+  observed_value        String               @db.Text
+  normalized_value_hash String
+  verdict               EvidenceVerdict
+  created_at            DateTime             @default(now())
+
+  evidence              EvidenceRecord       @relation(fields: [evidence_id], references: [id])
+  license               License              @relation(fields: [license_id], references: [id])
+  workflow_event_claims WorkflowEventClaim[]
+
+  @@unique([evidence_id, license_id, field])
+  @@index([license_id, field, verdict])
+  @@index([normalized_value_hash])
+}
+
+model CasinoDomain {
+  id                String   @id @default(uuid())
+  casino_id         String
+  normalized_host   String
+  evidence_claim_id String?
+  created_at        DateTime @default(now())
+
+  casino         Casino               @relation(fields: [casino_id], references: [id])
+  evidence_claim CasinoEvidenceClaim? @relation(fields: [evidence_claim_id], references: [id])
+
+  @@index([casino_id])
+  @@index([normalized_host])
+  @@index([evidence_claim_id])
+}
+
+model WorkflowAuditEvent {
+  id                      String              @id @default(uuid())
+  subject_type            GovernedSubjectType
+  casino_id               String?
+  bonus_id                String?
+  slot_id                 String?
+  license_id              String?
+  actor_id                String
+  event_type              WorkflowEventType
+  from_review_status      ReviewStatus?
+  to_review_status        ReviewStatus?
+  from_publication_status PublicationStatus?
+  to_publication_status   PublicationStatus?
+  quarantine_reason       QuarantineReason?
+  expected_version        Int
+  internal_note           String?             @db.Text
+  occurred_at             DateTime            @default(now())
+
+  casino          Casino?              @relation(fields: [casino_id], references: [id])
+  bonus           Bonus?               @relation(fields: [bonus_id], references: [id])
+  slot            Slot?                @relation(fields: [slot_id], references: [id])
+  license         License?             @relation(fields: [license_id], references: [id])
+  actor           ReviewActor          @relation(fields: [actor_id], references: [id])
+  evidence_claims WorkflowEventClaim[]
+
+  @@index([casino_id, occurred_at])
+  @@index([bonus_id, occurred_at])
+  @@index([slot_id, occurred_at])
+  @@index([license_id, occurred_at])
+  @@index([actor_id, occurred_at])
+}
+
+model WorkflowEventClaim {
+  id                        String  @id @default(uuid())
+  workflow_event_id         String
+  casino_evidence_claim_id  String?
+  bonus_evidence_claim_id   String?
+  slot_evidence_claim_id    String?
+  license_evidence_claim_id String?
+
+  workflow_event         WorkflowAuditEvent    @relation(fields: [workflow_event_id], references: [id])
+  casino_evidence_claim  CasinoEvidenceClaim?  @relation(fields: [casino_evidence_claim_id], references: [id])
+  bonus_evidence_claim   BonusEvidenceClaim?   @relation(fields: [bonus_evidence_claim_id], references: [id])
+  slot_evidence_claim    SlotEvidenceClaim?    @relation(fields: [slot_evidence_claim_id], references: [id])
+  license_evidence_claim LicenseEvidenceClaim? @relation(fields: [license_evidence_claim_id], references: [id])
+
+  @@index([workflow_event_id])
+  @@index([casino_evidence_claim_id])
+  @@index([bonus_evidence_claim_id])
+  @@index([slot_evidence_claim_id])
+  @@index([license_evidence_claim_id])
 }
