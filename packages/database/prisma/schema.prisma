@@ -131,16 +131,17 @@ model Casino {
   governance_version Int               @default(0)
   duplicate_of_id    String?
 
-  bonuses           Bonus[]
-  reviews           Review[]
-  history_events    CasinoHistoryEvent[]
-  licenses          License[]
-  casino_slots      CasinoSlot[]
-  evidence_claims   CasinoEvidenceClaim[]
-  domain_candidates CasinoDomain[]
-  workflow_events   WorkflowAuditEvent[]
-  duplicate_of      Casino?               @relation("CasinoDuplicates", fields: [duplicate_of_id], references: [id])
-  duplicates        Casino[]              @relation("CasinoDuplicates")
+  bonuses                   Bonus[]
+  reviews                   Review[]
+  history_events            CasinoHistoryEvent[]
+  licenses                  License[]
+  casino_slots              CasinoSlot[]
+  evidence_claims           CasinoEvidenceClaim[]
+  domain_candidates         CasinoDomain[]
+  workflow_events           WorkflowAuditEvent[]  @relation("CasinoWorkflowSubject")
+  canonical_workflow_events WorkflowAuditEvent[]  @relation("CasinoWorkflowCanonical")
+  duplicate_of              Casino?               @relation("CasinoDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates                Casino[]              @relation("CasinoDuplicates")
 
   @@index([slug])
   @@index([review_status, publication_status])
@@ -174,13 +175,14 @@ model Slot {
   governance_version        Int               @default(0)
   duplicate_of_id           String?
 
-  provider        Provider             @relation(fields: [provider_id], references: [id])
-  rtp_history     SlotRtpHistory[]
-  casino_slots    CasinoSlot[]
-  evidence_claims SlotEvidenceClaim[]
-  workflow_events WorkflowAuditEvent[]
-  duplicate_of    Slot?                @relation("SlotDuplicates", fields: [duplicate_of_id], references: [id])
-  duplicates      Slot[]               @relation("SlotDuplicates")
+  provider                  Provider             @relation(fields: [provider_id], references: [id])
+  rtp_history               SlotRtpHistory[]
+  casino_slots              CasinoSlot[]
+  evidence_claims           SlotEvidenceClaim[]
+  workflow_events           WorkflowAuditEvent[] @relation("SlotWorkflowSubject")
+  canonical_workflow_events WorkflowAuditEvent[] @relation("SlotWorkflowCanonical")
+  duplicate_of              Slot?                @relation("SlotDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates                Slot[]               @relation("SlotDuplicates")
 
   @@index([slug])
   @@index([provider_id])
@@ -223,12 +225,13 @@ model Bonus {
   governance_version   Int               @default(0)
   duplicate_of_id      String?
 
-  casino          Casino               @relation(fields: [casino_id], references: [id])
-  history_events  BonusHistoryEvent[]
-  evidence_claims BonusEvidenceClaim[]
-  workflow_events WorkflowAuditEvent[]
-  duplicate_of    Bonus?               @relation("BonusDuplicates", fields: [duplicate_of_id], references: [id])
-  duplicates      Bonus[]              @relation("BonusDuplicates")
+  casino                    Casino               @relation(fields: [casino_id], references: [id])
+  history_events            BonusHistoryEvent[]
+  evidence_claims           BonusEvidenceClaim[]
+  workflow_events           WorkflowAuditEvent[] @relation("BonusWorkflowSubject")
+  canonical_workflow_events WorkflowAuditEvent[] @relation("BonusWorkflowCanonical")
+  duplicate_of              Bonus?               @relation("BonusDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates                Bonus[]              @relation("BonusDuplicates")
 
   @@index([casino_id])
   @@index([source_offer_key])
@@ -352,12 +355,13 @@ model License {
   governance_version    Int               @default(0)
   duplicate_of_id       String?
 
-  casino          Casino                 @relation(fields: [casino_id], references: [id])
-  regulator       Regulator              @relation(fields: [regulator_id], references: [id])
-  evidence_claims LicenseEvidenceClaim[]
-  workflow_events WorkflowAuditEvent[]
-  duplicate_of    License?               @relation("LicenseDuplicates", fields: [duplicate_of_id], references: [id])
-  duplicates      License[]              @relation("LicenseDuplicates")
+  casino                    Casino                 @relation(fields: [casino_id], references: [id])
+  regulator                 Regulator              @relation(fields: [regulator_id], references: [id])
+  evidence_claims           LicenseEvidenceClaim[]
+  workflow_events           WorkflowAuditEvent[]   @relation("LicenseWorkflowSubject")
+  canonical_workflow_events WorkflowAuditEvent[]   @relation("LicenseWorkflowCanonical")
+  duplicate_of              License?               @relation("LicenseDuplicates", fields: [duplicate_of_id], references: [id])
+  duplicates                License[]              @relation("LicenseDuplicates")
 
   @@index([casino_id])
   @@index([regulator_id])
@@ -586,20 +590,33 @@ model WorkflowAuditEvent {
   to_publication_status   PublicationStatus?
   quarantine_reason       QuarantineReason?
   expected_version        Int
+  resulting_version       Int
+  canonical_casino_id     String?
+  canonical_bonus_id      String?
+  canonical_slot_id       String?
+  canonical_license_id    String?
   internal_note           String?             @db.Text
   occurred_at             DateTime            @default(now())
 
-  casino          Casino?              @relation(fields: [casino_id], references: [id])
-  bonus           Bonus?               @relation(fields: [bonus_id], references: [id])
-  slot            Slot?                @relation(fields: [slot_id], references: [id])
-  license         License?             @relation(fields: [license_id], references: [id])
-  actor           ReviewActor          @relation(fields: [actor_id], references: [id])
-  evidence_claims WorkflowEventClaim[]
+  casino            Casino?              @relation("CasinoWorkflowSubject", fields: [casino_id], references: [id], onDelete: SetNull)
+  bonus             Bonus?               @relation("BonusWorkflowSubject", fields: [bonus_id], references: [id], onDelete: SetNull)
+  slot              Slot?                @relation("SlotWorkflowSubject", fields: [slot_id], references: [id], onDelete: SetNull)
+  license           License?             @relation("LicenseWorkflowSubject", fields: [license_id], references: [id], onDelete: SetNull)
+  canonical_casino  Casino?              @relation("CasinoWorkflowCanonical", fields: [canonical_casino_id], references: [id], onDelete: Restrict)
+  canonical_bonus   Bonus?               @relation("BonusWorkflowCanonical", fields: [canonical_bonus_id], references: [id], onDelete: Restrict)
+  canonical_slot    Slot?                @relation("SlotWorkflowCanonical", fields: [canonical_slot_id], references: [id], onDelete: Restrict)
+  canonical_license License?             @relation("LicenseWorkflowCanonical", fields: [canonical_license_id], references: [id], onDelete: Restrict)
+  actor             ReviewActor          @relation(fields: [actor_id], references: [id])
+  evidence_claims   WorkflowEventClaim[]
 
   @@index([casino_id, occurred_at])
   @@index([bonus_id, occurred_at])
   @@index([slot_id, occurred_at])
   @@index([license_id, occurred_at])
+  @@index([canonical_casino_id])
+  @@index([canonical_bonus_id])
+  @@index([canonical_slot_id])
+  @@index([canonical_license_id])
   @@index([actor_id, occurred_at])
 }
 

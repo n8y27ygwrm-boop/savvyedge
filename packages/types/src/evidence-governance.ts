@@ -351,6 +351,11 @@ export const WorkflowAuditEventSchema = z
     to_publication_status: NullablePublicationStatusSchema,
     quarantine_reason: NullableQuarantineReasonSchema,
     expected_version: z.number().int(),
+    resulting_version: z.number().int(),
+    canonical_casino_id: DatabaseIdSchema.nullable(),
+    canonical_bonus_id: DatabaseIdSchema.nullable(),
+    canonical_slot_id: DatabaseIdSchema.nullable(),
+    canonical_license_id: DatabaseIdSchema.nullable(),
     internal_note: z.string().nullable(),
     occurred_at: z.date(),
   })

@@ -12,6 +12,7 @@ import {
   ReviewStatus as PrismaReviewStatus,
   SlotEvidenceField as PrismaSlotEvidenceField,
   WorkflowEventType as PrismaWorkflowEventType,
+  Prisma,
 } from "@savvyedge/database";
 import * as publicContracts from "@savvyedge/types";
 import {
@@ -187,6 +188,11 @@ const validWorkflowEvent = {
   to_publication_status: "UNPUBLISHED",
   quarantine_reason: null,
   expected_version: 0,
+  resulting_version: 1,
+  canonical_casino_id: null,
+  canonical_bonus_id: null,
+  canonical_slot_id: null,
+  canonical_license_id: null,
   internal_note: null,
   occurred_at: now,
 } as const;
@@ -280,6 +286,20 @@ describe("Phase 2.1B enum contracts", () => {
 });
 
 describe("Phase 2.1B persisted and create contracts", () => {
+  it("keeps the WorkflowAuditEvent read shape aligned with Prisma scalar and enum fields", () => {
+    const prismaModel = Prisma.dmmf.datamodel.models.find(
+      (model) => model.name === "WorkflowAuditEvent",
+    );
+    const prismaPersistedFields = prismaModel?.fields
+      .filter((field) => field.kind === "scalar" || field.kind === "enum")
+      .map((field) => field.name)
+      .sort();
+
+    expect(prismaPersistedFields).toEqual(
+      Object.keys(WorkflowAuditEventSchema.shape).sort(),
+    );
+  });
+
   const representativeReadContracts = [
     ["ReviewActor", ReviewActorSchema, validActor],
     ["EvidenceRecord", EvidenceRecordSchema, validEvidence],
@@ -519,6 +539,22 @@ describe("Phase 2.1B persisted and create contracts", () => {
         observed_value: null,
       }).success,
     ).toBe(false);
+
+    const {
+      resulting_version: _resultingVersion,
+      ...workflowEventWithoutResultingVersion
+    } = validWorkflowEvent;
+    expect(
+      WorkflowAuditEventSchema.safeParse(workflowEventWithoutResultingVersion)
+        .success,
+    ).toBe(false);
+    expect(
+      WorkflowAuditEventSchema.safeParse({
+        ...validWorkflowEvent,
+        event_type: "SUPERSEDED",
+        canonical_casino_id: ids.domain,
+      }).success,
+    ).toBe(true);
   });
 
   it("allows nullable create fields to be omitted but requires explicit extraction timestamps", () => {
