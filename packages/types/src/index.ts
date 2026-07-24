@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./evidence-governance";
+
 // --- Casino Schemas ---
 
 export const CasinoSchema = z.object({
