@@ -29,9 +29,9 @@ export default async function RootLayout({
                 <Link href="/quarantine" style={{ color: "#f1f5f9", textDecoration: "none" }}>
                   Quarantine Queue
                 </Link>
-                <span style={{ color: "#64748b", cursor: "not-allowed" }} title="Placeholder for Audit navigation">
+                <Link href="/audit" style={{ color: "#f1f5f9", textDecoration: "none" }}>
                   Audit Log
-                </span>
+                </Link>
               </nav>
             )}
           </div>
