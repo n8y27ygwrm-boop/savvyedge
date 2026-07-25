@@ -33,6 +33,7 @@ describe("Ingestion Governance Integration Tests (Real DB)", () => {
     await db.workflowAuditEvent.deleteMany();
     await db.bonusEvidenceClaim.deleteMany();
     await db.casinoEvidenceClaim.deleteMany();
+    await db.licenseEvidenceClaim.deleteMany();
     await db.evidenceRecord.deleteMany();
     await db.bonusHistoryEvent.deleteMany();
     await db.bonus.deleteMany();
