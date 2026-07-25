@@ -58,7 +58,7 @@ export class CasinoService {
       license_info?: string | null;
     },
     db: Prisma.TransactionClient | typeof prisma = prisma
-  ): Promise<{ casino: any; isNew: boolean }> {
+  ): Promise<{ casino: any; isNew: boolean; isApprovedOrPublished: boolean; hasFieldDiffs: boolean }> {
     const cleanDomain = input.domain.replace(/^www\./, "").toLowerCase();
     const websiteUrl = input.website_url || `https://${cleanDomain}`;
 
@@ -74,7 +74,16 @@ export class CasinoService {
 
     if (existingCasino) {
       console.log(`[CasinoService] Found existing Casino ID: ${existingCasino.id} for domain: ${cleanDomain}`);
-      return { casino: existingCasino, isNew: false };
+      const isApprovedOrPublished =
+        existingCasino.review_status === ReviewStatus.APPROVED ||
+        existingCasino.publication_status === PublicationStatus.PUBLISHED;
+
+      const hasFieldDiffs =
+        (input.name && input.name !== existingCasino.name) ||
+        (websiteUrl && websiteUrl !== existingCasino.website_url) ||
+        (input.license_info !== undefined && input.license_info !== existingCasino.license_info);
+
+      return { casino: existingCasino, isNew: false, isApprovedOrPublished, hasFieldDiffs: Boolean(hasFieldDiffs) };
     }
 
     // 2. Create new Casino if not existing
@@ -103,6 +112,6 @@ export class CasinoService {
       },
     });
 
-    return { casino: created, isNew: true };
+    return { casino: created, isNew: true, isApprovedOrPublished: false, hasFieldDiffs: false };
   }
 }

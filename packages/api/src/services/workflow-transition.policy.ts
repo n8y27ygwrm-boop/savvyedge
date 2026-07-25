@@ -31,6 +31,13 @@ const REVIEW_TRANSITIONS = new Map<string, ReviewTransitionDecision>([
     },
   ],
   [
+    `${ReviewStatus.APPROVED}:${ReviewStatus.AWAITING_REVIEW}`,
+    {
+      action: "SUBMIT_REVIEW",
+      eventType: WorkflowEventType.MATERIAL_CHANGE_DETECTED,
+    },
+  ],
+  [
     `${ReviewStatus.AWAITING_REVIEW}:${ReviewStatus.IN_REVIEW}`,
     {
       action: "BEGIN_REVIEW",

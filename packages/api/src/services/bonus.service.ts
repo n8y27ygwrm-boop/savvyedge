@@ -191,7 +191,7 @@ export class BonusService {
     data: CreateBonusInput,
     sourceUrl?: string,
     db: Prisma.TransactionClient | typeof prisma = prisma
-  ): Promise<{ bonus: any; isNew: boolean }> {
+  ): Promise<{ bonus: any; isNew: boolean; isApprovedOrPublished: boolean; hasFieldDiffs: boolean }> {
     const trueValueScore = this.calculateTrueValueScore(
       data.headline_value,
       data.wagering_requirement,
@@ -225,7 +225,9 @@ export class BonusService {
       const isWageringEqual = candidateWagering === existingWagering;
       const isMaxConvEqual = candidateMaxConv === existingMaxConv;
 
-      if (isHeadlineEqual && isTypeEqual && isWageringEqual && isMaxConvEqual) {
+      const hasFieldDiffs = !(isHeadlineEqual && isTypeEqual && isWageringEqual && isMaxConvEqual);
+
+      if (!hasFieldDiffs) {
         // Identical fields: do not create new Bonus record. Update updated_at (NOT verified_at)
         console.log(`[BonusService] Active bonus ${existingBonus.id} is identical. Updating updated_at.`);
         const updated = await db.bonus.update({
@@ -234,11 +236,17 @@ export class BonusService {
             updated_at: now,
           },
         });
-        return { bonus: updated, isNew: false };
+        return { bonus: updated, isNew: false, isApprovedOrPublished: false, hasFieldDiffs: false };
       }
 
-      // If any field differs: log BonusHistoryEvent for each differing field and update bonus (NOT verified_at)
-      console.log(`[BonusService] Active bonus ${existingBonus.id} has updated fields. Logging history and updating bonus.`);
+      const isApprovedOrPublished =
+        existingBonus.review_status === ReviewStatus.APPROVED ||
+        existingBonus.publication_status === PublicationStatus.PUBLISHED;
+
+      // Log BonusHistoryEvent for each differing field
+      console.log(
+        `[BonusService] Active bonus ${existingBonus.id} has updated fields (isApprovedOrPublished: ${isApprovedOrPublished}). Logging history.`
+      );
       const diffs: { field: string; oldVal: string | null; newVal: string | null }[] = [];
 
       if (!isHeadlineEqual) {
@@ -275,6 +283,22 @@ export class BonusService {
         });
       }
 
+      if (isApprovedOrPublished) {
+        // CRITICAL: DO NOT overwrite public entity fields when APPROVED/PUBLISHED.
+        // Keep old approved values on the entity row so public API serves approved values.
+        console.log(
+          `[BonusService] Active bonus ${existingBonus.id} is APPROVED/PUBLISHED. Preserving active fields for review transition.`
+        );
+        const updated = await db.bonus.update({
+          where: { id: existingBonus.id },
+          data: {
+            updated_at: now,
+          },
+        });
+        return { bonus: updated, isNew: false, isApprovedOrPublished: true, hasFieldDiffs: true };
+      }
+
+      // If NOT approved or published (e.g. NEW, AWAITING_REVIEW, QUARANTINED), update fields directly on entity row.
       const updated = await db.bonus.update({
         where: { id: existingBonus.id },
         data: {
@@ -289,7 +313,7 @@ export class BonusService {
           updated_at: now,
         },
       });
-      return { bonus: updated, isNew: false };
+      return { bonus: updated, isNew: false, isApprovedOrPublished: false, hasFieldDiffs: true };
     }
 
     // No active bonus exists, create a new Bonus record with status ACTIVE, verified_at: null, review_status: NEW, publication_status: UNPUBLISHED
@@ -311,6 +335,6 @@ export class BonusService {
       },
     });
 
-    return { bonus: created, isNew: true };
+    return { bonus: created, isNew: true, isApprovedOrPublished: false, hasFieldDiffs: false };
   }
 }

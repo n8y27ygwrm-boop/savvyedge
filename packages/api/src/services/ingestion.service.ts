@@ -7,6 +7,7 @@ import {
   CasinoEvidenceField,
   BonusEvidenceField,
   ReviewStatus,
+  PublicationStatus,
 } from "@savvyedge/database";
 import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
@@ -208,7 +209,8 @@ export class IngestionService {
       });
     }
 
-    const targetCasinoId = initialCasino?.id || "pending";
+    const dummyCasinoId = "00000000-0000-0000-0000-000000000000";
+    const targetCasinoId = initialCasino?.id || dummyCasinoId;
     const bonusInput = await this.bonusAgent.run({
       rawBonusText: scrapedContent,
       casino_id: targetCasinoId,
@@ -232,6 +234,8 @@ export class IngestionService {
       // b. Resolve or Create Casino
       let activeCasino = initialCasino;
       let isNewCasino = false;
+      let isCasinoApprovedOrPublished = false;
+      let hasCasinoFieldDiffs = false;
       if (!activeCasino) {
         const res = await CasinoService.resolveOrCreateCasino({
           name: resolvedIdentity!.name,
@@ -242,13 +246,28 @@ export class IngestionService {
         }, tx);
         activeCasino = res.casino;
         isNewCasino = res.isNew;
+        isCasinoApprovedOrPublished = res.isApprovedOrPublished;
+        hasCasinoFieldDiffs = res.hasFieldDiffs;
+      } else {
+        isCasinoApprovedOrPublished =
+          activeCasino.review_status === ReviewStatus.APPROVED ||
+          activeCasino.publication_status === PublicationStatus.PUBLISHED;
+        hasCasinoFieldDiffs =
+          Boolean(resolvedIdentity?.name && resolvedIdentity.name !== activeCasino.name) ||
+          Boolean(resolvedIdentity?.website_url && resolvedIdentity.website_url !== activeCasino.website_url) ||
+          Boolean(resolvedIdentity?.license_info !== undefined && resolvedIdentity.license_info !== activeCasino.license_info);
       }
 
       const safeCasino = activeCasino!;
 
       // c. Create or Update Bonus
       const bonusPayload = { ...bonusInput, casino_id: safeCasino.id };
-      const { bonus: savedBonus, isNew: isNewBonus } = await BonusService.saveGovernedBonus(bonusPayload, url, tx);
+      const {
+        bonus: savedBonus,
+        isNew: isNewBonus,
+        isApprovedOrPublished: isBonusApprovedOrPublished,
+        hasFieldDiffs: hasBonusFieldDiffs,
+      } = await BonusService.saveGovernedBonus(bonusPayload, url, tx);
 
       // d. Resolve DataSource & ScrapeJob
       const scrapeJob = scrapeJobId ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } }) : null;
@@ -286,42 +305,46 @@ export class IngestionService {
 
       // f. Create Casino Evidence Claims
       const casinoClaimIds: string[] = [];
-      if (isNewCasino) {
-        if (safeCasino.name) {
+      const casinoObservedName = resolvedIdentity?.name || safeCasino.name;
+      const casinoObservedUrl = resolvedIdentity?.website_url || safeCasino.website_url;
+      const casinoObservedLicense = resolvedIdentity?.license_info ?? safeCasino.license_info;
+
+      if (isNewCasino || hasCasinoFieldDiffs) {
+        if (casinoObservedName) {
           const claim = await tx.casinoEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
               casino_id: safeCasino.id,
               field: CasinoEvidenceField.NAME,
-              observed_value: safeCasino.name,
-              normalized_value_hash: `normalizer-v1:NAME:${hashString(safeCasino.name)}`,
+              observed_value: casinoObservedName,
+              normalized_value_hash: `normalizer-v1:NAME:${hashString(casinoObservedName)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
           casinoClaimIds.push(claim.id);
         }
-        if (safeCasino.website_url) {
-          const host = PublicationGateService.normalizeDomainHost(safeCasino.website_url);
+        if (casinoObservedUrl) {
+          const host = PublicationGateService.normalizeDomainHost(casinoObservedUrl);
           const claim = await tx.casinoEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
               casino_id: safeCasino.id,
               field: CasinoEvidenceField.WEBSITE_HOST,
-              observed_value: safeCasino.website_url,
+              observed_value: casinoObservedUrl,
               normalized_value_hash: `normalizer-v1:WEBSITE_HOST:${hashString(host)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
           casinoClaimIds.push(claim.id);
         }
-        if (safeCasino.license_info) {
+        if (casinoObservedLicense) {
           const claim = await tx.casinoEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
               casino_id: safeCasino.id,
               field: CasinoEvidenceField.LICENSE_ASSOCIATION,
-              observed_value: safeCasino.license_info,
-              normalized_value_hash: `normalizer-v1:LICENSE:${hashString(safeCasino.license_info)}`,
+              observed_value: casinoObservedLicense,
+              normalized_value_hash: `normalizer-v1:LICENSE:${hashString(casinoObservedLicense)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
@@ -329,32 +352,33 @@ export class IngestionService {
         }
       }
 
-      // g. Create Bonus Evidence Claims
+      // g. Create Bonus Evidence Claims from newly extracted bonusInput
       const bonusClaimIds: string[] = [];
-      if (savedBonus.type) {
+      const extractedType = bonusInput.type || savedBonus.type;
+      if (extractedType) {
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.TYPE,
-            observed_value: savedBonus.type,
-            normalized_value_hash: `normalizer-v1:TYPE:${hashString(savedBonus.type)}`,
+            observed_value: extractedType,
+            normalized_value_hash: `normalizer-v1:TYPE:${hashString(extractedType)}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });
         bonusClaimIds.push(claim.id);
       }
 
-      if (savedBonus.headline_value) {
-        const capParse = PublicationGateService.parseStructuredMonetaryCap(savedBonus.headline_value);
+      if (bonusInput.headline_value) {
+        const capParse = PublicationGateService.parseStructuredMonetaryCap(bonusInput.headline_value);
         if (capParse.status === "VALID") {
           const claim = await tx.bonusEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
               bonus_id: savedBonus.id,
               field: BonusEvidenceField.HEADLINE_VALUE,
-              observed_value: savedBonus.headline_value,
-              normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(savedBonus.headline_value)}`,
+              observed_value: bonusInput.headline_value,
+              normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(bonusInput.headline_value)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
@@ -362,63 +386,63 @@ export class IngestionService {
         }
       }
 
-      if (savedBonus.wagering_requirement !== null && savedBonus.wagering_requirement !== undefined) {
+      if (bonusInput.wagering_requirement !== null && bonusInput.wagering_requirement !== undefined) {
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.WAGERING_REQUIREMENT,
-            observed_value: String(savedBonus.wagering_requirement),
-            normalized_value_hash: `normalizer-v1:WAGERING:${savedBonus.wagering_requirement}`,
+            observed_value: String(bonusInput.wagering_requirement),
+            normalized_value_hash: `normalizer-v1:WAGERING:${bonusInput.wagering_requirement}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });
         bonusClaimIds.push(claim.id);
       }
 
-      if (savedBonus.max_conversion !== null && savedBonus.max_conversion !== undefined) {
+      if (bonusInput.max_conversion !== null && bonusInput.max_conversion !== undefined) {
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.MAX_CONVERSION,
-            observed_value: String(savedBonus.max_conversion),
-            normalized_value_hash: `normalizer-v1:MAX_CONVERSION:${savedBonus.max_conversion}`,
+            observed_value: String(bonusInput.max_conversion),
+            normalized_value_hash: `normalizer-v1:MAX_CONVERSION:${bonusInput.max_conversion}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });
         bonusClaimIds.push(claim.id);
       }
 
-      if (savedBonus.valid_from) {
+      if (bonusInput.valid_from) {
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.VALID_FROM,
-            observed_value: savedBonus.valid_from instanceof Date ? savedBonus.valid_from.toISOString() : String(savedBonus.valid_from),
-            normalized_value_hash: `normalizer-v1:VALID_FROM:${hashString(String(savedBonus.valid_from))}`,
+            observed_value: bonusInput.valid_from instanceof Date ? bonusInput.valid_from.toISOString() : String(bonusInput.valid_from),
+            normalized_value_hash: `normalizer-v1:VALID_FROM:${hashString(String(bonusInput.valid_from))}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });
         bonusClaimIds.push(claim.id);
       }
 
-      if (savedBonus.valid_until) {
+      if (bonusInput.valid_until) {
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.VALID_UNTIL,
-            observed_value: savedBonus.valid_until instanceof Date ? savedBonus.valid_until.toISOString() : String(savedBonus.valid_until),
-            normalized_value_hash: `normalizer-v1:VALID_UNTIL:${hashString(String(savedBonus.valid_until))}`,
+            observed_value: bonusInput.valid_until instanceof Date ? bonusInput.valid_until.toISOString() : String(bonusInput.valid_until),
+            normalized_value_hash: `normalizer-v1:VALID_UNTIL:${hashString(String(bonusInput.valid_until))}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });
         bonusClaimIds.push(claim.id);
       }
 
-      // h. Execute Governed Workflow Transitions (NEW -> AWAITING_REVIEW)
+      // h. Execute Governed Workflow Transitions (NEW -> AWAITING_REVIEW or APPROVED -> AWAITING_REVIEW)
       const workflowService = new WorkflowTransitionService(tx as any);
 
       if (isNewCasino && casinoClaimIds.length > 0) {
@@ -429,6 +453,14 @@ export class IngestionService {
           toStatus: ReviewStatus.AWAITING_REVIEW,
           claimIds: casinoClaimIds,
         });
+      } else if (!isNewCasino && isCasinoApprovedOrPublished && hasCasinoFieldDiffs && casinoClaimIds.length > 0) {
+        await workflowService.transitionCasinoReview({
+          subjectId: safeCasino.id,
+          actorId: actor.id,
+          expectedVersion: safeCasino.governance_version,
+          toStatus: ReviewStatus.AWAITING_REVIEW,
+          claimIds: casinoClaimIds,
+        });
       }
 
       if (isNewBonus && bonusClaimIds.length > 0) {
@@ -436,6 +468,14 @@ export class IngestionService {
           subjectId: savedBonus.id,
           actorId: actor.id,
           expectedVersion: 0,
+          toStatus: ReviewStatus.AWAITING_REVIEW,
+          claimIds: bonusClaimIds,
+        });
+      } else if (!isNewBonus && isBonusApprovedOrPublished && hasBonusFieldDiffs && bonusClaimIds.length > 0) {
+        await workflowService.transitionBonusReview({
+          subjectId: savedBonus.id,
+          actorId: actor.id,
+          expectedVersion: savedBonus.governance_version,
           toStatus: ReviewStatus.AWAITING_REVIEW,
           claimIds: bonusClaimIds,
         });

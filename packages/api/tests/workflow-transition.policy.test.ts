@@ -19,6 +19,7 @@ describe("Slice 2.2B review-transition policy", () => {
     [ReviewStatus.IN_REVIEW, ReviewStatus.APPROVED, "APPROVED"],
     [ReviewStatus.IN_REVIEW, ReviewStatus.REJECTED, "REJECTED"],
     [ReviewStatus.APPROVED, ReviewStatus.REJECTED, "REJECTED"],
+    [ReviewStatus.APPROVED, ReviewStatus.AWAITING_REVIEW, "MATERIAL_CHANGE_DETECTED"],
     [ReviewStatus.REJECTED, ReviewStatus.AWAITING_REVIEW, "REVIEW_REQUESTED"],
   ] as const)(
     "allows %s -> %s",
