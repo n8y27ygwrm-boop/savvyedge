@@ -96,7 +96,7 @@ export function ClearQuarantineControls({
       ) : (
         <div style={{ padding: 16, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
           <h4 style={{ margin: "0 0 8px 0", color: "#c2410c" }}>Confirm Quarantine Clearance</h4>
-          
+
           <div style={{ padding: 12, marginBottom: 14, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 6, fontSize: 13, color: "#1e40af" }}>
             <strong>Governance Disclaimer:</strong>
             <ul style={{ margin: "6px 0 0 0", paddingLeft: 20 }}>

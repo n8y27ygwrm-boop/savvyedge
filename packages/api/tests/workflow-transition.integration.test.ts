@@ -489,6 +489,7 @@ describeWithDatabase(
         expectedVersion: 1,
         toStatus: ReviewStatus.AWAITING_REVIEW,
         clearQuarantine: true,
+        internalReason: "Cleared after review",
       });
       expect(cleared.reviewStatus).toBe(ReviewStatus.AWAITING_REVIEW);
       expect(

@@ -2,7 +2,7 @@ import {
   QUARANTINE_ENTITY_TYPES,
   isGovernedEntityId,
   type QuarantineEntityType,
-} from "@/lib/quarantine";
+} from "./quarantine";
 
 const TRANSITION_ACTIONS = [
   "BEGIN_REVIEW",
