@@ -865,7 +865,7 @@ describeWithDatabase(
           actorId: ids.human,
           expectedVersion: 0,
           toStatus:
-            "WITHDRAWN" as unknown as PublicationStatus.UNPUBLISHED,
+            "WITHDRAWN" as unknown as PublicationStatus,
           claimIds: [claimId],
         }),
         "INVALID_TRANSITION",
