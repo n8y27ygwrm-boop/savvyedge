@@ -1,4 +1,4 @@
-import { Prisma } from "@savvyedge/database";
+import { Prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
 import { BonusService } from "./bonus.service";
 
 /**
@@ -250,6 +250,9 @@ export class PublicationGateService {
    */
   public static whereCasinoPublic(): Prisma.CasinoWhereInput {
     return {
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: { notIn: EXCLUDED_DATA_SOURCES },
       verified_at: { not: null },
@@ -268,6 +271,9 @@ export class PublicationGateService {
   public static whereBonusPublic(): Prisma.BonusWhereInput {
     const now = new Date();
     return {
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: { notIn: EXCLUDED_DATA_SOURCES },
       verified_at: { not: null },
@@ -302,6 +308,10 @@ export class PublicationGateService {
    */
   public static isCasinoPubliclyEligible(casino: any): boolean {
     if (!casino || typeof casino !== "object") return false;
+    if (casino.publication_status !== PublicationStatus.PUBLISHED) return false;
+    if (casino.review_status !== ReviewStatus.APPROVED) return false;
+    if (casino.quarantine_reason !== null && casino.quarantine_reason !== undefined) return false;
+
     if (casino.status !== "ACTIVE") return false;
     if (
       casino.data_source_type &&
@@ -337,6 +347,10 @@ export class PublicationGateService {
    */
   public static isBonusPubliclyEligible(bonus: any, casino?: any): boolean {
     if (!bonus || typeof bonus !== "object") return false;
+    if (bonus.publication_status !== PublicationStatus.PUBLISHED) return false;
+    if (bonus.review_status !== ReviewStatus.APPROVED) return false;
+    if (bonus.quarantine_reason !== null && bonus.quarantine_reason !== undefined) return false;
+
     if (bonus.status !== "ACTIVE") return false;
     if (
       bonus.data_source_type &&

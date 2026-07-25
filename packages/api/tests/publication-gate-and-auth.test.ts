@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { verifyApiAuthorization } from "../src/utils/auth.utils";
 import { PublicationGateService } from "../src/services/publication-gate.service";
 import { BonusService } from "../src/services/bonus.service";
-import { prisma } from "@savvyedge/database";
+import { prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
 import VerificationBadge from "../../../apps/web/src/components/VerificationBadge";
 
 // Import real route handlers for direct integration execution testing
@@ -157,6 +157,9 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     name: "Apex Casino",
     slug: "apex-casino",
     website_url: "https://apexcasino.com",
+    publication_status: PublicationStatus.PUBLISHED,
+    review_status: ReviewStatus.APPROVED,
+    quarantine_reason: null,
     status: "ACTIVE",
     data_source_type: "MANUAL_AUDIT",
     verified_at: verifiedDate,
@@ -177,6 +180,9 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     const bonusNoEvidence = {
       id: "b-100",
       headline_value: "100% up to $500",
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       verified_at: verifiedDate,
       casino: validCasino,
@@ -197,6 +203,9 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     const bonusStatusActive = {
       id: "b-101",
       headline_value: "100% up to $500",
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       verified_at: verifiedDate,
       casino: baseCasino,
@@ -210,6 +219,9 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     const bonusNoCasino = {
       id: "b-102",
       headline_value: "100% up to $500",
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       verified_at: verifiedDate,
       casino: null,
@@ -233,6 +245,9 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     const validBonus = {
       id: "b-200",
       headline_value: "100% up to $500",
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       verified_at: verifiedDate,
       casino: validCasino,
@@ -252,6 +267,9 @@ describe("Phase 1: Slot & CasinoSlot Safety Behavioral Tests (Complete)", () => 
     name: "Royal Crown Casino",
     slug: "royal-crown-casino",
     website_url: "https://royalcrown.com",
+    publication_status: PublicationStatus.PUBLISHED,
+    review_status: ReviewStatus.APPROVED,
+    quarantine_reason: null,
     status: "ACTIVE",
     data_source_type: "MANUAL_AUDIT",
     verified_at: verifiedDate,
@@ -348,6 +366,9 @@ describe("Phase 1: Public Casino Comparison Runtime Gate Regression Tests", () =
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" "),
       website_url: `https://${slug}.example.com`,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: "MANUAL_AUDIT",
       verified_at: checkedAt,
@@ -383,6 +404,9 @@ describe("Phase 1: Public Casino Comparison Runtime Gate Regression Tests", () =
       wagering_requirement: 35,
       max_conversion: 500,
       true_value_score: 70,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: "MANUAL_AUDIT",
       valid_until: null,
@@ -502,5 +526,110 @@ describe("Phase 1: Zero-Wagering Formula Safety Regression Test", () => {
     expect(output.totalWageringRequired).toBe(0);
     expect(output.expectedValue).toBe(100);
     expect(output.isCalculable).toBe(true);
+  });
+});
+
+describe("Phase 2: Governance Fields Publication Gate Integration Tests", () => {
+  const verifiedDate = new Date("2026-01-01T12:00:00Z");
+
+  const baseCasino = {
+    id: "gov-c-100",
+    name: "Governance Casino",
+    slug: "governance-casino",
+    website_url: "https://governancecasino.com",
+    status: "ACTIVE",
+    data_source_type: "MANUAL_AUDIT",
+    verified_at: verifiedDate,
+    licenses: [{ status: "ACTIVE", verified_at: verifiedDate, license_no: "GOV-LIC-100" }],
+    history_events: [{ event_type: "VERIFICATION", source_url: "https://regulator.example.com/gov", occurred_at: verifiedDate }],
+  };
+
+  it("a) rejects Casino with status=ACTIVE and verified_at, but publication_status=UNPUBLISHED", () => {
+    const casinoUnpublished = {
+      ...baseCasino,
+      publication_status: PublicationStatus.UNPUBLISHED,
+      review_status: ReviewStatus.AWAITING_REVIEW,
+      quarantine_reason: null,
+    };
+
+    expect(PublicationGateService.isCasinoPubliclyEligible(casinoUnpublished)).toBe(false);
+
+    const whereClause = PublicationGateService.whereCasinoPublic();
+    expect(whereClause.publication_status).toBe(PublicationStatus.PUBLISHED);
+    expect(whereClause.review_status).toBe(ReviewStatus.APPROVED);
+    expect(whereClause.quarantine_reason).toBeNull();
+  });
+
+  it("b) allows Casino with publication_status=PUBLISHED, review_status=APPROVED, quarantine_reason=null", () => {
+    const casinoApprovedPublished = {
+      ...baseCasino,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
+    };
+
+    expect(PublicationGateService.isCasinoPubliclyEligible(casinoApprovedPublished)).toBe(true);
+  });
+
+  it("c) rejects Casino with publication_status=PUBLISHED but quarantine_reason not-null", () => {
+    const casinoQuarantined = {
+      ...baseCasino,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: "SUSPICIOUS_AFFILIATE_LINK",
+    };
+
+    expect(PublicationGateService.isCasinoPubliclyEligible(casinoQuarantined)).toBe(false);
+  });
+
+  it("d) tests Bonus governance eligibility (publication_status, review_status, quarantine_reason, and whereBonusPublic)", () => {
+    const approvedCasino = {
+      ...baseCasino,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
+    };
+
+    const baseBonus = {
+      id: "gov-b-100",
+      headline_value: "100% up to €500",
+      status: "ACTIVE",
+      verified_at: verifiedDate,
+      casino: approvedCasino,
+      history_events: [{ field_changed: "verified_at", source_url: "https://governancecasino.com/terms", changed_at: verifiedDate }],
+    };
+
+    // Bonus UNPUBLISHED
+    const bonusUnpublished = {
+      ...baseBonus,
+      publication_status: PublicationStatus.UNPUBLISHED,
+      review_status: ReviewStatus.AWAITING_REVIEW,
+      quarantine_reason: null,
+    };
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusUnpublished)).toBe(false);
+
+    // Bonus PUBLISHED + APPROVED + null quarantine
+    const bonusApprovedPublished = {
+      ...baseBonus,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: null,
+    };
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusApprovedPublished)).toBe(true);
+
+    // Bonus PUBLISHED but quarantine_reason not null
+    const bonusQuarantined = {
+      ...baseBonus,
+      publication_status: PublicationStatus.PUBLISHED,
+      review_status: ReviewStatus.APPROVED,
+      quarantine_reason: "EXPIRED_TERMS",
+    };
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusQuarantined)).toBe(false);
+
+    // Verify whereBonusPublic filters
+    const whereBonus = PublicationGateService.whereBonusPublic();
+    expect(whereBonus.publication_status).toBe(PublicationStatus.PUBLISHED);
+    expect(whereBonus.review_status).toBe(ReviewStatus.APPROVED);
+    expect(whereBonus.quarantine_reason).toBeNull();
   });
 });
