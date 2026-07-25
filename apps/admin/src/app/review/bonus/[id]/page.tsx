@@ -176,7 +176,7 @@ export default async function BonusReviewDetailPage(props: BonusDetailPageProps)
                     </span>
                   </div>
                   <div style={{ fontSize: 14, fontWeight: "bold", marginBottom: 6 }}>
-                    Claimed Value: <span style={{ color: "#0f172a" }}>"{claim.observed_value}"</span>
+                    Claimed Value: <span style={{ color: "#0f172a" }}>&quot;{claim.observed_value}&quot;</span>
                   </div>
                   <div style={{ fontSize: 12, color: "#64748b", display: "flex", justifyContent: "space-between" }}>
                     <span>Source: <a href={claim.evidence.source_url} target="_blank" rel="noreferrer" style={{ color: "#2563eb" }}>{claim.evidence.source_url}</a></span>

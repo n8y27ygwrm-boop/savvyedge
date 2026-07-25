@@ -23,6 +23,29 @@ interface UnifiedQueueItem {
   detailUrl: string;
 }
 
+interface RawCasinoQueueItem {
+  id: string;
+  name: string;
+  review_status: string;
+  publication_status: string;
+  quarantine_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+  workflow_events: Array<{ event_type: string; occurred_at: Date }>;
+}
+
+interface RawBonusQueueItem {
+  id: string;
+  headline_value: string | null;
+  type: string;
+  review_status: string;
+  publication_status: string;
+  quarantine_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+  workflow_events: Array<{ event_type: string; occurred_at: Date }>;
+}
+
 export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
   const { authenticated } = await verifyAdminSession();
   if (!authenticated) {
@@ -40,7 +63,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
       ? [ReviewStatus.IN_REVIEW]
       : [ReviewStatus.AWAITING_REVIEW, ReviewStatus.IN_REVIEW];
 
-  let rawCasinos: any[] = [];
+  let rawCasinos: RawCasinoQueueItem[] = [];
   if (!typeFilter || typeFilter === "ALL" || typeFilter === "CASINO") {
     rawCasinos = await prisma.casino.findMany({
       where: {
@@ -66,7 +89,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
     });
   }
 
-  let rawBonuses: any[] = [];
+  let rawBonuses: RawBonusQueueItem[] = [];
   if (!typeFilter || typeFilter === "ALL" || typeFilter === "BONUS") {
     rawBonuses = await prisma.bonus.findMany({
       where: {

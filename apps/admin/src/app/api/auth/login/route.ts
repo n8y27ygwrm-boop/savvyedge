@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { ADMIN_COOKIE_NAME, generateSessionToken } from "@/lib/auth";
 
 export async function POST(request: Request) {
@@ -7,8 +8,14 @@ export async function POST(request: Request) {
     const { password } = body || {};
 
     const expectedPassword = process.env.ADMIN_PASSWORD || "admin-secret-key-12345";
+    const passwordBuffer = Buffer.from(typeof password === "string" ? password : "");
+    const expectedBuffer = Buffer.from(expectedPassword);
 
-    if (!password || password !== expectedPassword) {
+    const isMatch =
+      passwordBuffer.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(passwordBuffer, expectedBuffer);
+
+    if (!isMatch) {
       return NextResponse.json(
         { success: false, error: "Invalid password credentials" },
         { status: 401 }
@@ -29,9 +36,10 @@ export async function POST(request: Request) {
     });
 
     return response;
-  } catch (error: any) {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Authentication failed";
     return NextResponse.json(
-      { success: false, error: error?.message || "Authentication failed" },
+      { success: false, error: message },
       { status: 500 }
     );
   }

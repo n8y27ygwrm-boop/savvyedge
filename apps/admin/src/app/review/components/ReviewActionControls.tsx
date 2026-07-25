@@ -30,7 +30,7 @@ export function ReviewActionControls({
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  async function executeTransition(action: string, extraPayload: Record<string, any> = {}) {
+  async function executeTransition(action: string, extraPayload: Record<string, unknown> = {}) {
     setError(null);
     setLoading(true);
 

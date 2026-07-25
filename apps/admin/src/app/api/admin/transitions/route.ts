@@ -8,7 +8,6 @@ import {
   prisma,
   ReviewStatus,
   PublicationStatus,
-  GovernedSubjectType,
 } from "@savvyedge/database";
 
 export async function POST(request: Request) {
@@ -206,7 +205,7 @@ export async function POST(request: Request) {
       success: true,
       data: result,
     });
-  } catch (error: any) {
+  } catch (error) {
     if (error instanceof WorkflowTransitionError) {
       const code = error.code;
       if (
@@ -247,8 +246,9 @@ export async function POST(request: Request) {
     }
 
     console.error("[Admin Transition Handler Error]", error);
+    const message = error instanceof Error ? error.message : "Internal server error during workflow transition";
     return NextResponse.json(
-      { success: false, error: error?.message || "Internal server error during workflow transition" },
+      { success: false, error: message },
       { status: 500 }
     );
   }

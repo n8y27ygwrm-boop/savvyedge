@@ -5,7 +5,14 @@ import { prisma, ActorKind } from "@savvyedge/database";
 export const ADMIN_COOKIE_NAME = "savvy_admin_session";
 
 function getAdminPassword(): string {
-  return process.env.ADMIN_PASSWORD || "admin-secret-key-12345";
+  const secret = process.env.ADMIN_PASSWORD;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("[SECURITY CONFIG ERROR] ADMIN_PASSWORD environment variable is missing or empty!");
+    }
+    return "admin-secret-key-12345";
+  }
+  return secret;
 }
 
 export function generateSessionToken(password: string): string {
