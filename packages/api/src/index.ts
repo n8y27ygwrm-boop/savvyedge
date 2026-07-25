@@ -5,4 +5,7 @@ export * from "./services/job-queue.service";
 export * from "./services/discovery.service";
 export * from "./services/orchestrator.service";
 export * from "./services/publication-gate.service";
+export * from "./services/workflow-transition.errors";
+export * from "./services/workflow-transition.policy";
+export * from "./services/workflow-transition.service";
 export * from "./utils/auth.utils";
