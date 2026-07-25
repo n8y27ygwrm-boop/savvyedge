@@ -13,6 +13,8 @@ import {
   type ReviewTransitionCommand,
 } from "../src/services/workflow-transition.service";
 
+declare const process: { env: Record<string, string | undefined> };
+
 const databaseUrl = process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 
@@ -148,7 +150,7 @@ describeWithDatabase(
 
     const setBonusState = async (
       reviewStatus: ReviewStatus,
-      publicationStatus = PublicationStatus.UNPUBLISHED,
+      publicationStatus: PublicationStatus = PublicationStatus.UNPUBLISHED,
       version = 0,
     ) => {
       await database.bonus.update({
@@ -169,7 +171,7 @@ describeWithDatabase(
 
     const setSlotState = async (
       reviewStatus: ReviewStatus,
-      publicationStatus = PublicationStatus.UNPUBLISHED,
+      publicationStatus: PublicationStatus = PublicationStatus.UNPUBLISHED,
       version = 0,
     ) => {
       await database.slot.update({
@@ -863,7 +865,7 @@ describeWithDatabase(
           actorId: ids.human,
           expectedVersion: 0,
           toStatus:
-            PublicationStatus.WITHDRAWN as unknown as PublicationStatus.UNPUBLISHED,
+            "WITHDRAWN" as unknown as PublicationStatus.UNPUBLISHED,
           claimIds: [claimId],
         }),
         "INVALID_TRANSITION",
