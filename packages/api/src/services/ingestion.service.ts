@@ -1,8 +1,23 @@
-import { prisma } from "@savvyedge/database";
+import crypto from "crypto";
+import {
+  prisma,
+  ActorKind,
+  EvidenceType,
+  EvidenceVerdict,
+  CasinoEvidenceField,
+  BonusEvidenceField,
+  ReviewStatus,
+} from "@savvyedge/database";
 import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
 import { CasinoService } from "./casino.service";
 import { JobQueueService } from "./job-queue.service";
+import { WorkflowTransitionService } from "./workflow-transition.service";
+import { PublicationGateService } from "./publication-gate.service";
+
+function hashString(val: string): string {
+  return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
+}
 
 export interface IngestBonusInput {
   url: string;
@@ -18,7 +33,7 @@ export class IngestionService {
 
   /**
    * Enqueues an ingestion pipeline for a given URL.
-   * This is the asynchronous entrypoint.
+   * Asynchronous entrypoint.
    */
   public static async enqueueIngestion({ url, casino_id, taskContext = "BONUS" }: IngestBonusInput) {
     console.log(`[IngestionService] Enqueueing ingestion for URL: ${url} (context: ${taskContext})`);
@@ -46,7 +61,7 @@ export class IngestionService {
       });
     }
 
-    // 2. Create ScrapeJob in PROCESSING state
+    // 2. Create ScrapeJob
     const scrapeJob = await prisma.scrapeJob.create({
       data: {
         data_source_id: dataSource.id,
@@ -79,11 +94,11 @@ export class IngestionService {
     const { scrapeJobId, url, casinoId, taskContext = "BONUS" } = payload;
     console.log(`[IngestionService] [Worker] Crawling URL: ${url} (context: ${taskContext})`);
 
-    // Run Playwright Scraper
     let scrapeResult;
     try {
       scrapeResult = await this.scraperAgent.run({ url });
     } catch (err: any) {
+      console.error(`[IngestionService] [Worker] Crawl failed for URL: ${url}`, err);
       await prisma.scrapeJob.update({
         where: { id: scrapeJobId },
         data: {
@@ -95,12 +110,10 @@ export class IngestionService {
       throw err;
     }
 
-    // Fetch current job to get data_source_id
     const currentJob = await prisma.scrapeJob.findUniqueOrThrow({
       where: { id: scrapeJobId },
     });
 
-    // Update ScrapeJob with snapshot path, hashes, and canonical URL
     await prisma.scrapeJob.update({
       where: { id: scrapeJobId },
       data: {
@@ -111,7 +124,7 @@ export class IngestionService {
       },
     });
 
-    // Look up previous successful ScrapeJob for the same DataSource
+    // Check for identical content hash from previous job
     const previousJob = await prisma.scrapeJob.findFirst({
       where: {
         data_source_id: currentJob.data_source_id,
@@ -139,7 +152,6 @@ export class IngestionService {
       return;
     }
 
-    // Enqueue extraction step based on taskContext
     if (taskContext === "GAME_LIST") {
       if (!casinoId) {
         throw new Error("GAME_LIST crawl payload missing mandatory casinoId");
@@ -165,11 +177,11 @@ export class IngestionService {
    * The extraction handler (Step 2 - Bonus)
    */
   public static async handleExtraction(payload: {
-    scrapeJobId: string;
+    scrapeJobId?: string;
     url: string;
     casinoId?: string;
     scrapedContent: string;
-    scrapedMetadata: any;
+    scrapedMetadata?: any;
   }) {
     const { scrapeJobId, url, casinoId, scrapedContent, scrapedMetadata } = payload;
     console.log(`[IngestionService] [Worker] Extracting entities for URL: ${url}`);
@@ -182,49 +194,268 @@ export class IngestionService {
       domain = url;
     }
 
-    // 2. Resolve Casino Entity
-    let activeCasino;
-    if (casinoId) {
-      activeCasino = await prisma.casino.findUnique({ where: { id: casinoId } });
-    }
+    // 2. AI Entity Resolution (executed outside DB transaction)
+    let initialCasino = casinoId ? await prisma.casino.findUnique({ where: { id: casinoId } }) : null;
+    let resolvedIdentity: { name: string; slug: string; domain?: string; website_url?: string; license_info?: string | null } | null = null;
 
-    if (!activeCasino) {
+    if (!initialCasino) {
       console.log(`[IngestionService] [Worker] Resolving casino entity for domain '${domain}'...`);
-      const resolvedIdentity = await this.casinoResolutionAgent.run({
+      resolvedIdentity = await this.casinoResolutionAgent.run({
         url,
         domain,
         pageMetadata: scrapedMetadata,
         scrapedContentSnippet: scrapedContent,
       });
-
-      activeCasino = await CasinoService.resolveOrCreateCasino({
-        name: resolvedIdentity.name,
-        slug: resolvedIdentity.slug,
-        domain: resolvedIdentity.domain || domain,
-        website_url: resolvedIdentity.website_url,
-        license_info: resolvedIdentity.license_info,
-      });
     }
 
-    // 3. Process raw text via BonusAgent
+    const targetCasinoId = initialCasino?.id || "pending";
     const bonusInput = await this.bonusAgent.run({
       rawBonusText: scrapedContent,
-      casino_id: activeCasino.id,
+      casino_id: targetCasinoId,
     });
 
-    // 4. Persist Bonus into PostgreSQL with deduplication and source_url
-    const savedBonus = await BonusService.createBonus(bonusInput, url);
+    // 3. Governed Persistence inside a Single Atomic Transaction
+    const { casino, bonus, evidence } = await prisma.$transaction(async (tx) => {
+      // a. Resolve/Upsert Service Actor (service:ingestion)
+      const actor = await tx.reviewActor.upsert({
+        where: { stable_key: "service:ingestion" },
+        update: { active: true },
+        create: {
+          kind: ActorKind.SERVICE,
+          stable_key: "service:ingestion",
+          display_name: "Ingestion Service",
+          active: true,
+        },
+        select: { id: true },
+      });
 
-    // 5. Update ScrapeJob status to COMPLETED
-    await prisma.scrapeJob.update({
-      where: { id: scrapeJobId },
-      data: {
-        status: "COMPLETED",
-        completed_at: new Date(),
-      },
+      // b. Resolve or Create Casino
+      let activeCasino = initialCasino;
+      let isNewCasino = false;
+      if (!activeCasino) {
+        const res = await CasinoService.resolveOrCreateCasino({
+          name: resolvedIdentity!.name,
+          slug: resolvedIdentity!.slug,
+          domain: resolvedIdentity!.domain || domain,
+          website_url: resolvedIdentity!.website_url,
+          license_info: resolvedIdentity!.license_info ?? null,
+        }, tx);
+        activeCasino = res.casino;
+        isNewCasino = res.isNew;
+      }
+
+      const safeCasino = activeCasino!;
+
+      // c. Create or Update Bonus
+      const bonusPayload = { ...bonusInput, casino_id: safeCasino.id };
+      const { bonus: savedBonus, isNew: isNewBonus } = await BonusService.saveGovernedBonus(bonusPayload, url, tx);
+
+      // d. Resolve DataSource & ScrapeJob
+      const scrapeJob = scrapeJobId ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } }) : null;
+      let dataSourceId = scrapeJob ? scrapeJob.data_source_id : null;
+      if (!dataSourceId) {
+        let ds = await tx.dataSource.findFirst({ where: { url } });
+        if (!ds) {
+          ds = await tx.dataSource.create({
+            data: {
+              url,
+              source_type: "CASINO_PROMOTION_PAGE",
+              last_scraped_at: new Date(),
+            },
+          });
+        }
+        dataSourceId = ds.id;
+      }
+
+      // e. Create Single Shared EvidenceRecord
+      const now = new Date();
+      const evidenceRecord = await tx.evidenceRecord.create({
+        data: {
+          data_source_id: dataSourceId,
+          scrape_job_id: scrapeJob ? scrapeJob.id : null,
+          evidence_type: EvidenceType.OPERATOR_PAGE,
+          source_url: url,
+          snapshot_path: scrapeJob?.snapshot_path || null,
+          html_hash: scrapeJob?.html_hash || null,
+          content_hash: scrapeJob?.content_hash || null,
+          observed_at: scrapeJob?.started_at || now,
+          extracted_at: now,
+          created_by_id: actor.id,
+        },
+      });
+
+      // f. Create Casino Evidence Claims
+      const casinoClaimIds: string[] = [];
+      if (isNewCasino) {
+        if (safeCasino.name) {
+          const claim = await tx.casinoEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              casino_id: safeCasino.id,
+              field: CasinoEvidenceField.NAME,
+              observed_value: safeCasino.name,
+              normalized_value_hash: `normalizer-v1:NAME:${hashString(safeCasino.name)}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          casinoClaimIds.push(claim.id);
+        }
+        if (safeCasino.website_url) {
+          const host = PublicationGateService.normalizeDomainHost(safeCasino.website_url);
+          const claim = await tx.casinoEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              casino_id: safeCasino.id,
+              field: CasinoEvidenceField.WEBSITE_HOST,
+              observed_value: safeCasino.website_url,
+              normalized_value_hash: `normalizer-v1:WEBSITE_HOST:${hashString(host)}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          casinoClaimIds.push(claim.id);
+        }
+        if (safeCasino.license_info) {
+          const claim = await tx.casinoEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              casino_id: safeCasino.id,
+              field: CasinoEvidenceField.LICENSE_ASSOCIATION,
+              observed_value: safeCasino.license_info,
+              normalized_value_hash: `normalizer-v1:LICENSE:${hashString(safeCasino.license_info)}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          casinoClaimIds.push(claim.id);
+        }
+      }
+
+      // g. Create Bonus Evidence Claims
+      const bonusClaimIds: string[] = [];
+      if (savedBonus.type) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.TYPE,
+            observed_value: savedBonus.type,
+            normalized_value_hash: `normalizer-v1:TYPE:${hashString(savedBonus.type)}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
+      }
+
+      if (savedBonus.headline_value) {
+        const capParse = PublicationGateService.parseStructuredMonetaryCap(savedBonus.headline_value);
+        if (capParse.status === "VALID") {
+          const claim = await tx.bonusEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.HEADLINE_VALUE,
+              observed_value: savedBonus.headline_value,
+              normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(savedBonus.headline_value)}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          bonusClaimIds.push(claim.id);
+        }
+      }
+
+      if (savedBonus.wagering_requirement !== null && savedBonus.wagering_requirement !== undefined) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.WAGERING_REQUIREMENT,
+            observed_value: String(savedBonus.wagering_requirement),
+            normalized_value_hash: `normalizer-v1:WAGERING:${savedBonus.wagering_requirement}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
+      }
+
+      if (savedBonus.max_conversion !== null && savedBonus.max_conversion !== undefined) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.MAX_CONVERSION,
+            observed_value: String(savedBonus.max_conversion),
+            normalized_value_hash: `normalizer-v1:MAX_CONVERSION:${savedBonus.max_conversion}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
+      }
+
+      if (savedBonus.valid_from) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.VALID_FROM,
+            observed_value: savedBonus.valid_from instanceof Date ? savedBonus.valid_from.toISOString() : String(savedBonus.valid_from),
+            normalized_value_hash: `normalizer-v1:VALID_FROM:${hashString(String(savedBonus.valid_from))}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
+      }
+
+      if (savedBonus.valid_until) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.VALID_UNTIL,
+            observed_value: savedBonus.valid_until instanceof Date ? savedBonus.valid_until.toISOString() : String(savedBonus.valid_until),
+            normalized_value_hash: `normalizer-v1:VALID_UNTIL:${hashString(String(savedBonus.valid_until))}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
+      }
+
+      // h. Execute Governed Workflow Transitions (NEW -> AWAITING_REVIEW)
+      const workflowService = new WorkflowTransitionService(tx as any);
+
+      if (isNewCasino && casinoClaimIds.length > 0) {
+        await workflowService.transitionCasinoReview({
+          subjectId: safeCasino.id,
+          actorId: actor.id,
+          expectedVersion: 0,
+          toStatus: ReviewStatus.AWAITING_REVIEW,
+          claimIds: casinoClaimIds,
+        });
+      }
+
+      if (isNewBonus && bonusClaimIds.length > 0) {
+        await workflowService.transitionBonusReview({
+          subjectId: savedBonus.id,
+          actorId: actor.id,
+          expectedVersion: 0,
+          toStatus: ReviewStatus.AWAITING_REVIEW,
+          claimIds: bonusClaimIds,
+        });
+      }
+
+      // i. Mark ScrapeJob Completed
+      if (scrapeJobId) {
+        await tx.scrapeJob.update({
+          where: { id: scrapeJobId },
+          data: {
+            status: "COMPLETED",
+            completed_at: now,
+          },
+        });
+      }
+
+      return { casino: safeCasino, bonus: savedBonus, evidence: evidenceRecord };
     });
 
-    console.log(`[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${activeCasino.id}, Bonus ID: ${savedBonus.id}`);
+    console.log(`[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${casino.id}, Bonus ID: ${bonus.id}`);
   }
 
   /**
@@ -403,7 +634,6 @@ export class IngestionService {
     // Retrieve database results
     const finalJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
     
-    // Find resolved casino & bonus
     let domain = "example.com";
     try {
       domain = new URL(url).hostname.replace(/^www\./, "");

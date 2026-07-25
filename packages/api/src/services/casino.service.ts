@@ -1,4 +1,4 @@
-import { prisma } from "@savvyedge/database";
+import { Prisma, PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
 import { CreateCasinoInput } from "@savvyedge/types";
 import { AIEngine } from "@savvyedge/ai-agents";
 
@@ -33,24 +33,37 @@ export class CasinoService {
     });
   }
 
-  static async createCasino(data: CreateCasinoInput) {
-    return prisma.casino.create({
-      data,
+  static async createCasino(data: CreateCasinoInput, db: Prisma.TransactionClient | typeof prisma = prisma) {
+    const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
+    return db.casino.create({
+      data: {
+        ...data,
+        status: data.status || "ACTIVE",
+        verified_at: null,
+        data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
+        review_status: ReviewStatus.NEW,
+        publication_status: PublicationStatus.UNPUBLISHED,
+        quarantine_reason: null,
+        governance_version: 0,
+      },
     });
   }
 
-  static async resolveOrCreateCasino(input: {
-    name: string;
-    slug: string;
-    domain: string;
-    website_url?: string | null;
-    license_info?: string | null;
-  }) {
+  static async resolveOrCreateCasino(
+    input: {
+      name: string;
+      slug: string;
+      domain: string;
+      website_url?: string | null;
+      license_info?: string | null;
+    },
+    db: Prisma.TransactionClient | typeof prisma = prisma
+  ): Promise<{ casino: any; isNew: boolean }> {
     const cleanDomain = input.domain.replace(/^www\./, "").toLowerCase();
     const websiteUrl = input.website_url || `https://${cleanDomain}`;
 
     // 1. Search existing casino by website_url or domain or slug
-    const existingCasino = await prisma.casino.findFirst({
+    const existingCasino = await db.casino.findFirst({
       where: {
         OR: [
           { website_url: { contains: cleanDomain, mode: "insensitive" } },
@@ -61,12 +74,12 @@ export class CasinoService {
 
     if (existingCasino) {
       console.log(`[CasinoService] Found existing Casino ID: ${existingCasino.id} for domain: ${cleanDomain}`);
-      return existingCasino;
+      return { casino: existingCasino, isNew: false };
     }
 
     // 2. Create new Casino if not existing
     let finalSlug = input.slug.toLowerCase();
-    const existingSlug = await prisma.casino.findUnique({ where: { slug: finalSlug } });
+    const existingSlug = await db.casino.findUnique({ where: { slug: finalSlug } });
     if (existingSlug) {
       finalSlug = `${finalSlug}-${Date.now().toString(36)}`;
     }
@@ -74,16 +87,22 @@ export class CasinoService {
     console.log(`[CasinoService] Creating new Casino record for brand '${input.name}' (slug: ${finalSlug})`);
     const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
 
-    return prisma.casino.create({
+    const created = await db.casino.create({
       data: {
         name: input.name,
         slug: finalSlug,
         website_url: websiteUrl,
         license_info: input.license_info || null,
         status: "ACTIVE",
-        verified_at: new Date(),
+        verified_at: null,
         data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
+        review_status: ReviewStatus.NEW,
+        publication_status: PublicationStatus.UNPUBLISHED,
+        quarantine_reason: null,
+        governance_version: 0,
       },
     });
+
+    return { casino: created, isNew: true };
   }
 }

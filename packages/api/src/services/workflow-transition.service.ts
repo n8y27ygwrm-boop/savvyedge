@@ -391,6 +391,9 @@ export class WorkflowTransitionService {
   private async inSerializableTransaction<T>(
     operation: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
+    if (typeof (this.database as any).$transaction !== "function") {
+      return operation(this.database as Prisma.TransactionClient);
+    }
     try {
       return await this.database.$transaction(operation, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,

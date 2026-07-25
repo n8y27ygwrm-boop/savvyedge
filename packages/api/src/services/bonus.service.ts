@@ -1,4 +1,4 @@
-import { prisma } from "@savvyedge/database";
+import { Prisma, PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
 import { CreateBonusInput } from "@savvyedge/types";
 import { AIEngine } from "@savvyedge/ai-agents";
 
@@ -178,7 +178,20 @@ export class BonusService {
     return Math.round(rawScore * 100) / 100;
   }
 
-  static async createBonus(data: CreateBonusInput, sourceUrl?: string) {
+  static async createBonus(
+    data: CreateBonusInput,
+    sourceUrl?: string,
+    db: Prisma.TransactionClient | typeof prisma = prisma
+  ) {
+    const res = await this.saveGovernedBonus(data, sourceUrl, db);
+    return res.bonus;
+  }
+
+  static async saveGovernedBonus(
+    data: CreateBonusInput,
+    sourceUrl?: string,
+    db: Prisma.TransactionClient | typeof prisma = prisma
+  ): Promise<{ bonus: any; isNew: boolean }> {
     const trueValueScore = this.calculateTrueValueScore(
       data.headline_value,
       data.wagering_requirement,
@@ -187,7 +200,7 @@ export class BonusService {
     const now = new Date();
 
     // Look up any existing active Bonus record for the casino
-    const existingBonus = await prisma.bonus.findFirst({
+    const existingBonus = await db.bonus.findFirst({
       where: {
         casino_id: data.casino_id,
         status: "ACTIVE",
@@ -213,18 +226,18 @@ export class BonusService {
       const isMaxConvEqual = candidateMaxConv === existingMaxConv;
 
       if (isHeadlineEqual && isTypeEqual && isWageringEqual && isMaxConvEqual) {
-        // Identical fields: do not create new Bonus record. Update updated_at & verified_at
-        console.log(`[BonusService] Active bonus ${existingBonus.id} is identical. Updating updated_at/verified_at.`);
-        return prisma.bonus.update({
+        // Identical fields: do not create new Bonus record. Update updated_at (NOT verified_at)
+        console.log(`[BonusService] Active bonus ${existingBonus.id} is identical. Updating updated_at.`);
+        const updated = await db.bonus.update({
           where: { id: existingBonus.id },
           data: {
             updated_at: now,
-            verified_at: now,
           },
         });
+        return { bonus: updated, isNew: false };
       }
 
-      // If any field differs: start Prisma transaction to log BonusHistoryEvent for each differing field
+      // If any field differs: log BonusHistoryEvent for each differing field and update bonus (NOT verified_at)
       console.log(`[BonusService] Active bonus ${existingBonus.id} has updated fields. Logging history and updating bonus.`);
       const diffs: { field: string; oldVal: string | null; newVal: string | null }[] = [];
 
@@ -249,42 +262,40 @@ export class BonusService {
         });
       }
 
-      return prisma.$transaction(async (tx) => {
-        for (const diff of diffs) {
-          await tx.bonusHistoryEvent.create({
-            data: {
-              bonus_id: existingBonus.id,
-              field_changed: diff.field,
-              old_value: diff.oldVal,
-              new_value: diff.newVal,
-              source_url: sourceUrl || null,
-              changed_at: now,
-            },
-          });
-        }
-
-        return tx.bonus.update({
-          where: { id: existingBonus.id },
+      for (const diff of diffs) {
+        await db.bonusHistoryEvent.create({
           data: {
-            headline_value: candidateHeadline,
-            type: candidateType,
-            wagering_requirement: candidateWagering,
-            max_conversion: candidateMaxConv,
-            true_value_score: trueValueScore,
-            valid_from: data.valid_from ?? existingBonus.valid_from,
-            valid_until: data.valid_until ?? existingBonus.valid_until,
-            status: data.status || "ACTIVE",
-            updated_at: now,
-            verified_at: now,
+            bonus_id: existingBonus.id,
+            field_changed: diff.field,
+            old_value: diff.oldVal,
+            new_value: diff.newVal,
+            source_url: sourceUrl || null,
+            changed_at: now,
           },
         });
+      }
+
+      const updated = await db.bonus.update({
+        where: { id: existingBonus.id },
+        data: {
+          headline_value: candidateHeadline,
+          type: candidateType,
+          wagering_requirement: candidateWagering,
+          max_conversion: candidateMaxConv,
+          true_value_score: trueValueScore,
+          valid_from: data.valid_from ?? existingBonus.valid_from,
+          valid_until: data.valid_until ?? existingBonus.valid_until,
+          status: data.status || "ACTIVE",
+          updated_at: now,
+        },
       });
+      return { bonus: updated, isNew: false };
     }
 
-    // No active bonus exists, create a new Bonus record with status ACTIVE
+    // No active bonus exists, create a new Bonus record with status ACTIVE, verified_at: null, review_status: NEW, publication_status: UNPUBLISHED
     const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
 
-    return prisma.bonus.create({
+    const created = await db.bonus.create({
       data: {
         ...data,
         status: data.status || "ACTIVE",
@@ -292,8 +303,14 @@ export class BonusService {
         data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
         created_at: now,
         updated_at: now,
-        verified_at: now,
+        verified_at: null,
+        review_status: ReviewStatus.NEW,
+        publication_status: PublicationStatus.UNPUBLISHED,
+        quarantine_reason: null,
+        governance_version: 0,
       },
     });
+
+    return { bonus: created, isNew: true };
   }
 }
