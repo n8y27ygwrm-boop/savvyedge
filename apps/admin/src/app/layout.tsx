@@ -26,11 +26,11 @@ export default async function RootLayout({
                 <Link href="/review" style={{ color: "#f1f5f9", textDecoration: "none" }}>
                   Review Queue
                 </Link>
-                <span style={{ color: "#64748b", cursor: "not-allowed" }} title="Placeholder for Quarantine navigation">
-                  Quarantine (Placeholder)
-                </span>
+                <Link href="/quarantine" style={{ color: "#f1f5f9", textDecoration: "none" }}>
+                  Quarantine Queue
+                </Link>
                 <span style={{ color: "#64748b", cursor: "not-allowed" }} title="Placeholder for Audit navigation">
-                  Audit (Placeholder)
+                  Audit Log
                 </span>
               </nav>
             )}

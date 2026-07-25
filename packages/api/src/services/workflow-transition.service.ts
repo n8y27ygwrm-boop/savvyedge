@@ -240,7 +240,8 @@ export class WorkflowTransitionService {
         resultingVersion,
         canonicalTargetId,
         internalNote:
-          actor.kind === ActorKind.SYSTEM
+          actor.kind === ActorKind.SYSTEM ||
+          decision.action === "CLEAR_QUARANTINE"
             ? this.normalizeSafeReason(command.internalReason)
             : null,
       });
@@ -532,6 +533,14 @@ export class WorkflowTransitionService {
     const isClearance =
       subject.reviewStatus === ReviewStatus.QUARANTINED &&
       command.toStatus === ReviewStatus.AWAITING_REVIEW;
+    if (
+      isClearance &&
+      this.normalizeSafeReason(command.internalReason) === null
+    ) {
+      throw new WorkflowTransitionError(
+        "QUARANTINE_CLEARANCE_REASON_REQUIRED",
+      );
+    }
     if (command.clearQuarantine === true && !isClearance) {
       throw new WorkflowTransitionError("INVALID_TRANSITION");
     }

@@ -83,8 +83,13 @@ export function ReviewActionControls({
       )}
 
       {isQuarantined && (
-        <div style={{ padding: 12, marginBottom: 16, background: "#fef3c7", color: "#92400e", borderRadius: 4, fontSize: 13 }}>
-          <strong>Quarantine Override Active:</strong> Reason: <em>{quarantineReason}</em>. Entity cannot be published until quarantine is cleared.
+        <div style={{ padding: 12, marginBottom: 16, background: "#fef3c7", color: "#92400e", borderRadius: 4, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <strong>Quarantine Override Active:</strong> Reason: <em>{quarantineReason}</em>. Entity cannot be published until quarantine is cleared.
+          </div>
+          <a href={`/quarantine/${subjectType.toLowerCase()}/${subjectId}`} style={{ color: "#c2410c", fontWeight: "bold", textDecoration: "underline", fontSize: 12 }}>
+            Inspect &amp; Clear Quarantine &rarr;
+          </a>
         </div>
       )}
 
@@ -157,7 +162,7 @@ export function ReviewActionControls({
           />
           <div style={{ display: "flex", gap: 8 }}>
             <button
-              onClick={() => executeTransition("REJECT", { reason: rejectReason })}
+              onClick={() => executeTransition("REJECT", { internalReason: rejectReason })}
               disabled={loading || !rejectReason.trim()}
               style={{ padding: "8px 16px", background: "#dc2626", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading || !rejectReason.trim() ? "not-allowed" : "pointer" }}
             >

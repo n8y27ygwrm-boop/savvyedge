@@ -7,6 +7,7 @@ export const WorkflowTransitionErrorCodes = [
   "STALE_GOVERNANCE_VERSION",
   "QUARANTINE_REASON_REQUIRED",
   "QUARANTINE_CLEARANCE_REQUIRED",
+  "QUARANTINE_CLEARANCE_REASON_REQUIRED",
   "CANONICAL_TARGET_REQUIRED",
   "CANONICAL_TARGET_NOT_FOUND",
   "CANONICAL_TARGET_TYPE_MISMATCH",
@@ -42,6 +43,8 @@ const SAFE_MESSAGES: Record<WorkflowTransitionErrorCode, string> = {
     "A quarantine reason is required for this transition.",
   QUARANTINE_CLEARANCE_REQUIRED:
     "Explicit quarantine clearance is required for this transition.",
+  QUARANTINE_CLEARANCE_REASON_REQUIRED:
+    "An explicit safe reason is required for quarantine clearance.",
   CANONICAL_TARGET_REQUIRED:
     "A canonical target is required for supersession.",
   CANONICAL_TARGET_NOT_FOUND: "The canonical target was not found.",
