@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -18,12 +19,12 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setError(data.error || "Authentication failed");
+        setError(data.error || "Invalid email or password");
         setLoading(false);
         return;
       }
@@ -51,12 +52,28 @@ export default function LoginPage() {
 
       <form onSubmit={handleSubmit}>
         <div style={{ marginBottom: 16 }}>
+          <label htmlFor="email" style={{ display: "block", marginBottom: 6, fontSize: 14, fontWeight: "bold" }}>
+            Email Address
+          </label>
+          <input
+            id="email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ width: "100%", padding: 8, fontSize: 14, borderRadius: 4, border: "1px solid #ccc" }}
+            required
+          />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
           <label htmlFor="password" style={{ display: "block", marginBottom: 6, fontSize: 14, fontWeight: "bold" }}>
             Admin Password
           </label>
           <input
             id="password"
             type="password"
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             style={{ width: "100%", padding: 8, fontSize: 14, borderRadius: 4, border: "1px solid #ccc" }}
