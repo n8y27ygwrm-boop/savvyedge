@@ -1,7 +1,5 @@
-import { PrismaClient, AdminRole, AdminUserStatus } from "@savvyedge/database";
+import { prisma, AdminRole, AdminUserStatus } from "@savvyedge/database";
 import crypto from "crypto";
-
-const prisma = new PrismaClient();
 
 function hashPassword(password: string): string {
   if (!password || password.length < 8) {
