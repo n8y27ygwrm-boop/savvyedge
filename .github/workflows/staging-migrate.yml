@@ -1,0 +1,51 @@
+name: Deploy Staging Database Migrations
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: staging_migration
+  cancel-in-progress: false
+
+jobs:
+  migrate-staging:
+    name: Apply Staging Schema Migrations
+    runs-on: ubuntu-latest
+    environment: staging
+
+    env:
+      DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm Package Manager
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm --filter @savvyedge/database run db:generate
+
+      - name: Validate Prisma Schema
+        run: pnpm --filter @savvyedge/database run db:validate
+
+      - name: Inspect Pre-Migration Status
+        run: pnpm --filter @savvyedge/database run db:migrate:status
+
+      - name: Execute Controlled Database Migration Deploy
+        run: pnpm --filter @savvyedge/database run db:migrate:deploy
+
+      - name: Verify Post-Migration Status
+        run: pnpm --filter @savvyedge/database run db:migrate:status

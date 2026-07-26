@@ -59,7 +59,7 @@ export async function POST(request: Request) {
       name: ADMIN_COOKIE_NAME,
       value: rawToken,
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: process.env.NODE_ENV === "production" || process.env.NEXT_PUBLIC_APP_ENV === "staging" || process.env.SAVVY_ENV === "staging",
       sameSite: "lax",
       path: "/",
       expires: session.expiresAt,

@@ -6,7 +6,12 @@
     "build": "turbo build",
     "dev": "turbo dev",
     "lint": "turbo lint",
-    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "db:generate": "pnpm --filter @savvyedge/database run db:generate",
+    "db:validate": "pnpm --filter @savvyedge/database run db:validate",
+    "db:migrate:status": "pnpm --filter @savvyedge/database run db:migrate:status",
+    "db:migrate:deploy": "pnpm --filter @savvyedge/database run db:migrate:deploy",
+    "bootstrap:admin": "pnpm --filter admin run bootstrap:admin"
   },
   "devDependencies": {
     "turbo": "latest",

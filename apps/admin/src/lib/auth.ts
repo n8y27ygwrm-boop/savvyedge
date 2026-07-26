@@ -32,8 +32,15 @@ export interface AdminSessionContext {
 }
 
 export function generateSessionToken(password = "admin-secret-key-12345"): string {
-  const secret = process.env.ADMIN_PASSWORD || "admin-secret-key-12345";
-  return crypto.createHmac("sha256", secret).update(password).digest("hex");
+  const env = (process.env.NEXT_PUBLIC_APP_ENV || process.env.SAVVY_ENV || process.env.NODE_ENV || "development").toLowerCase();
+  const secret = process.env.ADMIN_JWT_SECRET || process.env.ADMIN_PASSWORD;
+
+  if (!secret && (env === "production" || env === "staging" || env === "prod" || env === "stage")) {
+    throw new Error("[SECURITY CONFIG ERROR] ADMIN_JWT_SECRET is missing in staging/production environment!");
+  }
+
+  const effectiveSecret = secret || "admin-secret-key-12345";
+  return crypto.createHmac("sha256", effectiveSecret).update(password).digest("hex");
 }
 
 export function isValidSessionToken(token?: string): boolean {

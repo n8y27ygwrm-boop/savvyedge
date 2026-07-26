@@ -1,4 +1,4 @@
-import { prisma, AdminRole, AdminUserStatus } from "@savvyedge/database";
+import { prisma, AdminRole, AdminUserStatus, ActorKind, type PrismaClient } from "@savvyedge/database";
 import crypto from "crypto";
 
 function hashPassword(password: string): string {
@@ -10,49 +10,86 @@ function hashPassword(password: string): string {
   return `${salt.toString("hex")}:${derivedKey.toString("hex")}`;
 }
 
-async function main() {
-  const email = (process.env.SEED_ADMIN_EMAIL || "admin@savvyedge.com").trim().toLowerCase();
-  const password = process.env.SEED_ADMIN_PASSWORD || "AdminPass123!";
-  const displayName = process.env.SEED_ADMIN_NAME || "System Administrator";
-  const force = process.env.FORCE_BOOTSTRAP === "true";
+export interface BootstrapConfig {
+  email?: string;
+  password?: string;
+  name?: string;
+  force?: boolean;
+}
 
-  console.log(`[Bootstrap] Checking existing Admin accounts...`);
-  const existingAdminCount = await prisma.adminUser.count({
-    where: { role: AdminRole.ADMIN, status: AdminUserStatus.ACTIVE },
-  });
+export async function executeAdminBootstrap(
+  config: BootstrapConfig = {},
+  db: PrismaClient = prisma,
+): Promise<{ status: "created" | "updated" | "skipped"; email: string; userId: string }> {
+  const rawEmail = config.email ?? process.env.SEED_ADMIN_EMAIL;
+  const password = config.password ?? process.env.SEED_ADMIN_PASSWORD;
+  const displayName = config.name ?? process.env.SEED_ADMIN_NAME;
+  const force = config.force ?? (process.env.FORCE_BOOTSTRAP === "true");
 
-  if (existingAdminCount > 0 && !force) {
-    console.log(`[Bootstrap] Active Admin account already exists (${existingAdminCount} found). Skipping bootstrap.`);
-    process.exit(0);
+  if (!rawEmail || !rawEmail.trim()) {
+    throw new Error("[Bootstrap Error] SEED_ADMIN_EMAIL environment variable is required.");
+  }
+  if (!password || !password.trim()) {
+    throw new Error("[Bootstrap Error] SEED_ADMIN_PASSWORD environment variable is required.");
+  }
+  if (!displayName || !displayName.trim()) {
+    throw new Error("[Bootstrap Error] SEED_ADMIN_NAME environment variable is required.");
   }
 
+  const email = rawEmail.trim().toLowerCase();
+  if (!email.includes("@") || email.length < 5) {
+    throw new Error(`[Bootstrap Error] Invalid email address format: '${email}'`);
+  }
+  if (password.length < 8) {
+    throw new Error("[Bootstrap Error] SEED_ADMIN_PASSWORD must be at least 8 characters long.");
+  }
+
+  const existingUser = await db.adminUser.findUnique({
+    where: { email },
+    include: { actor: true },
+  });
+
+  if (existingUser && existingUser.status === AdminUserStatus.ACTIVE && !force) {
+    return { status: "skipped", email: existingUser.email, userId: existingUser.id };
+  }
+
+  const passwordHash = hashPassword(password);
+
+  if (existingUser) {
+    // Update existing user without creating orphan ReviewActor
+    await db.reviewActor.update({
+      where: { id: existingUser.actor_id },
+      data: { display_name: displayName, active: true },
+    });
+
+    const updatedUser = await db.adminUser.update({
+      where: { id: existingUser.id },
+      data: {
+        display_name: displayName,
+        password_hash: passwordHash,
+        role: AdminRole.ADMIN,
+        status: AdminUserStatus.ACTIVE,
+      },
+    });
+
+    return { status: "updated", email: updatedUser.email, userId: updatedUser.id };
+  }
+
+  // Create new user & actor
   const userId = crypto.randomUUID();
   const stableKey = `admin-user:${userId}`;
 
-  console.log(`[Bootstrap] Creating ReviewActor '${stableKey}'...`);
-  const actor = await prisma.reviewActor.upsert({
-    where: { stable_key: stableKey },
-    update: { display_name: displayName, active: true },
-    create: {
-      kind: "HUMAN",
+  const actor = await db.reviewActor.create({
+    data: {
+      kind: ActorKind.HUMAN,
       stable_key: stableKey,
       display_name: displayName,
       active: true,
     },
   });
 
-  const passwordHash = hashPassword(password);
-
-  console.log(`[Bootstrap] Provisioning AdminUser '${email}'...`);
-  const user = await prisma.adminUser.upsert({
-    where: { email },
-    update: {
-      display_name: displayName,
-      password_hash: passwordHash,
-      role: AdminRole.ADMIN,
-      status: AdminUserStatus.ACTIVE,
-    },
-    create: {
+  const newUser = await db.adminUser.create({
+    data: {
       id: userId,
       email,
       display_name: displayName,
@@ -61,24 +98,24 @@ async function main() {
       status: AdminUserStatus.ACTIVE,
       actor_id: actor.id,
     },
-    select: {
-      id: true,
-      email: true,
-      display_name: true,
-      role: true,
-      status: true,
-      created_at: true,
-    },
   });
 
-  console.log(`[Bootstrap SUCCESS] Admin user '${user.email}' (${user.role}) provisioned successfully. ID: ${user.id}`);
+  return { status: "created", email: newUser.email, userId: newUser.id };
 }
 
-main()
-  .catch((err) => {
-    console.error("[Bootstrap ERROR]", err.message);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+// CLI Execution
+if (require.main === module) {
+  executeAdminBootstrap()
+    .then((result) => {
+      if (result.status === "skipped") {
+        console.log(`[Bootstrap] Active Admin account '${result.email}' already exists. Skipping bootstrap.`);
+      } else {
+        console.log(`[Bootstrap SUCCESS] Admin account '${result.email}' (${result.status}) provisioned successfully.`);
+      }
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error("[Bootstrap ERROR]", err.message);
+      process.exit(1);
+    });
+}

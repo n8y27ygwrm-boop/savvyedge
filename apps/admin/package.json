@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
+    "smoke-test": "tsx scripts/staging-smoke-test.ts"
   },
   "dependencies": {
     "@savvyedge/api": "workspace:^",

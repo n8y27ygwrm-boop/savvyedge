@@ -9,22 +9,53 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: savvyedge_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/savvyedge_ci"
+      DIRECT_URL: "postgresql://postgres:postgrespassword@localhost:5432/savvyedge_ci"
+      PHASE2_WORKFLOW_TEST_DATABASE_URL: "postgresql://postgres:postgrespassword@localhost:5432/savvyedge_ci"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v3
         with:
           version: 9
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'pnpm'
-      - name: Install dependencies
+
+      - name: Install Dependencies
         run: pnpm install --frozen-lockfile
-      - name: Generate Prisma Types
-        run: pnpm --filter @savvyedge/database generate
-      - name: Test Phase 1 Trust Regressions
+
+      - name: Generate Prisma Client
+        run: pnpm --filter @savvyedge/database run db:generate
+
+      - name: Deploy Database Migrations to Disposable CI Database
+        run: pnpm --filter @savvyedge/database run db:migrate:deploy
+
+      - name: Execute Complete Integration & Unit Test Suite
         run: pnpm --filter @savvyedge/api test
-      - name: Build
+
+      - name: Build Workspace
         run: pnpm turbo build
-      - name: Lint
+
+      - name: Lint Workspace
         run: pnpm turbo lint

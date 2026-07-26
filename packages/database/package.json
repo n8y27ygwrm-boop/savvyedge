@@ -6,6 +6,10 @@
   "types": "./index.ts",
   "scripts": {
     "generate": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate:status": "prisma migrate status",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
     "postinstall": "prisma generate"
   },
