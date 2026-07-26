@@ -1,26 +1,95 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --admin-bg: #090a0f;
+  --admin-surface: rgba(18, 20, 29, 0.85);
+  --admin-surface-solid: #12141d;
+  --admin-surface-raised: rgba(26, 29, 41, 0.9);
+  --admin-surface-raised-solid: #1a1d29;
+  --admin-border: rgba(255, 255, 255, 0.08);
+  --admin-border-bright: rgba(255, 255, 255, 0.16);
+  --admin-text: #f3f4f6;
+  --admin-text-secondary: #d1d5db;
+  --admin-muted: #9ca3af;
+  --admin-muted-dark: #6b7280;
+
+  --admin-emerald: #10b981;
+  --admin-emerald-bg: rgba(16, 185, 129, 0.12);
+  --admin-emerald-border: rgba(16, 185, 129, 0.3);
+
+  --admin-warning: #f59e0b;
+  --admin-warning-bg: rgba(245, 158, 11, 0.12);
+  --admin-warning-border: rgba(245, 158, 11, 0.3);
+
+  --admin-danger: #ef4444;
+  --admin-danger-bg: rgba(239, 68, 68, 0.12);
+  --admin-danger-border: rgba(239, 68, 68, 0.3);
+
+  --admin-info: #3b82f6;
+  --admin-info-bg: rgba(59, 130, 246, 0.12);
+  --admin-info-border: rgba(59, 130, 246, 0.3);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--admin-bg);
+  color: var(--admin-text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Glass panel utility */
+.glass-panel {
+  background: var(--admin-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--admin-border);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.glass-panel-raised {
+  background: var(--admin-surface-raised);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--admin-border-bright);
+  box-shadow: 0 8px 32px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(9, 10, 15, 0.8);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Focus styles */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--admin-info);
+  outline-offset: 2px;
 }

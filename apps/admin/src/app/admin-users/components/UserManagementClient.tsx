@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { AdminRole, AdminUserStatus } from "@savvyedge/database";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { LoadingButton } from "@/components/ui/LoadingButton";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ConfirmationDialog } from "@/components/ui/ConfirmationDialog";
 
 export interface SerializedAdminUser {
   id: string;
@@ -47,8 +52,8 @@ export default function UserManagementClient({ initialUsers }: Props) {
     }
   };
 
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateUser = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setError(null);
     setSuccess(null);
     setLoading(true);
@@ -58,8 +63,8 @@ export default function UserManagementClient({ initialUsers }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: newEmail,
-          displayName: newDisplayName,
+          email: newEmail.trim(),
+          displayName: newDisplayName.trim(),
           password: newPassword,
           role: newRole,
         }),
@@ -70,7 +75,7 @@ export default function UserManagementClient({ initialUsers }: Props) {
         throw new Error(data.error || "Failed to create user");
       }
 
-      setSuccess(`User '${data.user.email}' created successfully.`);
+      setSuccess(`Admin account '${data.user.email}' created successfully.`);
       setNewEmail("");
       setNewDisplayName("");
       setNewPassword("");
@@ -100,7 +105,7 @@ export default function UserManagementClient({ initialUsers }: Props) {
         throw new Error(data.error || "Failed to update role");
       }
 
-      setSuccess("Role updated successfully.");
+      setSuccess("User role updated successfully.");
       await refreshUsers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Role update failed");
@@ -124,15 +129,15 @@ export default function UserManagementClient({ initialUsers }: Props) {
         throw new Error(data.error || "Failed to update status");
       }
 
-      setSuccess(`Status for '${user.email}' changed to ${newStatus}.`);
+      setSuccess(`Account status for '${user.email}' updated to ${newStatus}.`);
       await refreshUsers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Status toggle failed");
     }
   };
 
-  const handleResetPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleResetPassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!resetUser) return;
     setError(null);
     setSuccess(null);
@@ -150,7 +155,7 @@ export default function UserManagementClient({ initialUsers }: Props) {
         throw new Error(data.error || "Password reset failed");
       }
 
-      setSuccess(`Password reset successfully for '${resetUser.email}'.`);
+      setSuccess(`Password reset successfully for '${resetUser.email}'. Active sessions revoked.`);
       setResetUser(null);
       setResetPasswordVal("");
     } catch (err) {
@@ -160,232 +165,273 @@ export default function UserManagementClient({ initialUsers }: Props) {
     }
   };
 
-  const getRoleBadge = (role: AdminRole) => {
-    switch (role) {
-      case AdminRole.ADMIN:
-        return "bg-purple-950/80 text-purple-300 border-purple-500/30";
-      case AdminRole.SENIOR_REVIEWER:
-        return "bg-cyan-950/80 text-cyan-300 border-cyan-500/30";
-      case AdminRole.PUBLISHER:
-        return "bg-emerald-950/80 text-emerald-300 border-emerald-500/30";
-      case AdminRole.REVIEWER:
-      default:
-        return "bg-slate-800 text-slate-300 border-slate-700";
-    }
-  };
-
   return (
-    <div className="space-y-6">
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-950/30 p-4 text-sm text-red-300">
-          {error}
-        </div>
+        <InlineAlert
+          type="error"
+          title="Operation Failed"
+          message={error}
+          onDismiss={() => setError(null)}
+        />
       )}
       {success && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-4 text-sm text-emerald-300">
-          {success}
-        </div>
+        <InlineAlert
+          type="success"
+          title="Success"
+          message={success}
+          onDismiss={() => setSuccess(null)}
+        />
       )}
 
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-slate-400">
-          Total Accounts: <span className="font-semibold text-slate-200">{users.length}</span>
+      {/* Action Bar */}
+      <GlassPanel padding="14px 20px">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 13, color: "var(--admin-muted)" }}>
+            Total Authenticated Accounts: <strong style={{ color: "var(--admin-text)" }}>{users.length}</strong>
+          </div>
+          <LoadingButton
+            onClick={() => setShowCreateModal(true)}
+            variant="primary"
+            size="sm"
+          >
+            + Provision Admin Account
+          </LoadingButton>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-md hover:bg-cyan-500 transition-colors"
-        >
-          + Create Admin User
-        </button>
-      </div>
+      </GlassPanel>
 
-      {/* Users Table */}
-      <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 backdrop-blur-md">
-        <table className="w-full text-left text-sm text-slate-300">
-          <thead className="border-b border-slate-800 bg-slate-950/50 text-xs uppercase tracking-wider text-slate-400">
-            <tr>
-              <th className="px-6 py-4">User</th>
-              <th className="px-6 py-4">Role</th>
-              <th className="px-6 py-4">Status</th>
-              <th className="px-6 py-4">Last Login</th>
-              <th className="px-6 py-4 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/60">
-            {users.map((user) => (
-              <tr key={user.id} className="hover:bg-slate-800/30 transition-colors">
-                <td className="px-6 py-4">
-                  <div className="font-semibold text-slate-100">{user.display_name}</div>
-                  <div className="text-xs text-slate-400">{user.email}</div>
-                </td>
-                <td className="px-6 py-4">
-                  <select
-                    value={user.role}
-                    onChange={(e) => handleRoleChange(user.id, e.target.value as AdminRole)}
-                    className={`rounded-md border px-2.5 py-1 text-xs font-semibold backdrop-blur-md focus:outline-none ${getRoleBadge(user.role)}`}
-                  >
-                    <option value={AdminRole.REVIEWER} className="bg-slate-900 text-slate-200">REVIEWER</option>
-                    <option value={AdminRole.SENIOR_REVIEWER} className="bg-slate-900 text-slate-200">SENIOR_REVIEWER</option>
-                    <option value={AdminRole.PUBLISHER} className="bg-slate-900 text-slate-200">PUBLISHER</option>
-                    <option value={AdminRole.ADMIN} className="bg-slate-900 text-slate-200">ADMIN</option>
-                  </select>
-                </td>
-                <td className="px-6 py-4">
-                  <span
-                    className={`inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
-                      user.status === AdminUserStatus.ACTIVE
-                        ? "border-emerald-500/30 bg-emerald-950/60 text-emerald-400"
-                        : "border-red-500/30 bg-red-950/60 text-red-400"
-                    }`}
-                  >
-                    {user.status}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-xs text-slate-400">
-                  {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : "Never"}
-                </td>
-                <td className="px-6 py-4 text-right space-x-2">
-                  <button
-                    onClick={() => handleToggleStatus(user)}
-                    className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors ${
-                      user.status === AdminUserStatus.ACTIVE
-                        ? "border-amber-500/30 text-amber-300 hover:bg-amber-950/40"
-                        : "border-emerald-500/30 text-emerald-300 hover:bg-emerald-950/40"
-                    }`}
-                  >
-                    {user.status === AdminUserStatus.ACTIVE ? "Disable" : "Enable"}
-                  </button>
-
-                  <button
-                    onClick={() => setResetUser(user)}
-                    className="rounded border border-slate-700 bg-slate-800/80 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-700 transition-colors"
-                  >
-                    Reset Password
-                  </button>
-                </td>
+      {/* Users Data Table */}
+      <GlassPanel padding={0} style={{ overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "rgba(0, 0, 0, 0.4)", borderBottom: "1px solid var(--admin-border)" }}>
+                <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  Operator Name &amp; Email
+                </th>
+                <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  Role Assignment
+                </th>
+                <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  Status
+                </th>
+                <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  Last Login
+                </th>
+                <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", textAlign: "right" }}>
+                  Actions
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr
+                  key={u.id}
+                  style={{ borderBottom: "1px solid var(--admin-border)", transition: "background 0.15s ease" }}
+                >
+                  <td style={{ padding: "14px 16px" }}>
+                    <div style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 14 }}>{u.display_name}</div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>{u.email}</div>
+                  </td>
+
+                  <td style={{ padding: "14px 16px" }}>
+                    <select
+                      value={u.role}
+                      onChange={(e) => handleRoleChange(u.id, e.target.value as AdminRole)}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background: "#12141d",
+                        color: "var(--admin-text)",
+                        border: "1px solid var(--admin-border-bright)",
+                        outline: "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <option value={AdminRole.REVIEWER}>REVIEWER</option>
+                      <option value={AdminRole.SENIOR_REVIEWER}>SENIOR_REVIEWER</option>
+                      <option value={AdminRole.PUBLISHER}>PUBLISHER</option>
+                      <option value={AdminRole.ADMIN}>ADMIN</option>
+                    </select>
+                  </td>
+
+                  <td style={{ padding: "14px 16px" }}>
+                    <StatusBadge status={u.status} size="sm" />
+                  </td>
+
+                  <td style={{ padding: "14px 16px", fontSize: 12, color: "var(--admin-muted)" }} className="tabular-nums">
+                    {u.last_login_at ? new Date(u.last_login_at).toISOString().slice(0, 19).replace("T", " ") : "Never"}
+                  </td>
+
+                  <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: 8 }}>
+                      <LoadingButton
+                        onClick={() => handleToggleStatus(u)}
+                        variant={u.status === AdminUserStatus.ACTIVE ? "outline" : "success"}
+                        size="sm"
+                      >
+                        {u.status === AdminUserStatus.ACTIVE ? "Disable" : "Enable"}
+                      </LoadingButton>
+
+                      <LoadingButton
+                        onClick={() => setResetUser(u)}
+                        variant="secondary"
+                        size="sm"
+                      >
+                        Reset Password
+                      </LoadingButton>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </GlassPanel>
 
       {/* Create User Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-            <h2 className="text-lg font-bold text-slate-100 mb-4">Create New Admin User</h2>
-            <form onSubmit={handleCreateUser} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Email Address</label>
-                <input
-                  type="email"
-                  required
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
-                  placeholder="name@savvyedge.com"
-                />
-              </div>
+      <ConfirmationDialog
+        isOpen={showCreateModal}
+        title="Provision New Admin Account"
+        description="Create a new authenticated operator account and assign granular governance role permissions."
+        confirmLabel={loading ? "Creating..." : "Create Account"}
+        onConfirm={handleCreateUser}
+        onCancel={() => setShowCreateModal(false)}
+        loading={loading}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+              Email Address
+            </label>
+            <input
+              type="email"
+              required
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              placeholder="operator@savvyedge.com"
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--admin-border-bright)",
+                background: "rgba(0, 0, 0, 0.4)",
+                color: "var(--admin-text)",
+                outline: "none",
+              }}
+            />
+          </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Display Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newDisplayName}
-                  onChange={(e) => setNewDisplayName(e.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
-                  placeholder="Jane Doe"
-                />
-              </div>
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+              Display Name
+            </label>
+            <input
+              type="text"
+              required
+              value={newDisplayName}
+              onChange={(e) => setNewDisplayName(e.target.value)}
+              placeholder="Jane Doe"
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--admin-border-bright)",
+                background: "rgba(0, 0, 0, 0.4)",
+                color: "var(--admin-text)",
+                outline: "none",
+              }}
+            />
+          </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Password (min 8 chars)</label>
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
-                />
-              </div>
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+              Password (min 8 chars)
+            </label>
+            <input
+              type="password"
+              required
+              minLength={8}
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--admin-border-bright)",
+                background: "rgba(0, 0, 0, 0.4)",
+                color: "var(--admin-text)",
+                outline: "none",
+              }}
+            />
+          </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Governance Role</label>
-                <select
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as AdminRole)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
-                >
-                  <option value={AdminRole.REVIEWER}>REVIEWER (Read, Begin Review, Reject)</option>
-                  <option value={AdminRole.SENIOR_REVIEWER}>SENIOR_REVIEWER (+ Approve, Clear Quarantine)</option>
-                  <option value={AdminRole.PUBLISHER}>PUBLISHER (+ Publish, Unpublish)</option>
-                  <option value={AdminRole.ADMIN}>ADMIN (Full Permissions & User Management)</option>
-                </select>
-              </div>
-
-              <div className="mt-6 flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
-                >
-                  {loading ? "Creating..." : "Create User"}
-                </button>
-              </div>
-            </form>
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+              Governance Role
+            </label>
+            <select
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value as AdminRole)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--admin-border-bright)",
+                background: "#12141d",
+                color: "var(--admin-text)",
+                outline: "none",
+              }}
+            >
+              <option value={AdminRole.REVIEWER}>REVIEWER (Read, Begin Review, Reject)</option>
+              <option value={AdminRole.SENIOR_REVIEWER}>SENIOR_REVIEWER (+ Approve, Clear Quarantine)</option>
+              <option value={AdminRole.PUBLISHER}>PUBLISHER (+ Publish, Unpublish)</option>
+              <option value={AdminRole.ADMIN}>ADMIN (Full Permissions &amp; User Management)</option>
+            </select>
           </div>
         </div>
-      )}
+      </ConfirmationDialog>
 
       {/* Reset Password Modal */}
       {resetUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-            <h2 className="text-lg font-bold text-slate-100 mb-2">Reset Password</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Setting new password for <span className="font-semibold text-slate-200">{resetUser.email}</span>. Active sessions for this user will be revoked immediately.
-            </p>
-            <form onSubmit={handleResetPassword} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">New Password (min 8 chars)</label>
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  value={resetPasswordVal}
-                  onChange={(e) => setResetPasswordVal(e.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="mt-6 flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setResetUser(null)}
-                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
-                >
-                  {loading ? "Resetting..." : "Set New Password"}
-                </button>
-              </div>
-            </form>
+        <ConfirmationDialog
+          isOpen={Boolean(resetUser)}
+          title="Security Reset Password"
+          description={`Setting a new password for '${resetUser.email}'. All active sessions for this account will be invalidated immediately upon confirmation.`}
+          confirmLabel={loading ? "Resetting..." : "Set New Password"}
+          onConfirm={handleResetPassword}
+          onCancel={() => setResetUser(null)}
+          loading={loading}
+        >
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+              New Password (min 8 chars)
+            </label>
+            <input
+              type="password"
+              required
+              minLength={8}
+              value={resetPasswordVal}
+              onChange={(e) => setResetPasswordVal(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--admin-border-bright)",
+                background: "rgba(0, 0, 0, 0.4)",
+                color: "var(--admin-text)",
+                outline: "none",
+              }}
+            />
           </div>
-        </div>
+        </ConfirmationDialog>
       )}
     </div>
   );

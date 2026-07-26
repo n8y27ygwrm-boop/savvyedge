@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { LoadingButton } from "@/components/ui/LoadingButton";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 
 export interface ReviewActionControlsProps {
   subjectType: "CASINO" | "BONUS";
@@ -73,84 +78,129 @@ export function ReviewActionControls({
   const canPublish = isApproved && isUnpublished && !isQuarantined;
 
   return (
-    <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8, marginTop: 24 }}>
-      <h3 style={{ margin: "0 0 16px 0", fontSize: 18 }}>Governance Actions</h3>
+    <GlassPanel raised padding="20px">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "var(--admin-text)" }}>
+          Governance Actions
+        </h3>
+        <div style={{ display: "flex", gap: 8 }}>
+          <StatusBadge status={reviewStatus} size="sm" />
+          <StatusBadge status={publicationStatus} size="sm" />
+        </div>
+      </div>
 
       {error && (
-        <div style={{ padding: 12, marginBottom: 16, background: "#fee2e2", color: "#991b1b", borderRadius: 4, fontSize: 14 }}>
-          <strong>Action Failed:</strong> {error}
-        </div>
+        <InlineAlert
+          type="error"
+          title="Action Failed"
+          message={error}
+          onDismiss={() => setError(null)}
+          style={{ marginBottom: 16 }}
+        />
       )}
 
       {isQuarantined && (
-        <div style={{ padding: 12, marginBottom: 16, background: "#fef3c7", color: "#92400e", borderRadius: 4, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            padding: 12,
+            marginBottom: 16,
+            background: "rgba(245, 158, 11, 0.1)",
+            border: "1px solid rgba(245, 158, 11, 0.3)",
+            borderRadius: 6,
+            fontSize: 13,
+            color: "#fbbf24",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
           <div>
-            <strong>Quarantine Override Active:</strong> Reason: <em>{quarantineReason}</em>. Entity cannot be published until quarantine is cleared.
+            <strong>Quarantine Active:</strong> {quarantineReason}. Publication is blocked until quarantine is cleared.
           </div>
-          <a href={`/quarantine/${subjectType.toLowerCase()}/${subjectId}`} style={{ color: "#c2410c", fontWeight: "bold", textDecoration: "underline", fontSize: 12 }}>
-            Inspect &amp; Clear Quarantine &rarr;
-          </a>
+          <Link
+            href={`/quarantine/${subjectType.toLowerCase()}/${subjectId}`}
+            style={{
+              color: "#fbbf24",
+              fontWeight: 700,
+              textDecoration: "underline",
+              fontSize: 12,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Clear Quarantine →
+          </Link>
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+      {/* Action Buttons */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         {/* 1. Begin Review */}
         {isAwaitingReview && (
-          <button
+          <LoadingButton
             onClick={() => executeTransition("BEGIN_REVIEW")}
-            disabled={loading}
-            style={{ padding: "10px 18px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+            loading={loading}
+            variant="primary"
           >
-            {loading ? "Processing..." : "Begin Review"}
-          </button>
+            Begin Review
+          </LoadingButton>
         )}
 
         {/* 2. Approve */}
         {isInReview && (
-          <button
+          <LoadingButton
             onClick={() => executeTransition("APPROVE")}
-            disabled={loading}
-            style={{ padding: "10px 18px", background: "#16a34a", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+            loading={loading}
+            variant="success"
           >
-            {loading ? "Processing..." : "Approve Review"}
-          </button>
+            Approve Review
+          </LoadingButton>
         )}
 
         {/* 3. Reject */}
         {(isInReview || isApproved) && !showRejectForm && (
-          <button
+          <LoadingButton
             onClick={() => setShowRejectForm(true)}
             disabled={loading}
-            style={{ padding: "10px 18px", background: "#dc2626", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+            variant="danger"
           >
             Reject...
-          </button>
+          </LoadingButton>
         )}
 
         {/* 4. Publish */}
         {canPublish && !showPublishForm && (
-          <button
+          <LoadingButton
             onClick={() => setShowPublishForm(true)}
             disabled={loading}
-            style={{ padding: "10px 18px", background: "#0d9488", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+            variant="primary"
           >
-            Publish to Public API...
-          </button>
+            Publish Entity
+          </LoadingButton>
         )}
 
-        {/* Status badges */}
         {!isAwaitingReview && !isInReview && !canPublish && !showRejectForm && !showPublishForm && (
-          <span style={{ fontSize: 14, color: "#64748b" }}>
-            Current state: <strong>{reviewStatus}</strong> / <strong>{publicationStatus}</strong>. No additional actions available.
+          <span style={{ fontSize: 13, color: "var(--admin-muted)" }}>
+            Current state is stable. No pending transition actions available.
           </span>
         )}
       </div>
 
       {/* Reject Form */}
       {showRejectForm && (
-        <div style={{ marginTop: 16, padding: 16, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
-          <h4 style={{ margin: "0 0 8px 0", color: "#991b1b" }}>Reject Review</h4>
-          <p style={{ margin: "0 0 12px 0", fontSize: 13, color: "#64748b" }}>
+        <div
+          style={{
+            marginTop: 16,
+            padding: 16,
+            background: "rgba(0, 0, 0, 0.4)",
+            border: "1px solid var(--admin-danger-border)",
+            borderRadius: 6,
+          }}
+        >
+          <h4 style={{ margin: "0 0 6px 0", fontSize: 14, color: "#f87171" }}>
+            Reject Review
+          </h4>
+          <p style={{ margin: "0 0 12px 0", fontSize: 12, color: "var(--admin-muted)" }}>
             Rejection requires a non-empty explanation detailing why the entity or claims were rejected.
           </p>
           <textarea
@@ -158,32 +208,55 @@ export function ReviewActionControls({
             onChange={(e) => setRejectReason(e.target.value)}
             placeholder="Enter explicit rejection reason..."
             rows={3}
-            style={{ width: "100%", padding: 8, fontSize: 14, borderRadius: 4, border: "1px solid #ccc", marginBottom: 12 }}
+            style={{
+              width: "100%",
+              padding: 10,
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid var(--admin-border-bright)",
+              background: "rgba(0, 0, 0, 0.6)",
+              color: "var(--admin-text)",
+              marginBottom: 12,
+              outline: "none",
+            }}
           />
           <div style={{ display: "flex", gap: 8 }}>
-            <button
+            <LoadingButton
               onClick={() => executeTransition("REJECT", { internalReason: rejectReason })}
-              disabled={loading || !rejectReason.trim()}
-              style={{ padding: "8px 16px", background: "#dc2626", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading || !rejectReason.trim() ? "not-allowed" : "pointer" }}
+              loading={loading}
+              disabled={!rejectReason.trim()}
+              variant="danger"
+              size="sm"
             >
               Confirm Rejection
-            </button>
-            <button
+            </LoadingButton>
+            <LoadingButton
               onClick={() => setShowRejectForm(false)}
               disabled={loading}
-              style={{ padding: "8px 16px", background: "#94a3b8", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}
+              variant="outline"
+              size="sm"
             >
               Cancel
-            </button>
+            </LoadingButton>
           </div>
         </div>
       )}
 
       {/* Publish Form */}
       {showPublishForm && (
-        <div style={{ marginTop: 16, padding: 16, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
-          <h4 style={{ margin: "0 0 8px 0", color: "#0f766e" }}>Publish Entity</h4>
-          <p style={{ margin: "0 0 12px 0", fontSize: 13, color: "#64748b" }}>
+        <div
+          style={{
+            marginTop: 16,
+            padding: 16,
+            background: "rgba(0, 0, 0, 0.4)",
+            border: "1px solid var(--admin-emerald-border)",
+            borderRadius: 6,
+          }}
+        >
+          <h4 style={{ margin: "0 0 6px 0", fontSize: 14, color: "#34d399" }}>
+            Publish Entity
+          </h4>
+          <p style={{ margin: "0 0 12px 0", fontSize: 12, color: "var(--admin-muted)" }}>
             Publishing makes the approved entity eligible for public API listings and search queries.
           </p>
           <input
@@ -191,26 +264,38 @@ export function ReviewActionControls({
             value={publishReason}
             onChange={(e) => setPublishReason(e.target.value)}
             placeholder="Optional publication note..."
-            style={{ width: "100%", padding: 8, fontSize: 14, borderRadius: 4, border: "1px solid #ccc", marginBottom: 12 }}
+            style={{
+              width: "100%",
+              padding: 10,
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid var(--admin-border-bright)",
+              background: "rgba(0, 0, 0, 0.6)",
+              color: "var(--admin-text)",
+              marginBottom: 12,
+              outline: "none",
+            }}
           />
           <div style={{ display: "flex", gap: 8 }}>
-            <button
+            <LoadingButton
               onClick={() => executeTransition("PUBLISH", { reason: publishReason })}
-              disabled={loading}
-              style={{ padding: "8px 16px", background: "#0d9488", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+              loading={loading}
+              variant="success"
+              size="sm"
             >
               Confirm Publication
-            </button>
-            <button
+            </LoadingButton>
+            <LoadingButton
               onClick={() => setShowPublishForm(false)}
               disabled={loading}
-              style={{ padding: "8px 16px", background: "#94a3b8", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}
+              variant="outline"
+              size="sm"
             >
               Cancel
-            </button>
+            </LoadingButton>
           </div>
         </div>
       )}
-    </div>
+    </GlassPanel>
   );
 }

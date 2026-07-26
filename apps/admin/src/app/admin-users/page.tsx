@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { prisma } from "@savvyedge/database";
 import { verifyAdminSession } from "@/lib/auth";
 import { canPerformAdminAction } from "@/lib/permissions";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GlassPanel } from "@/components/ui/GlassPanel";
 import UserManagementClient from "./components/UserManagementClient";
 
 export default async function AdminUsersPage() {
@@ -12,18 +14,32 @@ export default async function AdminUsersPage() {
 
   if (!canPerformAdminAction(session.user.role, "MANAGE_ADMIN_USERS")) {
     return (
-      <div className="mx-auto max-w-4xl px-4 py-12 text-slate-100">
-        <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-8 text-center backdrop-blur-md">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-900/50 text-red-400">
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      <div style={{ maxWidth: 600, margin: "60px auto", padding: 16 }}>
+        <GlassPanel padding="36px" style={{ background: "rgba(239, 68, 68, 0.05)", border: "1px solid var(--admin-danger-border)", textAlign: "center" }}>
+          <div
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: "50%",
+              background: "rgba(239, 68, 68, 0.15)",
+              color: "#f87171",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              margin: "0 auto 16px auto",
+            }}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
           </div>
-          <h1 className="text-xl font-bold text-red-200">Access Restricted (403 Forbidden)</h1>
-          <p className="mt-2 text-sm text-slate-400">
-            Your current role (<span className="font-semibold text-slate-200">{session.user.role}</span>) does not have permission to access Admin User Management.
+          <h1 style={{ fontSize: 18, fontWeight: 700, color: "#f87171", margin: "0 0 8px 0" }}>
+            Access Restricted (HTTP 403 Forbidden)
+          </h1>
+          <p style={{ fontSize: 13, color: "var(--admin-muted)", margin: 0, lineHeight: 1.5 }}>
+            Your current role (<strong style={{ color: "var(--admin-text)" }}>{session.user.role}</strong>) does not have permission to access Admin User Management.
           </p>
-        </div>
+        </GlassPanel>
       </div>
     );
   }
@@ -50,17 +66,11 @@ export default async function AdminUsersPage() {
   }));
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 text-slate-100 sm:px-6 lg:px-8">
-      <div className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-50">Admin User Management</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Manage authenticated governance accounts, roles, access status, and password resets.
-            </p>
-          </div>
-        </div>
-      </div>
+    <div>
+      <PageHeader
+        title="Admin User & Access Management"
+        subtitle="Manage authenticated operator accounts, assign governance roles, toggle access status, and execute security resets."
+      />
 
       <UserManagementClient initialUsers={serializedUsers} />
     </div>

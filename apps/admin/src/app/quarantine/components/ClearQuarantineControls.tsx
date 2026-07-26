@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { LoadingButton } from "@/components/ui/LoadingButton";
 
 export interface ClearQuarantineControlsProps {
   subjectType: "CASINO" | "BONUS" | "SLOT" | "LICENSE";
@@ -65,41 +68,78 @@ export function ClearQuarantineControls({
 
   if (!quarantineReason) {
     return (
-      <div style={{ padding: 16, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, color: "#166534", marginTop: 24 }}>
-        <strong>Quarantine Inactive:</strong> This entity is not currently quarantined.
-      </div>
+      <GlassPanel padding="16px" style={{ background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)" }}>
+        <div style={{ color: "#34d399", fontSize: 13, fontWeight: 600 }}>
+          ✓ Quarantine Inactive: This entity is operating under standard review lifecycle.
+        </div>
+      </GlassPanel>
     );
   }
 
   return (
-    <div style={{ background: "#fff", border: "1px solid #fed7aa", padding: 20, borderRadius: 8, marginTop: 24 }}>
-      <h3 style={{ margin: "0 0 12px 0", fontSize: 18, color: "#c2410c" }}>Quarantine Governance Action</h3>
+    <GlassPanel raised padding="20px">
+      <h3 style={{ margin: "0 0 12px 0", fontSize: 16, fontWeight: 700, color: "#f87171" }}>
+        Quarantine Governance Action
+      </h3>
 
       {error && (
-        <div style={{ padding: 12, marginBottom: 16, background: "#fee2e2", color: "#991b1b", borderRadius: 4, fontSize: 14 }}>
-          <strong>Action Failed:</strong> {error}
-        </div>
+        <InlineAlert
+          type="error"
+          title="Action Failed"
+          message={error}
+          onDismiss={() => setError(null)}
+          style={{ marginBottom: 16 }}
+        />
       )}
 
-      <div style={{ padding: 12, marginBottom: 16, background: "#fff7ed", border: "1px solid #ffedd5", borderRadius: 6, fontSize: 13, color: "#9a3412" }}>
+      <div
+        style={{
+          padding: 12,
+          marginBottom: 16,
+          background: "rgba(245, 158, 11, 0.1)",
+          border: "1px solid rgba(245, 158, 11, 0.3)",
+          borderRadius: 6,
+          fontSize: 13,
+          color: "#fbbf24",
+        }}
+      >
         <strong>Active Quarantine Override:</strong> Reason: <em>{quarantineReason}</em>.
       </div>
 
       {!showConfirm ? (
-        <button
+        <LoadingButton
           onClick={() => setShowConfirm(true)}
           disabled={loading}
-          style={{ padding: "10px 18px", background: "#ea580c", color: "#fff", border: "none", borderRadius: 4, fontWeight: "bold", cursor: loading ? "wait" : "pointer" }}
+          variant="danger"
         >
           Clear Quarantine...
-        </button>
+        </LoadingButton>
       ) : (
-        <div style={{ padding: 16, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
-          <h4 style={{ margin: "0 0 8px 0", color: "#c2410c" }}>Confirm Quarantine Clearance</h4>
+        <div
+          style={{
+            padding: 16,
+            background: "rgba(0, 0, 0, 0.4)",
+            border: "1px solid var(--admin-warning-border)",
+            borderRadius: 6,
+          }}
+        >
+          <h4 style={{ margin: "0 0 8px 0", fontSize: 14, color: "#fbbf24" }}>
+            Confirm Quarantine Clearance
+          </h4>
 
-          <div style={{ padding: 12, marginBottom: 14, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 6, fontSize: 13, color: "#1e40af" }}>
+          <div
+            style={{
+              padding: 12,
+              marginBottom: 14,
+              background: "rgba(59, 130, 246, 0.1)",
+              border: "1px solid rgba(59, 130, 246, 0.25)",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "#93c5fd",
+            }}
+          >
             <strong>Governance Disclaimer:</strong>
-            <ul style={{ margin: "6px 0 0 0", paddingLeft: 20 }}>
+            <ul style={{ margin: "4px 0 0 0", paddingLeft: 18, lineHeight: 1.5 }}>
               <li>Clearing quarantine restores the entity to <strong>AWAITING_REVIEW</strong>.</li>
               <li>Clearing quarantine <strong>does NOT approve</strong> the entity.</li>
               <li>Clearing quarantine <strong>does NOT publish</strong> the entity.</li>
@@ -107,7 +147,7 @@ export function ClearQuarantineControls({
             </ul>
           </div>
 
-          <p style={{ margin: "0 0 8px 0", fontSize: 13, color: "#475569" }}>
+          <p style={{ margin: "0 0 8px 0", fontSize: 12, color: "var(--admin-muted)" }}>
             Please provide a mandatory, detailed administrator explanation for clearing quarantine:
           </p>
           <textarea
@@ -116,35 +156,40 @@ export function ClearQuarantineControls({
             placeholder="Explain why quarantine is being cleared and what verification was conducted..."
             rows={3}
             maxLength={1000}
-            style={{ width: "100%", padding: 8, fontSize: 14, borderRadius: 4, border: "1px solid #ccc", marginBottom: 12 }}
+            style={{
+              width: "100%",
+              padding: 10,
+              fontSize: 13,
+              borderRadius: 6,
+              border: "1px solid var(--admin-border-bright)",
+              background: "rgba(0, 0, 0, 0.6)",
+              color: "var(--admin-text)",
+              marginBottom: 12,
+              outline: "none",
+            }}
           />
 
-          <div style={{ display: "flex", gap: 12 }}>
-            <button
+          <div style={{ display: "flex", gap: 8 }}>
+            <LoadingButton
               onClick={handleClearQuarantine}
-              disabled={loading || !clearReason.trim()}
-              style={{
-                padding: "8px 16px",
-                background: loading || !clearReason.trim() ? "#fdba74" : "#ea580c",
-                color: "#fff",
-                border: "none",
-                borderRadius: 4,
-                fontWeight: "bold",
-                cursor: loading || !clearReason.trim() ? "not-allowed" : "pointer",
-              }}
+              loading={loading}
+              disabled={!clearReason.trim()}
+              variant="danger"
+              size="sm"
             >
-              {loading ? "Processing..." : "Confirm & Clear Quarantine"}
-            </button>
-            <button
+              Confirm &amp; Clear Quarantine
+            </LoadingButton>
+            <LoadingButton
               onClick={() => setShowConfirm(false)}
               disabled={loading}
-              style={{ padding: "8px 16px", background: "#94a3b8", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}
+              variant="outline"
+              size="sm"
             >
               Cancel
-            </button>
+            </LoadingButton>
           </div>
         </div>
       )}
-    </div>
+    </GlassPanel>
   );
 }

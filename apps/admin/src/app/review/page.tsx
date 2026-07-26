@@ -2,6 +2,12 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { verifyAdminSession } from "@/lib/auth";
 import { prisma, ReviewStatus, WorkflowEventType } from "@savvyedge/database";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { MetricCard } from "@/components/ui/MetricCard";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
+import { EmptyState } from "@/components/ui/EmptyState";
 
 export interface ReviewQueuePageProps {
   searchParams: Promise<{
@@ -53,8 +59,8 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
   }
 
   const searchParams = await props.searchParams;
-  const typeFilter = searchParams.type?.toUpperCase(); // "ALL", "CASINO", "BONUS"
-  const statusFilter = searchParams.status?.toUpperCase(); // "ALL", "AWAITING_REVIEW", "IN_REVIEW"
+  const typeFilter = searchParams.type?.toUpperCase() || "ALL"; // "ALL", "CASINO", "BONUS"
+  const statusFilter = searchParams.status?.toUpperCase() || "ALL"; // "ALL", "AWAITING_REVIEW", "IN_REVIEW"
 
   const targetReviewStatuses =
     statusFilter === "AWAITING_REVIEW"
@@ -63,8 +69,23 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
       ? [ReviewStatus.IN_REVIEW]
       : [ReviewStatus.AWAITING_REVIEW, ReviewStatus.IN_REVIEW];
 
+  // Calculate real summary metrics from persisted database records
+  const [awaitingCasinoCount, awaitingBonusCount, inReviewCasinoCount, inReviewBonusCount, quarantinedCasinoCount, quarantinedBonusCount] =
+    await Promise.all([
+      prisma.casino.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
+      prisma.bonus.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
+      prisma.casino.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
+      prisma.bonus.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
+      prisma.casino.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+      prisma.bonus.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+    ]);
+
+  const awaitingTotal = awaitingCasinoCount + awaitingBonusCount;
+  const inReviewTotal = inReviewCasinoCount + inReviewBonusCount;
+  const quarantinedTotal = quarantinedCasinoCount + quarantinedBonusCount;
+
   let rawCasinos: RawCasinoQueueItem[] = [];
-  if (!typeFilter || typeFilter === "ALL" || typeFilter === "CASINO") {
+  if (typeFilter === "ALL" || typeFilter === "CASINO") {
     rawCasinos = await prisma.casino.findMany({
       where: {
         review_status: { in: targetReviewStatuses },
@@ -90,7 +111,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
   }
 
   let rawBonuses: RawBonusQueueItem[] = [];
-  if (!typeFilter || typeFilter === "ALL" || typeFilter === "BONUS") {
+  if (typeFilter === "ALL" || typeFilter === "BONUS") {
     rawBonuses = await prisma.bonus.findMany({
       where: {
         review_status: { in: targetReviewStatuses },
@@ -158,10 +179,6 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
     });
   }
 
-  // Deterministic sorting:
-  // 1. Material change items first
-  // 2. Oldest waiting item first (ascending timestamp)
-  // 3. ID comparison tie-breaker
   items.sort((a, b) => {
     if (a.isMaterialChange !== b.isMaterialChange) {
       return a.isMaterialChange ? -1 : 1;
@@ -173,106 +190,226 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 24, margin: "0 0 4px 0" }}>Workflow Review Queue</h1>
-          <p style={{ margin: 0, color: "#64748b", fontSize: 14 }}>
-            Manage entity reviews, verify evidence claims, and approve items for publication.
-          </p>
-        </div>
+      <PageHeader
+        title="Workflow Review Queue"
+        subtitle="Operational workstation for reviewing extracted evidence, validating claims, and managing governance lifecycle."
+      />
 
-        <div style={{ display: "flex", gap: 12 }}>
-          {/* Filtering UI */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-            <strong>Entity:</strong>
-            <Link href={`/review?type=ALL&status=${statusFilter || "ALL"}`} style={{ textDecoration: !typeFilter || typeFilter === "ALL" ? "underline" : "none", fontWeight: !typeFilter || typeFilter === "ALL" ? "bold" : "normal" }}>All</Link> |
-            <Link href={`/review?type=CASINO&status=${statusFilter || "ALL"}`} style={{ textDecoration: typeFilter === "CASINO" ? "underline" : "none", fontWeight: typeFilter === "CASINO" ? "bold" : "normal" }}>Casino</Link> |
-            <Link href={`/review?type=BONUS&status=${statusFilter || "ALL"}`} style={{ textDecoration: typeFilter === "BONUS" ? "underline" : "none", fontWeight: typeFilter === "BONUS" ? "bold" : "normal" }}>Bonus</Link>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-            <strong>Status:</strong>
-            <Link href={`/review?type=${typeFilter || "ALL"}&status=ALL`} style={{ textDecoration: !statusFilter || statusFilter === "ALL" ? "underline" : "none", fontWeight: !statusFilter || statusFilter === "ALL" ? "bold" : "normal" }}>All</Link> |
-            <Link href={`/review?type=${typeFilter || "ALL"}&status=AWAITING_REVIEW`} style={{ textDecoration: statusFilter === "AWAITING_REVIEW" ? "underline" : "none", fontWeight: statusFilter === "AWAITING_REVIEW" ? "bold" : "normal" }}>Awaiting</Link> |
-            <Link href={`/review?type=${typeFilter || "ALL"}&status=IN_REVIEW`} style={{ textDecoration: statusFilter === "IN_REVIEW" ? "underline" : "none", fontWeight: statusFilter === "IN_REVIEW" ? "bold" : "normal" }}>In Review</Link>
-          </div>
-        </div>
+      {/* Summary KPI Cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 24 }}>
+        <MetricCard
+          label="Awaiting Review"
+          value={awaitingTotal}
+          subtext="Pending human inspection"
+          accentColor="amber"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+        />
+        <MetricCard
+          label="In Review"
+          value={inReviewTotal}
+          subtext="Currently being evaluated"
+          accentColor="blue"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+          }
+        />
+        <MetricCard
+          label="Quarantined Entities"
+          value={quarantinedTotal}
+          subtext="Blocked due to discrepancy"
+          accentColor="rose"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          }
+        />
       </div>
 
+      {/* Filter Control Bar */}
+      <GlassPanel padding="14px 20px" style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+            {/* Entity Filter */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+              <span style={{ fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Entity:
+              </span>
+              <div style={{ display: "flex", background: "rgba(0, 0, 0, 0.4)", padding: 2, borderRadius: 6, border: "1px solid var(--admin-border)" }}>
+                {(["ALL", "CASINO", "BONUS"] as const).map((t) => (
+                  <Link
+                    key={t}
+                    href={`/review?type=${t}&status=${statusFilter}`}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: typeFilter === t ? 600 : 400,
+                      color: typeFilter === t ? "#ffffff" : "var(--admin-muted)",
+                      background: typeFilter === t ? "rgba(255, 255, 255, 0.12)" : "transparent",
+                      textDecoration: "none",
+                    }}
+                  >
+                    {t === "ALL" ? "All Entities" : t.charAt(0) + t.slice(1).toLowerCase()}
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            {/* Status Filter */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+              <span style={{ fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Status:
+              </span>
+              <div style={{ display: "flex", background: "rgba(0, 0, 0, 0.4)", padding: 2, borderRadius: 6, border: "1px solid var(--admin-border)" }}>
+                {(["ALL", "AWAITING_REVIEW", "IN_REVIEW"] as const).map((s) => (
+                  <Link
+                    key={s}
+                    href={`/review?type=${typeFilter}&status=${s}`}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: statusFilter === s ? 600 : 400,
+                      color: statusFilter === s ? "#ffffff" : "var(--admin-muted)",
+                      background: statusFilter === s ? "rgba(255, 255, 255, 0.12)" : "transparent",
+                      textDecoration: "none",
+                    }}
+                  >
+                    {s === "ALL" ? "All Active" : s === "AWAITING_REVIEW" ? "Awaiting" : "In Review"}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>
+            Showing <strong style={{ color: "var(--admin-text)" }}>{items.length}</strong> items awaiting action
+          </div>
+        </div>
+      </GlassPanel>
+
+      {/* Main Queue Data Table */}
       {items.length === 0 ? (
-        <div style={{ padding: 40, textAlign: "center", background: "#fff", border: "1px dashed #cbd5e1", borderRadius: 8 }}>
-          <h3 style={{ margin: "0 0 8px 0", color: "#475569" }}>No Entities Awaiting Review</h3>
-          <p style={{ margin: 0, color: "#64748b", fontSize: 14 }}>
-            All extracted evidence and entities are currently processed or reviewed.
-          </p>
-        </div>
+        <EmptyState
+          title="No Entities Pending Review"
+          description="All extracted evidence and governance items are fully processed or meet active publication criteria."
+        />
       ) : (
-        <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 14 }}>
-            <thead>
-              <tr style={{ background: "#f1f5f9", borderBottom: "1px solid #cbd5e1" }}>
-                <th style={{ padding: "12px 16px" }}>Entity Name / Headline</th>
-                <th style={{ padding: "12px 16px" }}>Type</th>
-                <th style={{ padding: "12px 16px" }}>Review Status</th>
-                <th style={{ padding: "12px 16px" }}>Publication</th>
-                <th style={{ padding: "12px 16px" }}>Quarantine</th>
-                <th style={{ padding: "12px 16px" }}>Latest Workflow Event</th>
-                <th style={{ padding: "12px 16px" }}>Timestamp</th>
-                <th style={{ padding: "12px 16px", textAlign: "right" }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={`${item.entityType}-${item.id}`} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                  <td style={{ padding: "12px 16px", fontWeight: "bold" }}>
-                    {item.isMaterialChange && (
-                      <span style={{ display: "inline-block", background: "#fef3c7", color: "#92400e", fontSize: 11, padding: "2px 6px", borderRadius: 4, marginRight: 8, fontWeight: "bold" }}>
-                        MATERIAL CHANGE
-                      </span>
-                    )}
-                    {item.nameOrHeadline}
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: item.entityType === "CASINO" ? "#e0f2fe" : "#f3e8ff", color: item.entityType === "CASINO" ? "#0369a1" : "#6b21a8", fontWeight: "bold" }}>
-                      {item.entityType}
-                    </span>
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    <span style={{ fontWeight: "bold", color: item.reviewStatus === "AWAITING_REVIEW" ? "#d97706" : "#2563eb" }}>
-                      {item.reviewStatus}
-                    </span>
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    <span style={{ color: item.publicationStatus === "PUBLISHED" ? "#16a34a" : "#64748b" }}>
-                      {item.publicationStatus}
-                    </span>
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {item.quarantineReason ? (
-                      <span style={{ color: "#dc2626", fontWeight: "bold" }}>{item.quarantineReason}</span>
-                    ) : (
-                      <span style={{ color: "#94a3b8" }}>—</span>
-                    )}
-                  </td>
-                  <td style={{ padding: "12px 16px", fontSize: 13, fontFamily: "monospace" }}>
-                    {item.latestEventType}
-                  </td>
-                  <td style={{ padding: "12px 16px", fontSize: 13, color: "#64748b" }}>
-                    {item.latestEventTimestamp.toISOString().replace("T", " ").slice(0, 19)}
-                  </td>
-                  <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                    <Link
-                      href={item.detailUrl}
-                      style={{ background: "#2563eb", color: "#fff", padding: "6px 12px", borderRadius: 4, textDecoration: "none", fontSize: 13, fontWeight: "bold" }}
-                    >
-                      Open Review →
-                    </Link>
-                  </td>
+        <GlassPanel padding={0} style={{ overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "rgba(0, 0, 0, 0.4)", borderBottom: "1px solid var(--admin-border)" }}>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Entity Name / Headline
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Type
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Review Status
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Publication
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Latest Event
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Timestamp
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", textAlign: "right" }}>
+                    Action
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr
+                    key={`${item.entityType}-${item.id}`}
+                    style={{
+                      borderBottom: "1px solid var(--admin-border)",
+                      transition: "background 0.15s ease",
+                    }}
+                  >
+                    <td style={{ padding: "14px 16px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {item.isMaterialChange && (
+                          <span
+                            style={{
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              fontSize: 10,
+                              fontWeight: 700,
+                              background: "rgba(245, 158, 11, 0.2)",
+                              color: "#fbbf24",
+                              border: "1px solid rgba(245, 158, 11, 0.4)",
+                              letterSpacing: "0.05em",
+                            }}
+                          >
+                            MATERIAL CHANGE
+                          </span>
+                        )}
+                        <span style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 14 }}>
+                          {item.nameOrHeadline}
+                        </span>
+                      </div>
+                    </td>
+
+                    <td style={{ padding: "14px 16px" }}>
+                      <EntityTypeBadge type={item.entityType} size="sm" />
+                    </td>
+
+                    <td style={{ padding: "14px 16px" }}>
+                      <StatusBadge status={item.reviewStatus} size="sm" />
+                    </td>
+
+                    <td style={{ padding: "14px 16px" }}>
+                      <StatusBadge status={item.publicationStatus} size="sm" />
+                    </td>
+
+                    <td style={{ padding: "14px 16px", fontFamily: "monospace", fontSize: 12, color: "var(--admin-text-secondary)" }}>
+                      {item.latestEventType}
+                    </td>
+
+                    <td style={{ padding: "14px 16px", fontSize: 12, color: "var(--admin-muted)" }} className="tabular-nums">
+                      {item.latestEventTimestamp.toISOString().replace("T", " ").slice(0, 19)}
+                    </td>
+
+                    <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                      <Link
+                        href={item.detailUrl}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          background: "rgba(37, 99, 235, 0.15)",
+                          color: "#60a5fa",
+                          border: "1px solid rgba(37, 99, 235, 0.3)",
+                          padding: "5px 12px",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          textDecoration: "none",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        Inspect & Review →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </GlassPanel>
       )}
     </div>
   );

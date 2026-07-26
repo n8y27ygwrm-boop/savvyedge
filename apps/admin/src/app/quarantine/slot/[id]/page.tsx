@@ -1,8 +1,11 @@
 import { redirect, notFound } from "next/navigation";
-import Link from "next/link";
 import { verifyAdminSession } from "@/lib/auth";
 import { prisma, GovernedSubjectType } from "@savvyedge/database";
 import { quarantinedDetailWhere } from "@/lib/quarantine";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
 import { ClearQuarantineControls } from "../../components/ClearQuarantineControls";
 
 export interface QuarantineSlotDetailPageProps {
@@ -104,148 +107,154 @@ export default async function QuarantineSlotDetailPage(props: QuarantineSlotDeta
 
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
-        <Link href="/quarantine" style={{ color: "#2563eb", textDecoration: "none", fontSize: 14 }}>
-          &larr; Back to Quarantine Queue
-        </Link>
-      </div>
-
-      <div style={{ background: "#fff", border: "1px solid #fed7aa", padding: 24, borderRadius: 8, marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: "#ea580c", color: "#fff", fontWeight: "bold" }}>
-                SLOT QUARANTINE
-              </span>
-              <h1 style={{ margin: 0, fontSize: 24, color: "#0f172a" }}>{slot.name}</h1>
-            </div>
-            <p style={{ margin: 0, color: "#64748b", fontSize: 14, fontFamily: "monospace" }}>
-              ID: {slot.id} | Provider: {slot.provider.name} ({slot.provider.slug})
-            </p>
+      <PageHeader
+        title={slot.name}
+        subtitle={`Provider: ${slot.provider.name} | Slot ID: ${slot.id}`}
+        badge={<EntityTypeBadge type="SLOT" />}
+        breadcrumbs={[
+          { label: "Quarantine Queue", href: "/quarantine" },
+          { label: slot.name },
+        ]}
+        actions={
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <StatusBadge status={slot.review_status} />
+            <StatusBadge status={slot.publication_status} />
+            <span
+              className="tabular-nums"
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: 4,
+                background: "rgba(255, 255, 255, 0.05)",
+                color: "var(--admin-muted)",
+                border: "1px solid var(--admin-border)",
+              }}
+            >
+              v{slot.governance_version}
+            </span>
           </div>
-
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 13, color: "#64748b" }}>Governance Version</div>
-            <div style={{ fontSize: 24, fontWeight: "bold", fontFamily: "monospace" }}>v{slot.governance_version}</div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 24, marginTop: 20, paddingTop: 16, borderTop: "1px solid #f1f5f9", fontSize: 14 }}>
-          <div>
-            <span style={{ color: "#64748b" }}>Review Status: </span>
-            <strong style={{ color: slot.review_status === "QUARANTINED" ? "#c2410c" : "#0f172a" }}>
-              {slot.review_status}
-            </strong>
-          </div>
-          <div>
-            <span style={{ color: "#64748b" }}>Publication Status: </span>
-            <strong>{slot.publication_status}</strong>
-          </div>
-          <div>
-            <span style={{ color: "#64748b" }}>Quarantine Override: </span>
-            <strong style={{ color: "#c2410c" }}>{slot.quarantine_reason || "None"}</strong>
-          </div>
-        </div>
-      </div>
-
-      <ClearQuarantineControls
-        subjectType={GovernedSubjectType.SLOT}
-        subjectId={slot.id}
-        quarantineReason={slot.quarantine_reason}
-        expectedVersion={slot.governance_version}
-        claimIds={claimIds}
+        }
       />
 
-      <div style={{ background: "#fff", border: "1px solid #fed7aa", padding: 20, borderRadius: 8, marginTop: 24 }}>
-        <h3 style={{ margin: "0 0 16px 0", fontSize: 18, color: "#9a3412", borderBottom: "1px solid #ffedd5", paddingBottom: 8 }}>
-          Quarantine Audit Context
-        </h3>
-        {quarantineEvent ? (
-          <div style={{ background: "#fff7ed", padding: 16, borderRadius: 6, border: "1px solid #ffedd5", fontSize: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <strong>Event: {quarantineEvent.event_type}</strong>
-              <span style={{ color: "#64748b", fontSize: 12 }}>
-                {new Date(quarantineEvent.occurred_at).toISOString().slice(0, 19).replace("T", " ")}
-              </span>
-            </div>
-            <div style={{ fontSize: 13, color: "#475569", marginBottom: 6 }}>
-              Actor: <strong>{quarantineEvent.actor?.display_name || quarantineEvent.actor?.stable_key}</strong> ({quarantineEvent.actor?.kind})
-            </div>
-            <div style={{ fontSize: 13, color: "#9a3412", fontWeight: "bold" }}>
-              Quarantine Reason: {quarantineEvent.quarantine_reason || slot.quarantine_reason}
-            </div>
-            {quarantineEvent.internal_note && (
-              <div style={{ marginTop: 8, fontSize: 13, fontStyle: "italic", color: "#64748b" }}>
-                Note: &quot;{quarantineEvent.internal_note}&quot;
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 24, alignItems: "start" }}>
+        {/* Left Column */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          {/* Quarantine Context */}
+          <GlassPanel padding="20px" style={{ background: "rgba(239, 68, 68, 0.05)", border: "1px solid var(--admin-danger-border)" }}>
+            <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "#f87171", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
+              Quarantine Context &amp; Discrepancy Record
+            </h3>
+
+            {quarantineEvent ? (
+              <div style={{ padding: 14, borderRadius: 6, background: "rgba(0, 0, 0, 0.4)", border: "1px solid var(--admin-border)", fontSize: 13 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <strong style={{ color: "#f87171", fontFamily: "monospace" }}>Event: {quarantineEvent.event_type}</strong>
+                  <span className="tabular-nums" style={{ color: "var(--admin-muted)", fontSize: 12 }}>
+                    {new Date(quarantineEvent.occurred_at).toISOString().slice(0, 19).replace("T", " ")}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted)", marginBottom: 8 }}>
+                  Triggered By: <strong style={{ color: "var(--admin-text)" }}>{quarantineEvent.actor?.display_name || quarantineEvent.actor?.stable_key}</strong> ({quarantineEvent.actor?.kind})
+                </div>
+                <div style={{ fontSize: 13, color: "#fbbf24", fontWeight: 700 }}>
+                  Quarantine Reason: &quot;{quarantineEvent.quarantine_reason || slot.quarantine_reason}&quot;
+                </div>
+                {quarantineEvent.internal_note && (
+                  <div style={{ marginTop: 8, fontSize: 12, fontStyle: "italic", color: "var(--admin-muted)" }}>
+                    Operator Note: &quot;{quarantineEvent.internal_note}&quot;
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>
+                Quarantine reason set directly on entity record: <strong style={{ color: "#fbbf24" }}>{slot.quarantine_reason}</strong>.
               </div>
             )}
-          </div>
-        ) : (
-          <p style={{ margin: 0, color: "#64748b", fontSize: 14 }}>
-            Quarantine reason is set on entity, but no direct historic quarantine event log was found.
-          </p>
-        )}
-      </div>
+          </GlassPanel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginTop: 24 }}>
-        <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8 }}>
-          <h3 style={{ margin: "0 0 16px 0", fontSize: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
-            Current Stored Values
-          </h3>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <tbody>
-              <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-                <td style={{ padding: "8px 0", color: "#64748b" }}>Slot Name</td>
-                <td style={{ padding: "8px 0", fontWeight: "bold" }}>{slot.name}</td>
-              </tr>
-              <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-                <td style={{ padding: "8px 0", color: "#64748b" }}>RTP Current</td>
-                <td style={{ padding: "8px 0" }}>{slot.rtp_current != null ? `${slot.rtp_current}%` : "N/A"}</td>
-              </tr>
-              <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-                <td style={{ padding: "8px 0", color: "#64748b" }}>Volatility</td>
-                <td style={{ padding: "8px 0" }}>{slot.volatility || "N/A"}</td>
-              </tr>
-            </tbody>
-          </table>
+          {/* Current Stored Database Values */}
+          <GlassPanel padding="20px">
+            <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
+              Current Stored Database Values
+            </h3>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  Slot Name
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "var(--admin-text)" }}>{slot.name}</div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  RTP Current
+                </div>
+                <div style={{ fontSize: 13, color: "var(--admin-text)" }}>
+                  {slot.rtp_current != null ? `${slot.rtp_current}%` : "—"}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  Volatility
+                </div>
+                <div style={{ fontSize: 13, color: "var(--admin-text)" }}>{slot.volatility || "—"}</div>
+              </div>
+            </div>
+          </GlassPanel>
+
+          {/* Linked Evidence Claims */}
+          <GlassPanel padding="20px">
+            <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
+              Linked Evidence Claims ({slot.evidence_claims.length})
+            </h3>
+
+            {slot.evidence_claims.length === 0 ? (
+              <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>No evidence claims linked to this Slot.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {slot.evidence_claims.map((claim) => (
+                  <div key={claim.id} style={{ padding: 14, borderRadius: 6, background: "rgba(0, 0, 0, 0.3)", border: "1px solid var(--admin-border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#fb7185", textTransform: "uppercase" }}>{claim.field}</span>
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(16, 185, 129, 0.15)", color: "#34d399", border: "1px solid rgba(16, 185, 129, 0.3)", fontWeight: 700 }}>
+                        {claim.verdict}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "var(--admin-text)", marginBottom: 6 }}>
+                      Claimed Value: <span style={{ color: "#ffffff", fontWeight: 700 }}>&quot;{claim.observed_value}&quot;</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted)", display: "flex", justifyContent: "space-between", gap: 12 }}>
+                      <span>
+                        Source:{" "}
+                        {isSafeUrl(claim.evidence.source_url) ? (
+                          <a href={claim.evidence.source_url} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>
+                            {claim.evidence.source_url}
+                          </a>
+                        ) : (
+                          <span>{claim.evidence.source_url}</span>
+                        )}
+                      </span>
+                      <span className="tabular-nums">Observed: {new Date(claim.evidence.observed_at).toISOString().slice(0, 19).replace("T", " ")}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassPanel>
         </div>
 
-        <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8 }}>
-          <h3 style={{ margin: "0 0 16px 0", fontSize: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
-            Incoming Evidence Claims
-          </h3>
-          {slot.evidence_claims.length === 0 ? (
-            <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>No evidence claims linked to this Slot.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {slot.evidence_claims.map((claim) => (
-                <div key={claim.id} style={{ padding: 12, border: "1px solid #f1f5f9", borderRadius: 6, background: "#fafafa" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <strong style={{ fontSize: 13, color: "#0369a1" }}>{claim.field}</strong>
-                    <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: "#dcfce7", color: "#15803d", fontWeight: "bold" }}>
-                      {claim.verdict}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: "bold", marginBottom: 6 }}>
-                    Claimed Value: <span style={{ color: "#0f172a" }}>&quot;{claim.observed_value}&quot;</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#64748b", display: "flex", justifyContent: "space-between" }}>
-                    <span>
-                      Source:{" "}
-                      {isSafeUrl(claim.evidence.source_url) ? (
-                        <a href={claim.evidence.source_url} target="_blank" rel="noreferrer" style={{ color: "#2563eb" }}>
-                          {claim.evidence.source_url}
-                        </a>
-                      ) : (
-                        <span>{claim.evidence.source_url}</span>
-                      )}
-                    </span>
-                    <span>Observed: {new Date(claim.evidence.observed_at).toISOString().slice(0, 19).replace("T", " ")}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Right Column: Sticky Clearance Controls */}
+        <div style={{ position: "sticky", top: 76 }}>
+          <ClearQuarantineControls
+            subjectType={GovernedSubjectType.SLOT}
+            subjectId={slot.id}
+            quarantineReason={slot.quarantine_reason}
+            expectedVersion={slot.governance_version}
+            claimIds={claimIds}
+          />
         </div>
       </div>
     </div>

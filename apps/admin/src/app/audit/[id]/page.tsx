@@ -2,31 +2,35 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { verifyAdminSession } from "@/lib/auth";
 import { getAuditEventDetail } from "@/lib/audit";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GlassPanel } from "@/components/ui/GlassPanel";
+import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 
 export interface AuditEventDetailPageProps {
   params: Promise<{ id: string }>;
 }
 
-function eventTypeBadgeColor(eventType: string): { bg: string; text: string } {
+function eventTypeBadgeStyle(eventType: string): { bg: string; text: string; border: string } {
   switch (eventType) {
     case "APPROVED":
     case "PUBLISHED":
-      return { bg: "#dcfce7", text: "#15803d" };
+      return { bg: "rgba(16, 185, 129, 0.15)", text: "#34d399", border: "rgba(16, 185, 129, 0.3)" };
     case "REJECTED":
     case "UNPUBLISHED":
     case "WITHDRAWN":
-      return { bg: "#fee2e2", text: "#b91c1c" };
+      return { bg: "rgba(239, 68, 68, 0.15)", text: "#f87171", border: "rgba(239, 68, 68, 0.3)" };
     case "QUARANTINED":
-      return { bg: "#ffedd5", text: "#c2410c" };
+      return { bg: "rgba(245, 158, 11, 0.15)", text: "#fbbf24", border: "rgba(245, 158, 11, 0.3)" };
     case "QUARANTINE_CLEARED":
-      return { bg: "#e0f2fe", text: "#0369a1" };
+      return { bg: "rgba(59, 130, 246, 0.15)", text: "#60a5fa", border: "rgba(59, 130, 246, 0.3)" };
     case "REVIEW_REQUESTED":
     case "REVIEW_STARTED":
-      return { bg: "#fef3c7", text: "#b45309" };
+      return { bg: "rgba(245, 158, 11, 0.15)", text: "#f59e0b", border: "rgba(245, 158, 11, 0.3)" };
     case "MATERIAL_CHANGE_DETECTED":
-      return { bg: "#f3e8ff", text: "#6b21a8" };
+      return { bg: "rgba(168, 85, 247, 0.15)", text: "#c084fc", border: "rgba(168, 85, 247, 0.3)" };
     default:
-      return { bg: "#f1f5f9", text: "#475569" };
+      return { bg: "rgba(255, 255, 255, 0.05)", text: "var(--admin-muted)", border: "var(--admin-border)" };
   }
 }
 
@@ -44,203 +48,257 @@ export default async function AuditEventDetailPage(props: AuditEventDetailPagePr
     notFound();
   }
 
-  const badge = eventTypeBadgeColor(event.eventType);
+  const bStyle = eventTypeBadgeStyle(event.eventType);
 
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
-        <Link href="/audit" style={{ color: "#2563eb", textDecoration: "none", fontSize: 14 }}>
-          &larr; Back to Audit Log
-        </Link>
-      </div>
-
-      {/* Header Banner */}
-      <div style={{ background: "#fff", border: "1px solid #cbd5e1", padding: 24, borderRadius: 8, marginBottom: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: badge.bg, color: badge.text, fontWeight: "bold" }}>
-                EVENT: {event.eventType}
-              </span>
-              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, background: "#f1f5f9", color: "#334155", fontWeight: "bold" }}>
-                {event.subjectType}
-              </span>
-              <h1 style={{ margin: 0, fontSize: 22, color: "#0f172a" }}>{event.entityLabel}</h1>
-            </div>
-            <p style={{ margin: 0, color: "#64748b", fontSize: 14, fontFamily: "monospace" }}>
-              Event ID: {event.id} | Subject ID: {event.subjectId}
-            </p>
+      <PageHeader
+        title={`Audit Record: ${event.eventType}`}
+        subtitle={`Event ID: ${event.id} | Subject ID: ${event.subjectId}`}
+        badge={
+          <span
+            style={{
+              padding: "2px 8px",
+              borderRadius: 4,
+              fontSize: 12,
+              fontWeight: 700,
+              background: bStyle.bg,
+              color: bStyle.text,
+              border: `1px solid ${bStyle.border}`,
+            }}
+          >
+            {event.eventType}
+          </span>
+        }
+        breadcrumbs={[
+          { label: "Audit Log", href: "/audit" },
+          { label: event.id.slice(0, 8) + "..." },
+        ]}
+        actions={
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <EntityTypeBadge type={event.subjectType} />
+            <span
+              className="tabular-nums"
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: 4,
+                background: "rgba(255, 255, 255, 0.05)",
+                color: "var(--admin-muted)",
+                border: "1px solid var(--admin-border)",
+              }}
+            >
+              v{event.expectedVersion} → v{event.resultingVersion}
+            </span>
           </div>
-
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 13, color: "#64748b" }}>Version Transition</div>
-            <div style={{ fontSize: 20, fontWeight: "bold", fontFamily: "monospace" }}>
-              v{event.expectedVersion} &rarr; v{event.resultingVersion}
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 24, marginTop: 20, paddingTop: 16, borderTop: "1px solid #f1f5f9", fontSize: 14 }}>
-          <div>
-            <span style={{ color: "#64748b" }}>Timestamp: </span>
-            <strong style={{ fontFamily: "monospace" }}>
-              {new Date(event.occurredAt).toISOString()}
-            </strong>
-          </div>
-          <div>
-            <span style={{ color: "#64748b" }}>Actor: </span>
-            <strong>{event.actorName}</strong> ({event.actorKind})
-          </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* Contextual Navigation Buttons */}
       {(event.reviewDetailUrl || event.quarantineDetailUrl) && (
-        <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
           {event.reviewDetailUrl && (
             <Link
               href={event.reviewDetailUrl}
-              style={{ padding: "8px 16px", background: "#0284c7", color: "#fff", textDecoration: "none", borderRadius: 4, fontWeight: "bold", fontSize: 13 }}
+              style={{
+                padding: "7px 14px",
+                background: "rgba(59, 130, 246, 0.15)",
+                color: "#60a5fa",
+                border: "1px solid rgba(59, 130, 246, 0.3)",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                textDecoration: "none",
+              }}
             >
-              View in Review Queue &rarr;
+              Inspect in Review Queue →
             </Link>
           )}
           {event.quarantineDetailUrl && (
             <Link
               href={event.quarantineDetailUrl}
-              style={{ padding: "8px 16px", background: "#ea580c", color: "#fff", textDecoration: "none", borderRadius: 4, fontWeight: "bold", fontSize: 13 }}
+              style={{
+                padding: "7px 14px",
+                background: "rgba(239, 68, 68, 0.15)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.3)",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                textDecoration: "none",
+              }}
             >
-              View in Quarantine Queue &rarr;
+              Inspect in Quarantine Queue →
             </Link>
           )}
         </div>
       )}
 
-      {/* State Transitions Card */}
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8, marginBottom: 24 }}>
-        <h3 style={{ margin: "0 0 16px 0", fontSize: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
-          State Transition Details
-        </h3>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <tbody>
-            <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-              <td style={{ padding: "10px 0", color: "#64748b", width: 220 }}>Review Status Change</td>
-              <td style={{ padding: "10px 0" }}>
-                {event.fromReviewStatus && event.toReviewStatus ? (
-                  <span>
-                    <span style={{ color: "#475569" }}>{event.fromReviewStatus}</span> &rarr;{" "}
-                    <strong style={{ color: "#0f172a" }}>{event.toReviewStatus}</strong>
-                  </span>
-                ) : (
-                  <span style={{ color: "#94a3b8" }}>No review status transition recorded</span>
-                )}
-              </td>
-            </tr>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+        {/* State Transition Details */}
+        <GlassPanel padding="20px">
+          <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
+            State Transition Summary
+          </h3>
 
-            <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-              <td style={{ padding: "10px 0", color: "#64748b" }}>Publication Status Change</td>
-              <td style={{ padding: "10px 0" }}>
-                {event.fromPublicationStatus && event.toPublicationStatus ? (
-                  <span>
-                    <span style={{ color: "#475569" }}>{event.fromPublicationStatus}</span> &rarr;{" "}
-                    <strong style={{ color: "#0f172a" }}>{event.toPublicationStatus}</strong>
-                  </span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Review Status Transition
+              </div>
+              <div>
+                {event.fromReviewStatus && event.toReviewStatus ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                    <span style={{ color: "var(--admin-muted)" }}>{event.fromReviewStatus}</span>
+                    <span style={{ color: "var(--admin-muted-dark)" }}>→</span>
+                    <strong style={{ color: "#34d399" }}>{event.toReviewStatus}</strong>
+                  </div>
                 ) : (
-                  <span style={{ color: "#94a3b8" }}>No publication status transition recorded</span>
+                  <span style={{ color: "var(--admin-muted-dark)", fontSize: 13 }}>No review status change</span>
                 )}
-              </td>
-            </tr>
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Publication Status Transition
+              </div>
+              <div>
+                {event.fromPublicationStatus && event.toPublicationStatus ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+                    <span style={{ color: "var(--admin-muted)" }}>{event.fromPublicationStatus}</span>
+                    <span style={{ color: "var(--admin-muted-dark)" }}>→</span>
+                    <strong style={{ color: "#60a5fa" }}>{event.toPublicationStatus}</strong>
+                  </div>
+                ) : (
+                  <span style={{ color: "var(--admin-muted-dark)", fontSize: 13 }}>No publication status change</span>
+                )}
+              </div>
+            </div>
 
             {event.quarantineReason && (
-              <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-                <td style={{ padding: "10px 0", color: "#64748b" }}>Quarantine Reason</td>
-                <td style={{ padding: "10px 0" }}>
-                  <strong style={{ color: "#c2410c" }}>{event.quarantineReason}</strong>
-                </td>
-              </tr>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  Quarantine Reason
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#fbbf24" }}>
+                  {event.quarantineReason}
+                </div>
+              </div>
             )}
+          </div>
+        </GlassPanel>
 
-            {event.canonicalTargetId && (
-              <tr style={{ borderBottom: "1px solid #f8fafc" }}>
-                <td style={{ padding: "10px 0", color: "#64748b" }}>Canonical Target (Superseded)</td>
-                <td style={{ padding: "10px 0" }}>
-                  <strong>{event.canonicalTargetLabel}</strong> (ID: {event.canonicalTargetId})
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        {/* Actor & Metadata */}
+        <GlassPanel padding="20px">
+          <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
+            Actor &amp; Event Metadata
+          </h3>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Executed By Actor
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--admin-text)" }}>
+                {event.actorName} <span style={{ fontSize: 12, color: "var(--admin-muted)", fontWeight: 400 }}>({event.actorKind})</span>
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Exact Timestamp
+              </div>
+              <div className="tabular-nums" style={{ fontSize: 13, fontFamily: "monospace", color: "var(--admin-text)" }}>
+                {new Date(event.occurredAt).toISOString()}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                Governance Version
+              </div>
+              <div className="tabular-nums" style={{ fontSize: 13, fontFamily: "monospace", color: "var(--admin-text)" }}>
+                v{event.expectedVersion} → v{event.resultingVersion}
+              </div>
+            </div>
+          </div>
+        </GlassPanel>
       </div>
 
       {/* Internal Note / Explanation */}
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8, marginBottom: 24 }}>
-        <h3 style={{ margin: "0 0 12px 0", fontSize: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
+      <GlassPanel padding="20px" style={{ marginBottom: 24 }}>
+        <h3 style={{ margin: "0 0 12px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
           Internal Reason &amp; Explanation
         </h3>
         {event.internalNote ? (
-          <div style={{ background: "#f8fafc", padding: 14, borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 14, color: "#334155", fontStyle: "italic" }}>
+          <div style={{ padding: 14, borderRadius: 6, background: "rgba(0, 0, 0, 0.4)", border: "1px solid var(--admin-border)", fontSize: 13, color: "var(--admin-text-secondary)", fontStyle: "italic" }}>
             &quot;{event.internalNote}&quot;
           </div>
         ) : (
-          <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>No internal note recorded for this audit event.</p>
+          <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>No internal note recorded for this audit event.</div>
         )}
-      </div>
+      </GlassPanel>
 
       {/* Linked Evidence Claims */}
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", padding: 20, borderRadius: 8 }}>
-        <h3 style={{ margin: "0 0 16px 0", fontSize: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
+      <GlassPanel padding="20px">
+        <h3 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 700, color: "var(--admin-text)", borderBottom: "1px solid var(--admin-border)", paddingBottom: 12 }}>
           Linked Evidence Claims ({event.claims.length})
         </h3>
 
         {event.claims.length === 0 ? (
-          <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>No evidence claims linked to this audit event.</p>
+          <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>No evidence claims linked to this audit event.</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {event.claims.map((claim) => (
               <div
                 key={claim.id}
                 style={{
-                  padding: 16,
-                  border: claim.isSubjectMismatch ? "1px solid #fca5a5" : "1px solid #e2e8f0",
+                  padding: 14,
                   borderRadius: 6,
-                  background: claim.isSubjectMismatch ? "#fef2f2" : "#fafafa",
+                  background: claim.isSubjectMismatch ? "rgba(239, 68, 68, 0.08)" : "rgba(0, 0, 0, 0.3)",
+                  border: claim.isSubjectMismatch ? "1px solid var(--admin-danger-border)" : "1px solid var(--admin-border)",
                 }}
               >
                 {claim.isSubjectMismatch && (
-                  <div style={{ padding: 8, marginBottom: 12, background: "#fee2e2", color: "#991b1b", borderRadius: 4, fontSize: 12, fontWeight: "bold" }}>
-                    Warning: Linked evidence claim subject ({claim.subjectId}) does not match audit event subject ({event.subjectId}).
-                  </div>
+                  <InlineAlert
+                    type="error"
+                    title="Subject Discrepancy Warning"
+                    message={`Linked evidence claim subject (${claim.subjectId}) does not match audit event subject (${event.subjectId}).`}
+                    style={{ marginBottom: 12 }}
+                  />
                 )}
 
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <strong style={{ fontSize: 14, color: "#0369a1" }}>Field: {claim.field}</strong>
-                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "#dcfce7", color: "#15803d", fontWeight: "bold" }}>
-                    Verdict: {claim.verdict}
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#60a5fa", textTransform: "uppercase" }}>Field: {claim.field}</span>
+                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(16, 185, 129, 0.15)", color: "#34d399", border: "1px solid rgba(16, 185, 129, 0.3)", fontWeight: 700 }}>
+                    {claim.verdict}
                   </span>
                 </div>
 
-                <div style={{ fontSize: 14, marginBottom: 8 }}>
-                  Observed Value: <strong>&quot;{claim.observedValue}&quot;</strong>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "var(--admin-text)", marginBottom: 8 }}>
+                  Observed Value: <span style={{ color: "#ffffff", fontWeight: 700 }}>&quot;{claim.observedValue}&quot;</span>
                 </div>
 
-                <div style={{ fontSize: 12, color: "#64748b", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                <div style={{ fontSize: 12, color: "var(--admin-muted)", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                   <span>
                     Source URL:{" "}
                     {claim.isSafeSourceUrl ? (
-                      <a href={claim.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#2563eb" }}>
+                      <a href={claim.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>
                         {claim.sourceUrl}
                       </a>
                     ) : (
-                      <span style={{ color: "#475569" }}>{claim.sourceUrl} (Unsafe Protocol)</span>
+                      <span style={{ color: "var(--admin-warning)" }}>{claim.sourceUrl} (Unsafe Protocol)</span>
                     )}
                   </span>
-                  <span>Observed: {new Date(claim.observedAt).toISOString().slice(0, 19).replace("T", " ")}</span>
+                  <span className="tabular-nums">Observed: {new Date(claim.observedAt).toISOString().slice(0, 19).replace("T", " ")}</span>
                 </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </GlassPanel>
     </div>
   );
 }
