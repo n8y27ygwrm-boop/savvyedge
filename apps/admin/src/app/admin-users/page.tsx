@@ -58,7 +58,7 @@ export default async function AdminUsersPage() {
     },
   });
 
-  const serializedUsers = users.map((user) => ({
+  const serializedUsers = users.map((user: typeof users[number]) => ({
     ...user,
     created_at: user.created_at.toISOString(),
     updated_at: user.updated_at.toISOString(),
