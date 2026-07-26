@@ -38,8 +38,8 @@ export default async function QuarantineQueuePage(
   return (
     <div>
       <PageHeader
-        title="Quarantine Governance Queue"
-        subtitle="High-risk entity workstation for evaluating evidence discrepancies and clearing quarantine overrides."
+        title="Quarantine Risk Queue"
+        subtitle="High-risk entity workstation for evaluating evidence discrepancies and managing clearance overrides."
       />
 
       {/* Summary KPI Bar */}
@@ -75,7 +75,8 @@ export default async function QuarantineQueuePage(
                     fontSize: 12,
                     fontWeight: typeFilter === t ? 600 : 400,
                     color: typeFilter === t ? "#ffffff" : "var(--admin-muted)",
-                    background: typeFilter === t ? "rgba(255, 255, 255, 0.12)" : "transparent",
+                    background: typeFilter === t ? "rgba(16, 185, 129, 0.15)" : "transparent",
+                    border: typeFilter === t ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid transparent",
                     textDecoration: "none",
                   }}
                 >
@@ -94,29 +95,33 @@ export default async function QuarantineQueuePage(
       {/* Main Quarantine Data Table */}
       {items.length === 0 ? (
         <EmptyState
-          title="No Quarantined Entities"
+          title="Quarantine Queue Clear"
           description="All governed entities are operating under standard review lifecycle status without active quarantine overrides."
+          guide="Entities enter quarantine when evidence source URLs, licensing checks, or material claim updates trigger automated risk blocks or manual operator holds."
         />
       ) : (
         <GlassPanel padding={0} style={{ overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
               <thead>
-                <tr style={{ background: "rgba(239, 68, 68, 0.08)", borderBottom: "1px solid var(--admin-danger-border)" }}>
-                  <th style={{ padding: "12px 16px", color: "#f87171", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Entity Name / Headline
-                  </th>
+                <tr style={{ background: "rgba(0, 0, 0, 0.4)", borderBottom: "1px solid var(--admin-border)" }}>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
                     Type
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Entity Headline / Label
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
                     Quarantine Reason
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Review / Publication
+                    Review Status
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Quarantine Date & Actor
+                    Publication
+                  </th>
+                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                    Version
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", textAlign: "right" }}>
                     Action
@@ -127,20 +132,23 @@ export default async function QuarantineQueuePage(
                 {items.map((item) => (
                   <tr
                     key={`${item.entityType}-${item.id}`}
-                    style={{ borderBottom: "1px solid var(--admin-border)", transition: "background 0.15s ease" }}
+                    style={{
+                      borderBottom: "1px solid var(--admin-border)",
+                      background: "rgba(239, 68, 68, 0.03)",
+                      transition: "background 0.15s ease",
+                    }}
                   >
                     <td style={{ padding: "14px 16px" }}>
-                      <Link
-                        href={item.detailUrl}
-                        style={{ fontWeight: 600, color: "var(--admin-text)", textDecoration: "none", fontSize: 14 }}
-                        className="hover:underline"
-                      >
-                        {item.nameOrHeadline}
-                      </Link>
+                      <EntityTypeBadge type={item.entityType} size="sm" />
                     </td>
 
                     <td style={{ padding: "14px 16px" }}>
-                      <EntityTypeBadge type={item.entityType} size="sm" />
+                      <div style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 14 }}>
+                        {item.nameOrHeadline}
+                      </div>
+                      <span style={{ fontSize: 11, color: "var(--admin-muted)", fontFamily: "monospace" }}>
+                        ID: {item.id}
+                      </span>
                     </td>
 
                     <td style={{ padding: "14px 16px" }}>
@@ -155,22 +163,20 @@ export default async function QuarantineQueuePage(
                           border: "1px solid rgba(245, 158, 11, 0.3)",
                         }}
                       >
-                        {item.quarantineReason}
+                        {item.quarantineReason || "GENERAL_HOLD"}
                       </span>
                     </td>
 
                     <td style={{ padding: "14px 16px" }}>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <StatusBadge status={item.reviewStatus} size="sm" />
-                        {item.publicationStatus && <StatusBadge status={item.publicationStatus} size="sm" />}
-                      </div>
+                      <StatusBadge status={item.reviewStatus} />
                     </td>
 
-                    <td style={{ padding: "14px 16px", fontSize: 12, color: "var(--admin-muted)" }}>
-                      <div className="tabular-nums">
-                        {item.quarantineTimestamp ? item.quarantineTimestamp.toISOString().slice(0, 19).replace("T", " ") : "No event timestamp"}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--admin-muted-dark)" }}>Actor: {item.actorName}</div>
+                    <td style={{ padding: "14px 16px" }}>
+                      <StatusBadge status={item.publicationStatus ?? "UNPUBLISHED"} />
+                    </td>
+
+                    <td style={{ padding: "14px 16px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "var(--admin-text)" }}>
+                      v{item.governanceVersion}
                     </td>
 
                     <td style={{ padding: "14px 16px", textAlign: "right" }}>
@@ -179,18 +185,18 @@ export default async function QuarantineQueuePage(
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
-                          gap: 6,
-                          background: "rgba(239, 68, 68, 0.15)",
-                          color: "#f87171",
-                          border: "1px solid rgba(239, 68, 68, 0.3)",
+                          gap: 4,
                           padding: "5px 12px",
                           borderRadius: 6,
                           fontSize: 12,
                           fontWeight: 600,
+                          background: "rgba(239, 68, 68, 0.12)",
+                          color: "#f87171",
+                          border: "1px solid rgba(239, 68, 68, 0.3)",
                           textDecoration: "none",
                         }}
                       >
-                        Inspect & Clear...
+                        Inspect Risk &rarr;
                       </Link>
                     </td>
                   </tr>

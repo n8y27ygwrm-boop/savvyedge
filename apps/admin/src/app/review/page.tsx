@@ -69,20 +69,30 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
       ? [ReviewStatus.IN_REVIEW]
       : [ReviewStatus.AWAITING_REVIEW, ReviewStatus.IN_REVIEW];
 
-  // Calculate real summary metrics from persisted database records
-  const [awaitingCasinoCount, awaitingBonusCount, inReviewCasinoCount, inReviewBonusCount, quarantinedCasinoCount, quarantinedBonusCount] =
-    await Promise.all([
-      prisma.casino.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
-      prisma.bonus.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
-      prisma.casino.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
-      prisma.bonus.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
-      prisma.casino.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
-      prisma.bonus.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
-    ]);
+  // Calculate real summary metrics from persisted database records across all governed entity types
+  const [
+    awaitingCasinoCount,
+    awaitingBonusCount,
+    inReviewCasinoCount,
+    inReviewBonusCount,
+    quarantinedCasinoCount,
+    quarantinedBonusCount,
+    quarantinedSlotCount,
+    quarantinedLicenseCount,
+  ] = await Promise.all([
+    prisma.casino.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
+    prisma.bonus.count({ where: { review_status: ReviewStatus.AWAITING_REVIEW } }),
+    prisma.casino.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
+    prisma.bonus.count({ where: { review_status: ReviewStatus.IN_REVIEW } }),
+    prisma.casino.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+    prisma.bonus.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+    prisma.slot.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+    prisma.license.count({ where: { review_status: ReviewStatus.QUARANTINED } }),
+  ]);
 
   const awaitingTotal = awaitingCasinoCount + awaitingBonusCount;
   const inReviewTotal = inReviewCasinoCount + inReviewBonusCount;
-  const quarantinedTotal = quarantinedCasinoCount + quarantinedBonusCount;
+  const quarantinedTotal = quarantinedCasinoCount + quarantinedBonusCount + quarantinedSlotCount + quarantinedLicenseCount;
 
   let rawCasinos: RawCasinoQueueItem[] = [];
   if (typeFilter === "ALL" || typeFilter === "CASINO") {
@@ -212,7 +222,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
           label="In Review"
           value={inReviewTotal}
           subtext="Currently being evaluated"
-          accentColor="blue"
+          accentColor="emerald"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -222,7 +232,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
         <MetricCard
           label="Quarantined Entities"
           value={quarantinedTotal}
-          subtext="Blocked due to discrepancy"
+          subtext="Casinos, Bonuses, Slots &amp; Licenses"
           accentColor="rose"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -252,7 +262,8 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
                       fontSize: 12,
                       fontWeight: typeFilter === t ? 600 : 400,
                       color: typeFilter === t ? "#ffffff" : "var(--admin-muted)",
-                      background: typeFilter === t ? "rgba(255, 255, 255, 0.12)" : "transparent",
+                      background: typeFilter === t ? "rgba(16, 185, 129, 0.15)" : "transparent",
+                      border: typeFilter === t ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid transparent",
                       textDecoration: "none",
                     }}
                   >
@@ -278,7 +289,8 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
                       fontSize: 12,
                       fontWeight: statusFilter === s ? 600 : 400,
                       color: statusFilter === s ? "#ffffff" : "var(--admin-muted)",
-                      background: statusFilter === s ? "rgba(255, 255, 255, 0.12)" : "transparent",
+                      background: statusFilter === s ? "rgba(16, 185, 129, 0.15)" : "transparent",
+                      border: statusFilter === s ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid transparent",
                       textDecoration: "none",
                     }}
                   >
@@ -298,8 +310,9 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
       {/* Main Queue Data Table */}
       {items.length === 0 ? (
         <EmptyState
-          title="No Entities Pending Review"
-          description="All extracted evidence and governance items are fully processed or meet active publication criteria."
+          title="Review Queue Clear"
+          description="There are currently no entity records in AWAITING_REVIEW or IN_REVIEW state matching your filter criteria."
+          guide="Entities automatically enter this queue when ingestion detects new operator listings or material evidence updates that require human validation before publication."
         />
       ) : (
         <GlassPanel padding={0} style={{ overflow: "hidden" }}>
@@ -308,10 +321,10 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
               <thead>
                 <tr style={{ background: "rgba(0, 0, 0, 0.4)", borderBottom: "1px solid var(--admin-border)" }}>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Entity Name / Headline
+                    Type
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Type
+                    Entity Name / Headline
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
                     Review Status
@@ -320,7 +333,7 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
                     Publication
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Latest Event
+                    Latest Workflow Event
                   </th>
                   <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
                     Timestamp
@@ -336,51 +349,66 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
                     key={`${item.entityType}-${item.id}`}
                     style={{
                       borderBottom: "1px solid var(--admin-border)",
+                      background: item.isMaterialChange ? "rgba(168, 85, 247, 0.04)" : "transparent",
                       transition: "background 0.15s ease",
                     }}
                   >
-                    <td style={{ padding: "14px 16px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        {item.isMaterialChange && (
-                          <span
-                            style={{
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                              fontSize: 10,
-                              fontWeight: 700,
-                              background: "rgba(245, 158, 11, 0.2)",
-                              color: "#fbbf24",
-                              border: "1px solid rgba(245, 158, 11, 0.4)",
-                              letterSpacing: "0.05em",
-                            }}
-                          >
-                            MATERIAL CHANGE
-                          </span>
-                        )}
-                        <span style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 14 }}>
-                          {item.nameOrHeadline}
-                        </span>
-                      </div>
-                    </td>
-
                     <td style={{ padding: "14px 16px" }}>
                       <EntityTypeBadge type={item.entityType} size="sm" />
                     </td>
 
                     <td style={{ padding: "14px 16px" }}>
-                      <StatusBadge status={item.reviewStatus} size="sm" />
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 14 }}>
+                          {item.nameOrHeadline}
+                        </span>
+                        {item.isMaterialChange && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: "rgba(168, 85, 247, 0.15)",
+                              color: "#c084fc",
+                              border: "1px solid rgba(168, 85, 247, 0.3)",
+                              letterSpacing: "0.02em",
+                            }}
+                          >
+                            Material Change
+                          </span>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 11, color: "var(--admin-muted)", fontFamily: "monospace" }}>
+                        ID: {item.id}
+                      </span>
                     </td>
 
                     <td style={{ padding: "14px 16px" }}>
-                      <StatusBadge status={item.publicationStatus} size="sm" />
+                      <StatusBadge status={item.reviewStatus} />
                     </td>
 
-                    <td style={{ padding: "14px 16px", fontFamily: "monospace", fontSize: 12, color: "var(--admin-text-secondary)" }}>
-                      {item.latestEventType}
+                    <td style={{ padding: "14px 16px" }}>
+                      <StatusBadge status={item.publicationStatus} />
+                    </td>
+
+                    <td style={{ padding: "14px 16px", fontSize: 12, color: "var(--admin-text-secondary)" }}>
+                      <span
+                        style={{
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "rgba(255, 255, 255, 0.05)",
+                          border: "1px solid var(--admin-border)",
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                        }}
+                      >
+                        {item.latestEventType}
+                      </span>
                     </td>
 
                     <td style={{ padding: "14px 16px", fontSize: 12, color: "var(--admin-muted)" }} className="tabular-nums">
-                      {item.latestEventTimestamp.toISOString().replace("T", " ").slice(0, 19)}
+                      {item.latestEventTimestamp.toISOString().slice(0, 19).replace("T", " ")}
                     </td>
 
                     <td style={{ padding: "14px 16px", textAlign: "right" }}>
@@ -389,19 +417,18 @@ export default async function ReviewQueuePage(props: ReviewQueuePageProps) {
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
-                          gap: 6,
-                          background: "rgba(37, 99, 235, 0.15)",
-                          color: "#60a5fa",
-                          border: "1px solid rgba(37, 99, 235, 0.3)",
+                          gap: 4,
                           padding: "5px 12px",
                           borderRadius: 6,
                           fontSize: 12,
                           fontWeight: 600,
+                          background: "rgba(16, 185, 129, 0.12)",
+                          color: "#34d399",
+                          border: "1px solid rgba(16, 185, 129, 0.3)",
                           textDecoration: "none",
-                          transition: "all 0.15s ease",
                         }}
                       >
-                        Inspect & Review →
+                        Inspect &rarr;
                       </Link>
                     </td>
                   </tr>

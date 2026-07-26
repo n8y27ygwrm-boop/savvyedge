@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { LoadingButton } from "@/components/ui/LoadingButton";
+import { SavvyLogo } from "@/components/ui/SavvyLogo";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -48,30 +49,15 @@ export default function LoginPage() {
         alignItems: "center",
         justifyContent: "center",
         padding: 24,
-        background: "radial-gradient(ellipse at top, #1e293b 0%, #090a0f 70%)",
+        background: "radial-gradient(ellipse at top, #181b26 0%, #090a0f 70%)",
       }}
     >
       <div style={{ maxWidth: 420, width: "100%" }}>
         <GlassPanel raised padding="36px">
           {/* Logo & Title */}
           <div style={{ textAlign: "center", marginBottom: 28 }}>
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 10,
-                background: "linear-gradient(135deg, #2563eb, #0d9488)",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontWeight: 800,
-                fontSize: 22,
-                color: "#fff",
-                boxShadow: "0 4px 20px rgba(37, 99, 235, 0.4)",
-                marginBottom: 16,
-              }}
-            >
-              S
+            <div style={{ display: "inline-block", marginBottom: 14 }}>
+              <SavvyLogo size={48} />
             </div>
             <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--admin-text)", margin: "0 0 6px 0", letterSpacing: "-0.01em" }}>
               SavvyEdge Governance Console

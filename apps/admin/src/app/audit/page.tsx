@@ -81,10 +81,10 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
     <div>
       <PageHeader
         title="Governance Audit Log"
-        subtitle="Read-only immutable history of all automated and human governance transitions."
+        subtitle="Read-only immutable history of all automated engine and human governance transitions."
         actions={
           <div style={{ fontSize: 13, color: "var(--admin-muted)" }}>
-            Total Audit Events: <strong style={{ color: "var(--admin-text)" }} className="tabular-nums">{result.totalCount}</strong>
+            Total Recorded Events: <strong style={{ color: "var(--admin-text)" }} className="tabular-nums">{result.totalCount}</strong>
           </div>
         }
       />
@@ -101,10 +101,10 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
       {/* Search & Filter Bar */}
       <GlassPanel padding="18px 20px" style={{ marginBottom: 20 }}>
         <form method="GET" action="/audit">
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 16, marginBottom: 16 }}>
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                Search Term
+                Entity / UUID Search
               </label>
               <input
                 type="text"
@@ -126,7 +126,7 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
 
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                Event Type
+                Transition Event
               </label>
               <select
                 name="eventType"
@@ -153,7 +153,7 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
 
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                Subject Type
+                Subject Entity Type
               </label>
               <select
                 name="subjectType"
@@ -180,7 +180,7 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
 
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                Date From
+                From Date
               </label>
               <input
                 type="date"
@@ -201,7 +201,7 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
 
             <div>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--admin-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                Date To
+                To Date
               </label>
               <input
                 type="date"
@@ -229,13 +229,13 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
                 borderRadius: 6,
                 fontSize: 13,
                 fontWeight: 600,
-                background: "#2563eb",
+                background: "#059669",
                 color: "#ffffff",
-                border: "none",
+                border: "1px solid rgba(16, 185, 129, 0.4)",
                 cursor: "pointer",
               }}
             >
-              Apply Filters
+              Filter Audit Trail
             </button>
             <Link
               href="/audit"
@@ -260,8 +260,9 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
       {/* Main Audit Data Table */}
       {result.items.length === 0 ? (
         <EmptyState
-          title="No Workflow Audit Events Found"
-          description="No governance transition events match your current filter parameters."
+          title="No Governance Audit Records"
+          description="No workflow transition events match your current search and filter parameters."
+          guide="The Audit Log preserves an immutable history of every automated ingestion event, reviewer decision, quarantine override, and publication status change."
         />
       ) : (
         <GlassPanel padding={0} style={{ overflow: "hidden" }}>
@@ -269,28 +270,28 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
             <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "rgba(0, 0, 0, 0.4)", borderBottom: "1px solid var(--admin-border)" }}>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 150 }}>
                     Timestamp
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Event Type
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 160 }}>
+                    Transition Event
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 90 }}>
                     Subject
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Entity Label
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", minWidth: 180 }}>
+                    Entity Target Label
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
-                    Actor
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 140 }}>
+                    Operator Actor
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 190 }}>
                     State Transition
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em" }}>
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", whiteSpace: "nowrap", minWidth: 80 }}>
                     Version
                   </th>
-                  <th style={{ padding: "12px 16px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", textAlign: "right" }}>
+                  <th style={{ padding: "12px 14px", color: "var(--admin-muted)", fontWeight: 600, textTransform: "uppercase", fontSize: 11, letterSpacing: "0.05em", textAlign: "right", whiteSpace: "nowrap", minWidth: 90 }}>
                     Action
                   </th>
                 </tr>
@@ -303,11 +304,11 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
                       key={item.id}
                       style={{ borderBottom: "1px solid var(--admin-border)", transition: "background 0.15s ease" }}
                     >
-                      <td style={{ padding: "14px 16px", fontFamily: "monospace", fontSize: 12, color: "var(--admin-muted)" }} className="tabular-nums">
+                      <td style={{ padding: "12px 14px", fontFamily: "monospace", fontSize: 12, color: "var(--admin-muted)", whiteSpace: "nowrap" }} className="tabular-nums">
                         {new Date(item.occurredAt).toISOString().slice(0, 19).replace("T", " ")}
                       </td>
 
-                      <td style={{ padding: "14px 16px" }}>
+                      <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
                         <span
                           style={{
                             padding: "2px 8px",
@@ -324,60 +325,65 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
                         </span>
                       </td>
 
-                      <td style={{ padding: "14px 16px" }}>
+                      <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
                         <EntityTypeBadge type={item.subjectType} size="sm" />
                       </td>
 
-                      <td style={{ padding: "14px 16px" }}>
-                        <div style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 13 }}>{item.entityLabel}</div>
+                      <td style={{ padding: "12px 14px" }}>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}
+                          title={item.entityLabel}
+                        >
+                          {item.entityLabel}
+                        </div>
                         {item.entityUnavailable && (
                           <span style={{ fontSize: 10, color: "var(--admin-muted-dark)", fontStyle: "italic" }}>
-                            Entity no longer in database
+                            Archived entity
                           </span>
                         )}
                       </td>
 
-                      <td style={{ padding: "14px 16px" }}>
+                      <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
                         <div style={{ fontWeight: 600, color: "var(--admin-text)", fontSize: 12 }}>{item.actorName}</div>
                         <div style={{ fontSize: 10, color: "var(--admin-muted)" }}>({item.actorKind})</div>
                       </td>
 
-                      <td style={{ padding: "14px 16px", fontSize: 12 }}>
+                      <td style={{ padding: "12px 14px", fontSize: 12, whiteSpace: "nowrap" }}>
                         {item.fromReviewStatus && item.toReviewStatus ? (
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                             <span style={{ color: "var(--admin-muted)" }}>{item.fromReviewStatus}</span>
                             <span style={{ color: "var(--admin-muted-dark)" }}>→</span>
-                            <strong style={{ color: "var(--admin-text)" }}>{item.toReviewStatus}</strong>
+                            <strong style={{ color: "#34d399" }}>{item.toReviewStatus}</strong>
                           </div>
                         ) : item.fromPublicationStatus && item.toPublicationStatus ? (
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                             <span style={{ color: "var(--admin-muted)" }}>{item.fromPublicationStatus}</span>
                             <span style={{ color: "var(--admin-muted-dark)" }}>→</span>
-                            <strong style={{ color: "var(--admin-text)" }}>{item.toPublicationStatus}</strong>
+                            <strong style={{ color: "#60a5fa" }}>{item.toPublicationStatus}</strong>
                           </div>
                         ) : (
                           <span style={{ color: "var(--admin-muted-dark)" }}>—</span>
                         )}
                       </td>
 
-                      <td style={{ padding: "14px 16px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "var(--admin-text)" }}>
+                      <td style={{ padding: "12px 14px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "var(--admin-text)", whiteSpace: "nowrap" }}>
                         v{item.resultingVersion}
                       </td>
 
-                      <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                      <td style={{ padding: "12px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                         <Link
                           href={item.detailUrl}
                           style={{
                             display: "inline-flex",
                             alignItems: "center",
                             gap: 4,
-                            color: "#60a5fa",
+                            color: "#e5e7eb",
                             fontSize: 12,
                             fontWeight: 600,
                             textDecoration: "none",
                           }}
                         >
-                          Details →
+                          Detail →
                         </Link>
                       </td>
                     </tr>
@@ -388,7 +394,7 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
           </div>
 
           {/* Pagination Footer */}
-          <div style={{ padding: "14px 20px", background: "rgba(0, 0, 0, 0.4)", borderTop: "1px solid var(--admin-border)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
+          <div style={{ padding: "12px 20px", background: "rgba(0, 0, 0, 0.4)", borderTop: "1px solid var(--admin-border)", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13 }}>
             <div style={{ color: "var(--admin-muted)" }}>
               Page <strong style={{ color: "var(--admin-text)" }}>{result.page}</strong> of <strong style={{ color: "var(--admin-text)" }}>{result.totalPages || 1}</strong>
             </div>
@@ -407,11 +413,11 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
                     fontWeight: 600,
                   }}
                 >
-                  ← Previous Page
+                  ← Previous
                 </Link>
               ) : (
                 <span style={{ padding: "5px 12px", background: "rgba(255, 255, 255, 0.03)", color: "var(--admin-muted-dark)", borderRadius: 6, fontSize: 12, cursor: "not-allowed" }}>
-                  ← Previous Page
+                  ← Previous
                 </span>
               )}
 
@@ -429,11 +435,11 @@ export default async function AuditLogPage(props: AuditLogPageProps) {
                     fontWeight: 600,
                   }}
                 >
-                  Next Page →
+                  Next →
                 </Link>
               ) : (
                 <span style={{ padding: "5px 12px", background: "rgba(255, 255, 255, 0.03)", color: "var(--admin-muted-dark)", borderRadius: 6, fontSize: 12, cursor: "not-allowed" }}>
-                  Next Page →
+                  Next →
                 </span>
               )}
             </div>

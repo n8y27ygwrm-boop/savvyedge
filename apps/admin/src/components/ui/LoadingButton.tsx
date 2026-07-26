@@ -16,9 +16,9 @@ export function LoadingButton({
   style,
   ...props
 }: LoadingButtonProps) {
-  let bg = "#2563eb";
+  let bg = "#059669"; // SavvyEdge Primary Emerald Accent
   let color = "#ffffff";
-  let border = "none";
+  let border = "1px solid rgba(16, 185, 129, 0.4)";
 
   if (variant === "secondary") {
     bg = "rgba(255, 255, 255, 0.08)";
@@ -27,9 +27,11 @@ export function LoadingButton({
   } else if (variant === "danger") {
     bg = "#dc2626";
     color = "#ffffff";
+    border = "1px solid rgba(239, 68, 68, 0.4)";
   } else if (variant === "success") {
-    bg = "#059669";
+    bg = "#10b981";
     color = "#ffffff";
+    border = "1px solid rgba(16, 185, 129, 0.5)";
   } else if (variant === "outline") {
     bg = "transparent";
     color = "var(--admin-text)";
@@ -65,6 +67,7 @@ export function LoadingButton({
         cursor: disabled || loading ? "not-allowed" : "pointer",
         opacity: disabled ? 0.6 : 1,
         transition: "all 0.15s ease",
+        boxShadow: variant === "primary" ? "0 2px 8px rgba(5, 150, 105, 0.3)" : "none",
         ...style,
       }}
       {...props}
