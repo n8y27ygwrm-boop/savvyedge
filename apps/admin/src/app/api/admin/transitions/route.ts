@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { getOrCreateAdminActor, verifyAdminSession } from "@/lib/auth";
+import { getOrCreateAdminActor, verifyAdminSession } from "../../../../lib/auth";
+import { canPerformAdminAction, type AdminAction } from "../../../../lib/permissions";
 import {
   parseAdminTransitionRequest,
   TransitionRequestValidationError,
   type AdminTransitionRequest,
-} from "@/lib/transition-request";
+} from "../../../../lib/transition-request";
 import {
   WorkflowTransitionError,
   WorkflowTransitionService,
@@ -115,9 +116,18 @@ function workflowErrorResponse(error: WorkflowTransitionError) {
   );
 }
 
+const ACTION_PERMISSION_MAP: Record<string, AdminAction> = {
+  BEGIN_REVIEW: "BEGIN_REVIEW",
+  APPROVE: "APPROVE_REVIEW",
+  REJECT: "REJECT_REVIEW",
+  CLEAR_QUARANTINE: "CLEAR_QUARANTINE",
+  PUBLISH: "PUBLISH",
+  UNPUBLISH: "UNPUBLISH",
+};
+
 export async function POST(request: Request) {
-  const { authenticated } = await verifyAdminSession();
-  if (!authenticated) {
+  const session = await verifyAdminSession(request);
+  if (!session.authenticated || !session.user) {
     return NextResponse.json(
       { success: false, error: "Unauthorized access" },
       { status: 401 },
@@ -136,11 +146,20 @@ export async function POST(request: Request) {
 
   try {
     const parsed = parseAdminTransitionRequest(body);
-    const adminActor = await getOrCreateAdminActor(prisma);
+
+    const requiredAction = ACTION_PERMISSION_MAP[parsed.action];
+    if (!requiredAction || !canPerformAdminAction(session.user.role, requiredAction)) {
+      return NextResponse.json(
+        { success: false, error: "Forbidden: Insufficient permissions for this action" },
+        { status: 403 },
+      );
+    }
+
+    const actorId = session.user.actorId || (await getOrCreateAdminActor(prisma)).id;
     const workflowService = new WorkflowTransitionService(prisma);
     const baseCommand = {
       subjectId: parsed.subjectId,
-      actorId: adminActor.id,
+      actorId,
       expectedVersion: parsed.expectedVersion,
     };
 

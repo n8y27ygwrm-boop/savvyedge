@@ -13,7 +13,8 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const { authenticated, username } = await verifyAdminSession();
+  const session = await verifyAdminSession();
+  const { authenticated, user } = session;
 
   return (
     <html lang="en">
@@ -21,7 +22,7 @@ export default async function RootLayout({
         <header style={{ background: "#1e293b", color: "#f8fafc", padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
             <span style={{ fontWeight: "bold", fontSize: 18, color: "#38bdf8" }}>SavvyEdge Admin</span>
-            {authenticated && (
+            {authenticated && user && (
               <nav style={{ display: "flex", gap: 16, fontSize: 14 }}>
                 <Link href="/review" style={{ color: "#f1f5f9", textDecoration: "none" }}>
                   Review Queue
@@ -32,12 +33,20 @@ export default async function RootLayout({
                 <Link href="/audit" style={{ color: "#f1f5f9", textDecoration: "none" }}>
                   Audit Log
                 </Link>
+                {user.role === "ADMIN" && (
+                  <Link href="/admin-users" style={{ color: "#38bdf8", textDecoration: "none", fontWeight: "600" }}>
+                    Admin Users
+                  </Link>
+                )}
               </nav>
             )}
           </div>
-          {authenticated ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 14 }}>
-              <span style={{ color: "#94a3b8" }}>User: <strong style={{ color: "#f8fafc" }}>{username}</strong></span>
+          {authenticated && user ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 13 }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                <span style={{ color: "#f8fafc", fontWeight: "600" }}>{user.displayName} ({user.email})</span>
+                <span style={{ fontSize: 11, color: "#cbd5e1", background: "#334155", padding: "1px 6px", borderRadius: 4, marginTop: 2 }}>{user.role}</span>
+              </div>
               <form action="/api/auth/logout" method="POST" style={{ margin: 0 }}>
                 <button
                   type="submit"

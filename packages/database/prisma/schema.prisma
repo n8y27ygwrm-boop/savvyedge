@@ -31,6 +31,18 @@ enum ActorKind {
   MIGRATION
 }
 
+enum AdminRole {
+  REVIEWER
+  SENIOR_REVIEWER
+  PUBLISHER
+  ADMIN
+}
+
+enum AdminUserStatus {
+  ACTIVE
+  DISABLED
+}
+
 enum EvidenceType {
   OPERATOR_PAGE
   REGULATOR_REGISTER
@@ -448,8 +460,43 @@ model ReviewActor {
 
   created_evidence EvidenceRecord[]
   workflow_events  WorkflowAuditEvent[]
+  admin_user       AdminUser?
 
   @@index([kind, active])
+}
+
+model AdminUser {
+  id            String          @id @default(uuid())
+  email         String          @unique
+  display_name  String
+  password_hash String
+  role          AdminRole       @default(REVIEWER)
+  status        AdminUserStatus @default(ACTIVE)
+  actor_id      String          @unique
+  created_at    DateTime        @default(now())
+  updated_at    DateTime        @updatedAt
+  last_login_at DateTime?
+
+  actor    ReviewActor    @relation(fields: [actor_id], references: [id])
+  sessions AdminSession[]
+
+  @@index([email])
+  @@index([role, status])
+}
+
+model AdminSession {
+  id         String    @id @default(uuid())
+  user_id    String
+  token_hash String    @unique
+  created_at DateTime  @default(now())
+  expires_at DateTime
+  revoked_at DateTime?
+
+  user AdminUser @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([token_hash])
+  @@index([expires_at, revoked_at])
 }
 
 model EvidenceRecord {
