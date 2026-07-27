@@ -42,6 +42,7 @@ jobs:
         run: pnpm --filter @savvyedge/database run db:validate
 
       - name: Inspect Pre-Migration Status
+        continue-on-error: true
         run: pnpm --filter @savvyedge/database run db:migrate:status
 
       - name: Execute Controlled Database Migration Deploy
