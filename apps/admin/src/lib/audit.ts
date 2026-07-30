@@ -8,6 +8,7 @@ import {
   type PrismaClient,
   type Prisma,
 } from "@savvyedge/database";
+import { governanceDetailUrl } from "./governance-links";
 
 export const AUDIT_SUBJECT_TYPES = [
   "CASINO",
@@ -59,6 +60,7 @@ export interface AuditQueueItem {
   resultingVersion: number;
   hasInternalNote: boolean;
   detailUrl: string;
+  subjectDetailUrl: string | null;
 }
 
 export interface AuditQueueResult {
@@ -151,7 +153,10 @@ export function parseAuditQueueFilters(input: {
   dateFrom?: string;
   dateTo?: string;
 }): AuditQueueFilters {
-  const eventType = enumValue(input.eventType, Object.values(WorkflowEventType));
+  const eventType = enumValue(
+    input.eventType,
+    Object.values(WorkflowEventType),
+  );
   const subjectType = enumValue(input.subjectType, AUDIT_SUBJECT_TYPES);
 
   const actorId =
@@ -206,7 +211,10 @@ export function parseAuditPagination(input: {
   page?: string | number;
   limit?: string | number;
 }): AuditPaginationParams {
-  let page = typeof input.page === "number" ? input.page : parseInt(String(input.page || 1), 10);
+  let page =
+    typeof input.page === "number"
+      ? input.page
+      : parseInt(String(input.page || 1), 10);
   if (isNaN(page) || page < 1) {
     page = 1;
   }
@@ -226,14 +234,51 @@ export function parseAuditPagination(input: {
 }
 
 export interface EntityLabelMap {
-  casinos: Map<string, { label: string; reviewStatus: ReviewStatus; publicationStatus: PublicationStatus; quarantineReason: QuarantineReason | null }>;
-  bonuses: Map<string, { label: string; reviewStatus: ReviewStatus; publicationStatus: PublicationStatus; quarantineReason: QuarantineReason | null }>;
-  slots: Map<string, { label: string; reviewStatus: ReviewStatus; publicationStatus: PublicationStatus; quarantineReason: QuarantineReason | null }>;
-  licenses: Map<string, { label: string; reviewStatus: ReviewStatus; quarantineReason: QuarantineReason | null }>;
+  casinos: Map<
+    string,
+    {
+      label: string;
+      reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
+      quarantineReason: QuarantineReason | null;
+    }
+  >;
+  bonuses: Map<
+    string,
+    {
+      label: string;
+      reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
+      quarantineReason: QuarantineReason | null;
+    }
+  >;
+  slots: Map<
+    string,
+    {
+      label: string;
+      reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
+      quarantineReason: QuarantineReason | null;
+    }
+  >;
+  licenses: Map<
+    string,
+    {
+      label: string;
+      reviewStatus: ReviewStatus;
+      quarantineReason: QuarantineReason | null;
+    }
+  >;
 }
 
 export async function resolveAuditEntityLabels(
-  events: Array<{ subject_type: GovernedSubjectType; casino_id: string | null; bonus_id: string | null; slot_id: string | null; license_id: string | null }>,
+  events: Array<{
+    subject_type: GovernedSubjectType;
+    casino_id: string | null;
+    bonus_id: string | null;
+    slot_id: string | null;
+    license_id: string | null;
+  }>,
   database: PrismaClient = prisma,
 ): Promise<EntityLabelMap> {
   const casinoIds = new Set<string>();
@@ -244,11 +289,20 @@ export async function resolveAuditEntityLabels(
   for (const event of events) {
     if (event.subject_type === GovernedSubjectType.CASINO && event.casino_id) {
       casinoIds.add(event.casino_id);
-    } else if (event.subject_type === GovernedSubjectType.BONUS && event.bonus_id) {
+    } else if (
+      event.subject_type === GovernedSubjectType.BONUS &&
+      event.bonus_id
+    ) {
       bonusIds.add(event.bonus_id);
-    } else if (event.subject_type === GovernedSubjectType.SLOT && event.slot_id) {
+    } else if (
+      event.subject_type === GovernedSubjectType.SLOT &&
+      event.slot_id
+    ) {
       slotIds.add(event.slot_id);
-    } else if (event.subject_type === GovernedSubjectType.LICENSE && event.license_id) {
+    } else if (
+      event.subject_type === GovernedSubjectType.LICENSE &&
+      event.license_id
+    ) {
       licenseIds.add(event.license_id);
     }
   }
@@ -257,19 +311,38 @@ export async function resolveAuditEntityLabels(
     casinoIds.size > 0
       ? database.casino.findMany({
           where: { id: { in: Array.from(casinoIds) } },
-          select: { id: true, name: true, review_status: true, publication_status: true, quarantine_reason: true },
+          select: {
+            id: true,
+            name: true,
+            review_status: true,
+            publication_status: true,
+            quarantine_reason: true,
+          },
         })
       : [],
     bonusIds.size > 0
       ? database.bonus.findMany({
           where: { id: { in: Array.from(bonusIds) } },
-          select: { id: true, headline_value: true, type: true, review_status: true, publication_status: true, quarantine_reason: true },
+          select: {
+            id: true,
+            headline_value: true,
+            type: true,
+            review_status: true,
+            publication_status: true,
+            quarantine_reason: true,
+          },
         })
       : [],
     slotIds.size > 0
       ? database.slot.findMany({
           where: { id: { in: Array.from(slotIds) } },
-          select: { id: true, name: true, review_status: true, publication_status: true, quarantine_reason: true },
+          select: {
+            id: true,
+            name: true,
+            review_status: true,
+            publication_status: true,
+            quarantine_reason: true,
+          },
         })
       : [],
     licenseIds.size > 0
@@ -288,7 +361,17 @@ export async function resolveAuditEntityLabels(
   ]);
 
   return {
-    casinos: new Map(casinos.map((c) => [c.id, { label: c.name, reviewStatus: c.review_status, publicationStatus: c.publication_status, quarantineReason: c.quarantine_reason }])),
+    casinos: new Map(
+      casinos.map((c) => [
+        c.id,
+        {
+          label: c.name,
+          reviewStatus: c.review_status,
+          publicationStatus: c.publication_status,
+          quarantineReason: c.quarantine_reason,
+        },
+      ]),
+    ),
     bonuses: new Map(
       bonuses.map((b) => [
         b.id,
@@ -300,7 +383,17 @@ export async function resolveAuditEntityLabels(
         },
       ]),
     ),
-    slots: new Map(slots.map((s) => [s.id, { label: s.name, reviewStatus: s.review_status, publicationStatus: s.publication_status, quarantineReason: s.quarantine_reason }])),
+    slots: new Map(
+      slots.map((s) => [
+        s.id,
+        {
+          label: s.name,
+          reviewStatus: s.review_status,
+          publicationStatus: s.publication_status,
+          quarantineReason: s.quarantine_reason,
+        },
+      ]),
+    ),
     licenses: new Map(
       licenses.map((l) => [
         l.id,
@@ -381,7 +474,9 @@ export async function getAuditQueue(
             take: 50,
           }),
           database.bonus.findMany({
-            where: { headline_value: { contains: queryStr, mode: "insensitive" } },
+            where: {
+              headline_value: { contains: queryStr, mode: "insensitive" },
+            },
             select: { id: true },
             take: 50,
           }),
@@ -394,7 +489,12 @@ export async function getAuditQueue(
             where: {
               OR: [
                 { license_no: { contains: queryStr, mode: "insensitive" } },
-                { normalized_license_no: { contains: queryStr, mode: "insensitive" } },
+                {
+                  normalized_license_no: {
+                    contains: queryStr,
+                    mode: "insensitive",
+                  },
+                },
               ],
             },
             select: { id: true },
@@ -515,9 +615,7 @@ export async function getAuditQueue(
     }
 
     const actorName =
-      event.actor?.display_name ||
-      event.actor?.stable_key ||
-      "Unknown actor";
+      event.actor?.display_name || event.actor?.stable_key || "Unknown actor";
 
     return {
       id: event.id,
@@ -538,6 +636,9 @@ export async function getAuditQueue(
       resultingVersion: event.resulting_version,
       hasInternalNote: Boolean(event.internal_note),
       detailUrl: `/audit/${event.id}`,
+      subjectDetailUrl: entityUnavailable
+        ? null
+        : governanceDetailUrl(event.subject_type, subjectId),
     };
   });
 
@@ -740,110 +841,128 @@ export async function getAuditEventDetail(
   let canonicalTargetLabel: string | null = null;
   if (event.canonical_casino_id) {
     canonicalTargetId = event.canonical_casino_id;
-    canonicalTargetLabel = labelMaps.casinos.get(canonicalTargetId)?.label ?? canonicalTargetId;
+    canonicalTargetLabel =
+      labelMaps.casinos.get(canonicalTargetId)?.label ?? canonicalTargetId;
   } else if (event.canonical_bonus_id) {
     canonicalTargetId = event.canonical_bonus_id;
-    canonicalTargetLabel = labelMaps.bonuses.get(canonicalTargetId)?.label ?? canonicalTargetId;
+    canonicalTargetLabel =
+      labelMaps.bonuses.get(canonicalTargetId)?.label ?? canonicalTargetId;
   } else if (event.canonical_slot_id) {
     canonicalTargetId = event.canonical_slot_id;
-    canonicalTargetLabel = labelMaps.slots.get(canonicalTargetId)?.label ?? canonicalTargetId;
+    canonicalTargetLabel =
+      labelMaps.slots.get(canonicalTargetId)?.label ?? canonicalTargetId;
   } else if (event.canonical_license_id) {
     canonicalTargetId = event.canonical_license_id;
-    canonicalTargetLabel = labelMaps.licenses.get(canonicalTargetId)?.label ?? canonicalTargetId;
+    canonicalTargetLabel =
+      labelMaps.licenses.get(canonicalTargetId)?.label ?? canonicalTargetId;
   }
 
-  const claims: AuditEventDetailClaim[] = event.evidence_claims.flatMap((link): AuditEventDetailClaim[] => {
-    if (event.subject_type === GovernedSubjectType.CASINO && link.casino_evidence_claim) {
-      const claim = link.casino_evidence_claim;
-      const isMismatch = claim.casino_id !== subjectId;
-      return [
-        {
-          id: link.id,
-          claimId: claim.id,
-          subjectType: "CASINO",
-          subjectId: claim.casino_id,
-          field: claim.field,
-          observedValue: claim.observed_value,
-          verdict: claim.verdict,
-          evidenceId: claim.evidence.id,
-          sourceUrl: claim.evidence.source_url,
-          observedAt: claim.evidence.observed_at,
-          extractedAt: claim.evidence.extracted_at,
-          evidenceType: claim.evidence.evidence_type,
-          isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
-          isSubjectMismatch: isMismatch,
-        },
-      ];
-    }
-    if (event.subject_type === GovernedSubjectType.BONUS && link.bonus_evidence_claim) {
-      const claim = link.bonus_evidence_claim;
-      const isMismatch = claim.bonus_id !== subjectId;
-      return [
-        {
-          id: link.id,
-          claimId: claim.id,
-          subjectType: "BONUS",
-          subjectId: claim.bonus_id,
-          field: claim.field,
-          observedValue: claim.observed_value,
-          verdict: claim.verdict,
-          evidenceId: claim.evidence.id,
-          sourceUrl: claim.evidence.source_url,
-          observedAt: claim.evidence.observed_at,
-          extractedAt: claim.evidence.extracted_at,
-          evidenceType: claim.evidence.evidence_type,
-          isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
-          isSubjectMismatch: isMismatch,
-        },
-      ];
-    }
-    if (event.subject_type === GovernedSubjectType.SLOT && link.slot_evidence_claim) {
-      const claim = link.slot_evidence_claim;
-      const isMismatch = claim.slot_id !== subjectId;
-      return [
-        {
-          id: link.id,
-          claimId: claim.id,
-          subjectType: "SLOT",
-          subjectId: claim.slot_id,
-          field: claim.field,
-          observedValue: claim.observed_value,
-          verdict: claim.verdict,
-          evidenceId: claim.evidence.id,
-          sourceUrl: claim.evidence.source_url,
-          observedAt: claim.evidence.observed_at,
-          extractedAt: claim.evidence.extracted_at,
-          evidenceType: claim.evidence.evidence_type,
-          isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
-          isSubjectMismatch: isMismatch,
-        },
-      ];
-    }
-    if (event.subject_type === GovernedSubjectType.LICENSE && link.license_evidence_claim) {
-      const claim = link.license_evidence_claim;
-      const isMismatch = claim.license_id !== subjectId;
-      return [
-        {
-          id: link.id,
-          claimId: claim.id,
-          subjectType: "LICENSE",
-          subjectId: claim.license_id,
-          field: claim.field,
-          observedValue: claim.observed_value,
-          verdict: claim.verdict,
-          evidenceId: claim.evidence.id,
-          sourceUrl: claim.evidence.source_url,
-          observedAt: claim.evidence.observed_at,
-          extractedAt: claim.evidence.extracted_at,
-          evidenceType: claim.evidence.evidence_type,
-          isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
-          isSubjectMismatch: isMismatch,
-        },
-      ];
-    }
+  const claims: AuditEventDetailClaim[] = event.evidence_claims.flatMap(
+    (link): AuditEventDetailClaim[] => {
+      if (
+        event.subject_type === GovernedSubjectType.CASINO &&
+        link.casino_evidence_claim
+      ) {
+        const claim = link.casino_evidence_claim;
+        const isMismatch = claim.casino_id !== subjectId;
+        return [
+          {
+            id: link.id,
+            claimId: claim.id,
+            subjectType: "CASINO",
+            subjectId: claim.casino_id,
+            field: claim.field,
+            observedValue: claim.observed_value,
+            verdict: claim.verdict,
+            evidenceId: claim.evidence.id,
+            sourceUrl: claim.evidence.source_url,
+            observedAt: claim.evidence.observed_at,
+            extractedAt: claim.evidence.extracted_at,
+            evidenceType: claim.evidence.evidence_type,
+            isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
+            isSubjectMismatch: isMismatch,
+          },
+        ];
+      }
+      if (
+        event.subject_type === GovernedSubjectType.BONUS &&
+        link.bonus_evidence_claim
+      ) {
+        const claim = link.bonus_evidence_claim;
+        const isMismatch = claim.bonus_id !== subjectId;
+        return [
+          {
+            id: link.id,
+            claimId: claim.id,
+            subjectType: "BONUS",
+            subjectId: claim.bonus_id,
+            field: claim.field,
+            observedValue: claim.observed_value,
+            verdict: claim.verdict,
+            evidenceId: claim.evidence.id,
+            sourceUrl: claim.evidence.source_url,
+            observedAt: claim.evidence.observed_at,
+            extractedAt: claim.evidence.extracted_at,
+            evidenceType: claim.evidence.evidence_type,
+            isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
+            isSubjectMismatch: isMismatch,
+          },
+        ];
+      }
+      if (
+        event.subject_type === GovernedSubjectType.SLOT &&
+        link.slot_evidence_claim
+      ) {
+        const claim = link.slot_evidence_claim;
+        const isMismatch = claim.slot_id !== subjectId;
+        return [
+          {
+            id: link.id,
+            claimId: claim.id,
+            subjectType: "SLOT",
+            subjectId: claim.slot_id,
+            field: claim.field,
+            observedValue: claim.observed_value,
+            verdict: claim.verdict,
+            evidenceId: claim.evidence.id,
+            sourceUrl: claim.evidence.source_url,
+            observedAt: claim.evidence.observed_at,
+            extractedAt: claim.evidence.extracted_at,
+            evidenceType: claim.evidence.evidence_type,
+            isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
+            isSubjectMismatch: isMismatch,
+          },
+        ];
+      }
+      if (
+        event.subject_type === GovernedSubjectType.LICENSE &&
+        link.license_evidence_claim
+      ) {
+        const claim = link.license_evidence_claim;
+        const isMismatch = claim.license_id !== subjectId;
+        return [
+          {
+            id: link.id,
+            claimId: claim.id,
+            subjectType: "LICENSE",
+            subjectId: claim.license_id,
+            field: claim.field,
+            observedValue: claim.observed_value,
+            verdict: claim.verdict,
+            evidenceId: claim.evidence.id,
+            sourceUrl: claim.evidence.source_url,
+            observedAt: claim.evidence.observed_at,
+            extractedAt: claim.evidence.extracted_at,
+            evidenceType: claim.evidence.evidence_type,
+            isSafeSourceUrl: isSafeUrl(claim.evidence.source_url),
+            isSubjectMismatch: isMismatch,
+          },
+        ];
+      }
 
-    return [];
-  });
+      return [];
+    },
+  );
 
   let reviewDetailUrl: string | null = null;
   if (!entityUnavailable) {
@@ -855,7 +974,11 @@ export async function getAuditEventDetail(
   }
 
   let quarantineDetailUrl: string | null = null;
-  if (!entityUnavailable && (currentReviewStatus === ReviewStatus.QUARANTINED || currentQuarantineReason !== null)) {
+  if (
+    !entityUnavailable &&
+    (currentReviewStatus === ReviewStatus.QUARANTINED ||
+      currentQuarantineReason !== null)
+  ) {
     if (event.subject_type === GovernedSubjectType.CASINO) {
       quarantineDetailUrl = `/quarantine/casino/${subjectId}`;
     } else if (event.subject_type === GovernedSubjectType.BONUS) {
@@ -868,9 +991,7 @@ export async function getAuditEventDetail(
   }
 
   const actorName =
-    event.actor?.display_name ||
-    event.actor?.stable_key ||
-    "Unknown actor";
+    event.actor?.display_name || event.actor?.stable_key || "Unknown actor";
 
   return {
     id: event.id,

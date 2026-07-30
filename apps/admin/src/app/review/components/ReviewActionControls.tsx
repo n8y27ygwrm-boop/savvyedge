@@ -35,7 +35,10 @@ export function ReviewActionControls({
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  async function executeTransition(action: string, extraPayload: Record<string, unknown> = {}) {
+  async function executeTransition(
+    action: string,
+    extraPayload: Record<string, unknown> = {},
+  ) {
     setError(null);
     setLoading(true);
 
@@ -55,7 +58,8 @@ export function ReviewActionControls({
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setError(data.error || `Transition '${action}' failed`);
+        const message = data.error || `Transition '${action}' failed`;
+        setError(data.errorCode ? `${data.errorCode}: ${message}` : message);
         setLoading(false);
         return;
       }
@@ -79,8 +83,22 @@ export function ReviewActionControls({
 
   return (
     <GlassPanel raised padding="20px">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "var(--admin-text)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 16,
+        }}
+      >
+        <h3
+          style={{
+            margin: 0,
+            fontSize: 16,
+            fontWeight: 700,
+            color: "var(--admin-text)",
+          }}
+        >
           Governance Actions
         </h3>
         <div style={{ display: "flex", gap: 8 }}>
@@ -92,7 +110,11 @@ export function ReviewActionControls({
       {error && (
         <InlineAlert
           type="error"
-          title="Action Failed"
+          title={
+            isApproved && isUnpublished
+              ? "Publication Blocked"
+              : "Action Failed"
+          }
           message={error}
           onDismiss={() => setError(null)}
           style={{ marginBottom: 16 }}
@@ -116,7 +138,8 @@ export function ReviewActionControls({
           }}
         >
           <div>
-            <strong>Quarantine Active:</strong> {quarantineReason}. Publication is blocked until quarantine is cleared.
+            <strong>Quarantine Active:</strong> {quarantineReason}. Publication
+            is blocked until quarantine is cleared.
           </div>
           <Link
             href={`/quarantine/${subjectType.toLowerCase()}/${subjectId}`}
@@ -134,7 +157,14 @@ export function ReviewActionControls({
       )}
 
       {/* Action Buttons */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
         {/* 1. Begin Review */}
         {isAwaitingReview && (
           <LoadingButton
@@ -179,11 +209,15 @@ export function ReviewActionControls({
           </LoadingButton>
         )}
 
-        {!isAwaitingReview && !isInReview && !canPublish && !showRejectForm && !showPublishForm && (
-          <span style={{ fontSize: 13, color: "var(--admin-muted)" }}>
-            Current state is stable. No pending transition actions available.
-          </span>
-        )}
+        {!isAwaitingReview &&
+          !isInReview &&
+          !canPublish &&
+          !showRejectForm &&
+          !showPublishForm && (
+            <span style={{ fontSize: 13, color: "var(--admin-muted)" }}>
+              Current state is stable. No pending transition actions available.
+            </span>
+          )}
       </div>
 
       {/* Reject Form */}
@@ -200,8 +234,15 @@ export function ReviewActionControls({
           <h4 style={{ margin: "0 0 6px 0", fontSize: 14, color: "#f87171" }}>
             Reject Review
           </h4>
-          <p style={{ margin: "0 0 12px 0", fontSize: 12, color: "var(--admin-muted)" }}>
-            Rejection requires a non-empty explanation detailing why the entity or claims were rejected.
+          <p
+            style={{
+              margin: "0 0 12px 0",
+              fontSize: 12,
+              color: "var(--admin-muted)",
+            }}
+          >
+            Rejection requires a non-empty explanation detailing why the entity
+            or claims were rejected.
           </p>
           <textarea
             value={rejectReason}
@@ -222,7 +263,9 @@ export function ReviewActionControls({
           />
           <div style={{ display: "flex", gap: 8 }}>
             <LoadingButton
-              onClick={() => executeTransition("REJECT", { internalReason: rejectReason })}
+              onClick={() =>
+                executeTransition("REJECT", { internalReason: rejectReason })
+              }
               loading={loading}
               disabled={!rejectReason.trim()}
               variant="danger"
@@ -256,8 +299,15 @@ export function ReviewActionControls({
           <h4 style={{ margin: "0 0 6px 0", fontSize: 14, color: "#34d399" }}>
             Publish Entity
           </h4>
-          <p style={{ margin: "0 0 12px 0", fontSize: 12, color: "var(--admin-muted)" }}>
-            Publishing makes the approved entity eligible for public API listings and search queries.
+          <p
+            style={{
+              margin: "0 0 12px 0",
+              fontSize: 12,
+              color: "var(--admin-muted)",
+            }}
+          >
+            Publishing makes the approved entity eligible for public API
+            listings and search queries.
           </p>
           <input
             type="text"
@@ -278,7 +328,9 @@ export function ReviewActionControls({
           />
           <div style={{ display: "flex", gap: 8 }}>
             <LoadingButton
-              onClick={() => executeTransition("PUBLISH", { reason: publishReason })}
+              onClick={() =>
+                executeTransition("PUBLISH", { reason: publishReason })
+              }
               loading={loading}
               variant="success"
               size="sm"
