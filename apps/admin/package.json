@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
+    "seed:staging": "tsx scripts/seed-staging.ts",
     "smoke-test": "tsx scripts/staging-smoke-test.ts"
   },
   "dependencies": {

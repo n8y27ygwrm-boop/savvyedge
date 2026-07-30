@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { getOrCreateAdminActor, verifyAdminSession } from "../../../../lib/auth";
-import { canPerformAdminAction, type AdminAction } from "../../../../lib/permissions";
+import {
+  getOrCreateAdminActor,
+  verifyAdminSession,
+} from "../../../../lib/auth";
+import {
+  canPerformAdminAction,
+  type AdminAction,
+} from "../../../../lib/permissions";
 import {
   parseAdminTransitionRequest,
   TransitionRequestValidationError,
@@ -11,7 +17,7 @@ import {
   WorkflowTransitionService,
   type PublicationTransitionCommand,
   type ReviewTransitionCommand,
-} from "@savvyedge/api";
+} from "@savvyedge/api/workflow";
 import { prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
 
 async function loadClaimIds(
@@ -148,14 +154,21 @@ export async function POST(request: Request) {
     const parsed = parseAdminTransitionRequest(body);
 
     const requiredAction = ACTION_PERMISSION_MAP[parsed.action];
-    if (!requiredAction || !canPerformAdminAction(session.user.role, requiredAction)) {
+    if (
+      !requiredAction ||
+      !canPerformAdminAction(session.user.role, requiredAction)
+    ) {
       return NextResponse.json(
-        { success: false, error: "Forbidden: Insufficient permissions for this action" },
+        {
+          success: false,
+          error: "Forbidden: Insufficient permissions for this action",
+        },
         { status: 403 },
       );
     }
 
-    const actorId = session.user.actorId || (await getOrCreateAdminActor(prisma)).id;
+    const actorId =
+      session.user.actorId || (await getOrCreateAdminActor(prisma)).id;
     const workflowService = new WorkflowTransitionService(prisma);
     const baseCommand = {
       subjectId: parsed.subjectId,

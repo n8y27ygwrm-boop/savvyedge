@@ -11,7 +11,8 @@
     "db:validate": "pnpm --filter @savvyedge/database run db:validate",
     "db:migrate:status": "pnpm --filter @savvyedge/database run db:migrate:status",
     "db:migrate:deploy": "pnpm --filter @savvyedge/database run db:migrate:deploy",
-    "bootstrap:admin": "pnpm --filter admin run bootstrap:admin"
+    "bootstrap:admin": "pnpm --filter admin run bootstrap:admin",
+    "seed:staging": "pnpm --filter admin run seed:staging"
   },
   "devDependencies": {
     "turbo": "latest",
