@@ -246,7 +246,7 @@ model Bonus {
   duplicates                Bonus[]              @relation("BonusDuplicates")
 
   @@index([casino_id])
-  @@index([source_offer_key])
+  @@unique([casino_id, source_offer_key])
   @@index([review_status, publication_status])
   @@index([duplicate_of_id])
 }
