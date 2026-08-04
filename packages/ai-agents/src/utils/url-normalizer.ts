@@ -14,6 +14,10 @@ const TRACKING_PARAMS = new Set([
   "subid",
 ]);
 
+export function isKnownTrackingParam(name: string): boolean {
+  return TRACKING_PARAMS.has(name.toLowerCase());
+}
+
 const STATIC_EXTENSIONS = new Set([
   ".png",
   ".jpg",
@@ -93,7 +97,7 @@ export function normalizeUrl(rawUrl: string, baseUrl?: string): string | null {
     const searchParams = parsed.searchParams;
     const keysToDelete: string[] = [];
     searchParams.forEach((_, key) => {
-      if (TRACKING_PARAMS.has(key.toLowerCase())) {
+      if (isKnownTrackingParam(key)) {
         keysToDelete.push(key);
       }
     });

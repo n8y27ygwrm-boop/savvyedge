@@ -8,6 +8,7 @@ import {
   BonusEvidenceField,
   ReviewStatus,
   PublicationStatus,
+  Prisma,
 } from "@savvyedge/database";
 import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent, normalizeBonusExtraction, type BonusSourceSemantics } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
@@ -15,6 +16,11 @@ import { CasinoService } from "./casino.service";
 import { JobQueueService } from "./job-queue.service";
 import { WorkflowTransitionService } from "./workflow-transition.service";
 import { PublicationGateService } from "./publication-gate.service";
+import {
+  BonusSourceIdentityError,
+  isBonusIdentityUniqueViolation,
+  isRetryableBonusIdentityTransactionError,
+} from "../utils/bonus-source-identity";
 
 function hashString(val: string): string {
   return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
@@ -46,6 +52,16 @@ export interface IngestBonusInput {
   url: string;
   casino_id?: string;
   taskContext?: "BONUS" | "GAME_LIST";
+}
+
+export function resolveBonusSourceProvenance(
+  requestedUrl: string,
+  scrapeJob: { canonical_url?: string | null } | null,
+) {
+  return {
+    sourceUrl: requestedUrl,
+    sourceIdentityUrl: scrapeJob?.canonical_url ?? requestedUrl,
+  };
 }
 
 export class IngestionService {
@@ -206,6 +222,16 @@ export class IngestionService {
     scrapedContent: string;
     scrapedMetadata?: any;
   }) {
+    return this.performExtraction(payload);
+  }
+
+  private static async performExtraction(payload: {
+    scrapeJobId?: string;
+    url: string;
+    casinoId?: string;
+    scrapedContent: string;
+    scrapedMetadata?: any;
+  }) {
     const { scrapeJobId, url, casinoId, scrapedContent, scrapedMetadata } = payload;
     console.log(`[IngestionService] [Worker] Extracting entities for URL: ${url}`);
 
@@ -241,7 +267,8 @@ export class IngestionService {
       normalizeBonusExtraction(scrapedContent, extractedBonusInput);
 
     // 3. Governed Persistence inside a Single Atomic Transaction
-    const { casino, bonus, evidence } = await prisma.$transaction(async (tx) => {
+    const { casino, bonus, evidence } =
+      await this.runGovernedPersistenceTransaction(async (tx) => {
       // a. Resolve/Upsert Service Actor (service:ingestion)
       const actor = await tx.reviewActor.upsert({
         where: { stable_key: "service:ingestion" },
@@ -284,17 +311,26 @@ export class IngestionService {
 
       const safeCasino = activeCasino!;
 
-      // c. Create or Update Bonus
+      // c. Resolve the current ScrapeJob and its stable source provenance
+      const scrapeJob = scrapeJobId
+        ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } })
+        : null;
+      const bonusProvenance = resolveBonusSourceProvenance(url, scrapeJob);
+
+      // d. Create or Update Bonus through its source-offer identity
       const bonusPayload = { ...bonusInput, casino_id: safeCasino.id };
       const {
         bonus: savedBonus,
         isNew: isNewBonus,
         isApprovedOrPublished: isBonusApprovedOrPublished,
         hasFieldDiffs: hasBonusFieldDiffs,
-      } = await BonusService.saveGovernedBonus(bonusPayload, url, tx);
+      } = await BonusService.saveGovernedBonus(
+        bonusPayload,
+        bonusProvenance,
+        tx,
+      );
 
-      // d. Resolve DataSource & ScrapeJob
-      const scrapeJob = scrapeJobId ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } }) : null;
+      // e. Resolve DataSource
       let dataSourceId = scrapeJob ? scrapeJob.data_source_id : null;
       if (!dataSourceId) {
         let ds = await tx.dataSource.findFirst({ where: { url } });
@@ -526,6 +562,7 @@ export class IngestionService {
     });
 
     console.log(`[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${casino.id}, Bonus ID: ${bonus.id}`);
+    return { casino, bonus, evidence };
   }
 
   /**
@@ -606,6 +643,43 @@ export class IngestionService {
     });
   }
 
+  private static async runGovernedPersistenceTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 30_000,
+        });
+      } catch (error) {
+        if (
+          isRetryableBonusIdentityTransactionError(error) &&
+          attempt < maxAttempts
+        ) {
+          continue;
+        }
+
+        if (isBonusIdentityUniqueViolation(error)) {
+          throw new BonusSourceIdentityError(
+            "CONCURRENT_SOURCE_IDENTITY_CONFLICT",
+            `Bonus source identity could not be resolved safely after ${maxAttempts} transaction attempts`,
+          );
+        }
+
+        throw error;
+      }
+    }
+
+    throw new BonusSourceIdentityError(
+      "CONCURRENT_SOURCE_IDENTITY_CONFLICT",
+      "Bonus source identity transaction exhausted its retry budget",
+    );
+  }
+
   /**
    * Returns a map of handlers for the worker
    */
@@ -633,6 +707,7 @@ export class IngestionService {
     await prisma.jobQueue.updateMany({
       where: {
         queue_name: "ingestion-queue",
+        task_type: "CRAWL_URL",
         payload: { contains: scrapeJob.id },
         status: "PENDING",
       },
@@ -643,24 +718,8 @@ export class IngestionService {
 
     if (updatedJob.status === "COMPLETED") {
       console.log(`[IngestionService] Ingestion short-circuited for job ${scrapeJob.id}. Retrieving existing entities.`);
-      let domain = "example.com";
-      try {
-        domain = new URL(url).hostname.replace(/^www\./, "");
-      } catch {}
-
-      const casino = await prisma.casino.findFirstOrThrow({
-        where: {
-          OR: [
-            { website_url: { contains: domain, mode: "insensitive" } },
-          ],
-        },
-        orderBy: { created_at: "desc" },
-      });
-
-      const bonus = await prisma.bonus.findFirstOrThrow({
-        where: { casino_id: casino.id },
-        orderBy: { created_at: "desc" },
-      });
+      const { bonus, casino } =
+        await this.findPriorPersistedBonusForShortCircuit(updatedJob);
 
       return {
         bonus,
@@ -680,6 +739,7 @@ export class IngestionService {
       where: {
         queue_name: "ingestion-queue",
         task_type: "EXTRACT_BONUS",
+        payload: { contains: scrapeJob.id },
         status: "PENDING",
       },
       orderBy: { created_at: "desc" },
@@ -690,7 +750,12 @@ export class IngestionService {
     }
     
     const payload = JSON.parse(queuedJob.payload);
-    await this.handleExtraction(payload);
+    const extractionResult = await this.handleExtraction(payload);
+    if (!extractionResult) {
+      throw new Error(
+        `Synchronous extraction for ScrapeJob ${scrapeJob.id} did not return a persisted Bonus`,
+      );
+    }
     
     // Mark queued jobs as COMPLETED
     await prisma.jobQueue.updateMany({
@@ -701,31 +766,12 @@ export class IngestionService {
       data: { status: "COMPLETED" },
     });
 
-    // Retrieve database results
+    // Retrieve the current ScrapeJob while preserving the exact extraction result
     const finalJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
-    
-    let domain = "example.com";
-    try {
-      domain = new URL(url).hostname.replace(/^www\./, "");
-    } catch {}
-    
-    const casino = await prisma.casino.findFirstOrThrow({
-      where: {
-        OR: [
-          { website_url: { contains: domain, mode: "insensitive" } },
-        ],
-      },
-      orderBy: { created_at: "desc" },
-    });
-    
-    const bonus = await prisma.bonus.findFirstOrThrow({
-      where: { casino_id: casino.id },
-      orderBy: { created_at: "desc" },
-    });
 
     return {
-      bonus,
-      casino,
+      bonus: extractionResult.bonus,
+      casino: extractionResult.casino,
       scrapeJob: finalJob,
       meta: {
         durationMs: Date.now() - startTime,
@@ -735,4 +781,56 @@ export class IngestionService {
       },
     };
   }
+  private static async findPriorPersistedBonusForShortCircuit(scrapeJob: {
+    id: string;
+    data_source_id: string;
+    html_hash: string | null;
+    content_hash: string | null;
+  }) {
+    const matchingHashes: Prisma.ScrapeJobWhereInput[] = [];
+    if (scrapeJob.content_hash) {
+      matchingHashes.push({ content_hash: scrapeJob.content_hash });
+    }
+    if (scrapeJob.html_hash) {
+      matchingHashes.push({ html_hash: scrapeJob.html_hash });
+    }
+    if (matchingHashes.length === 0) {
+      throw new Error(
+        `Short-circuited ScrapeJob ${scrapeJob.id} has no content hashes`,
+      );
+    }
+
+    const priorScrapeJob = await prisma.scrapeJob.findFirst({
+      where: {
+        data_source_id: scrapeJob.data_source_id,
+        id: { not: scrapeJob.id },
+        status: "COMPLETED",
+        OR: matchingHashes,
+      },
+      orderBy: { completed_at: "desc" },
+      select: { id: true },
+    });
+    if (!priorScrapeJob) {
+      throw new Error(
+        `No prior completed ScrapeJob matches short-circuited job ${scrapeJob.id}`,
+      );
+    }
+
+    const priorClaim = await prisma.bonusEvidenceClaim.findFirst({
+      where: { evidence: { scrape_job_id: priorScrapeJob.id } },
+      orderBy: { created_at: "desc" },
+      include: { bonus: { include: { casino: true } } },
+    });
+    if (!priorClaim) {
+      throw new Error(
+        `No persisted Bonus evidence is linked to prior ScrapeJob ${priorScrapeJob.id}`,
+      );
+    }
+
+    return {
+      bonus: priorClaim.bonus,
+      casino: priorClaim.bonus.casino,
+    };
+  }
+
 }

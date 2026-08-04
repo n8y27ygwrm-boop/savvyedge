@@ -151,14 +151,20 @@ async function verifyVerticalSlice() {
 
     console.log("\nStep 8: Verifying Bonus Field Updates & History Audit Event Logging...");
     // Simulate updating bonus fields with differing values
-    const updatedBonus = await BonusService.createBonus({
-      casino_id: casino1.id,
-      type: "WELCOME",
-      headline_value: "Exclusive 200% Bonus Up to $1000",
-      wagering_requirement: 40,
-      max_conversion: 500,
-      status: "ACTIVE",
-    }, casinoUrl1);
+    const updatedBonus = await BonusService.createBonus(
+      {
+        casino_id: casino1.id,
+        type: "WELCOME",
+        headline_value: "Exclusive 200% Bonus Up to $1000",
+        wagering_requirement: 40,
+        max_conversion: 500,
+        status: "ACTIVE",
+      },
+      {
+        sourceUrl: casinoUrl1,
+        sourceIdentityUrl: casinoUrl1,
+      },
+    );
 
     if (updatedBonus.id !== bonus1.id) {
       throw new Error(`Deduplication failed: Updating fields created a new bonus ${updatedBonus.id} instead of updating ${bonus1.id}`);

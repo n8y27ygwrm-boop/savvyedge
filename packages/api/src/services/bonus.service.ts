@@ -1,6 +1,7 @@
 import { Prisma, PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
 import { CreateBonusInput } from "@savvyedge/types";
 import { AIEngine } from "@savvyedge/ai-agents";
+import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
 
 export const HOUSE_EDGE_ASSUMPTION = 0.03;
 
@@ -24,6 +25,17 @@ export interface CalculateBonusEVOutput {
   houseEdgeUsed: number;
   houseEdgeSource: "slot_rtp" | "default_assumption";
   isCalculable: boolean;
+}
+
+export interface BonusSourceProvenance {
+  sourceUrl: string;
+  sourceIdentityUrl: string;
+}
+
+interface BonusFieldDiff {
+  field: string;
+  oldVal: string | null;
+  newVal: string | null;
 }
 
 export class BonusService {
@@ -180,148 +192,259 @@ export class BonusService {
 
   static async createBonus(
     data: CreateBonusInput,
-    sourceUrl?: string,
-    db: Prisma.TransactionClient | typeof prisma = prisma
+    provenance?: BonusSourceProvenance,
+    db: Prisma.TransactionClient | typeof prisma = prisma,
   ) {
-    const res = await this.saveGovernedBonus(data, sourceUrl, db);
+    if (!provenance) {
+      const res = await this.saveUnidentifiedBonus(data, db);
+      return res.bonus;
+    }
+
+    const res = await this.saveGovernedBonus(data, provenance, db);
     return res.bonus;
   }
 
   static async saveGovernedBonus(
     data: CreateBonusInput,
-    sourceUrl?: string,
-    db: Prisma.TransactionClient | typeof prisma = prisma
-  ): Promise<{ bonus: any; isNew: boolean; isApprovedOrPublished: boolean; hasFieldDiffs: boolean }> {
+    provenance: BonusSourceProvenance,
+    db: Prisma.TransactionClient | typeof prisma = prisma,
+  ): Promise<{
+    bonus: any;
+    isNew: boolean;
+    isApprovedOrPublished: boolean;
+    hasFieldDiffs: boolean;
+  }> {
+    const sourceOfferKey = createBonusSourceOfferKey(
+      provenance.sourceIdentityUrl,
+    );
     const trueValueScore = this.calculateTrueValueScore(
       data.headline_value,
       data.wagering_requirement,
-      data.max_conversion
+      data.max_conversion,
     );
     const now = new Date();
 
-    // Look up any existing active Bonus record for the casino
+    const existingBonus = await db.bonus.findUnique({
+      where: {
+        casino_id_source_offer_key: {
+          casino_id: data.casino_id,
+          source_offer_key: sourceOfferKey,
+        },
+      },
+    });
+
+    if (existingBonus) {
+      return this.updateExistingBonus(
+        data,
+        existingBonus,
+        provenance.sourceUrl,
+        trueValueScore,
+        now,
+        db,
+      );
+    }
+
+    const created = await this.createNewBonus(
+      data,
+      trueValueScore,
+      sourceOfferKey,
+      now,
+      db,
+    );
+
+    return {
+      bonus: created,
+      isNew: true,
+      isApprovedOrPublished: false,
+      hasFieldDiffs: false,
+    };
+  }
+
+  private static async saveUnidentifiedBonus(
+    data: CreateBonusInput,
+    db: Prisma.TransactionClient | typeof prisma,
+  ) {
+    const trueValueScore = this.calculateTrueValueScore(
+      data.headline_value,
+      data.wagering_requirement,
+      data.max_conversion,
+    );
+    const now = new Date();
+
+    // Provenance-free callers retain the legacy "latest active bonus" update
+    // contract, but only within the unidentified NULL-key namespace. An
+    // identified offer must never be selected or overwritten heuristically.
     const existingBonus = await db.bonus.findFirst({
       where: {
         casino_id: data.casino_id,
+        source_offer_key: null,
         status: "ACTIVE",
       },
       orderBy: { created_at: "desc" },
     });
 
     if (existingBonus) {
-      // Compare candidate fields: headline_value, type, wagering_requirement, max_conversion
-      const candidateHeadline = data.headline_value ?? null;
-      const candidateType = data.type;
-      const candidateWagering = data.wagering_requirement ?? null;
-      const candidateMaxConv = data.max_conversion ?? null;
-
-      const existingHeadline = existingBonus.headline_value ?? null;
-      const existingType = existingBonus.type;
-      const existingWagering = existingBonus.wagering_requirement ?? null;
-      const existingMaxConv = existingBonus.max_conversion ?? null;
-
-      const isHeadlineEqual = candidateHeadline === existingHeadline;
-      const isTypeEqual = candidateType === existingType;
-      const isWageringEqual = candidateWagering === existingWagering;
-      const isMaxConvEqual = candidateMaxConv === existingMaxConv;
-
-      const hasFieldDiffs = !(isHeadlineEqual && isTypeEqual && isWageringEqual && isMaxConvEqual);
-
-      if (!hasFieldDiffs) {
-        // Identical fields: do not create new Bonus record. Update updated_at (NOT verified_at)
-        console.log(`[BonusService] Active bonus ${existingBonus.id} is identical. Updating updated_at.`);
-        const updated = await db.bonus.update({
-          where: { id: existingBonus.id },
-          data: {
-            updated_at: now,
-          },
-        });
-        return { bonus: updated, isNew: false, isApprovedOrPublished: false, hasFieldDiffs: false };
-      }
-
-      const isApprovedOrPublished =
-        existingBonus.review_status === ReviewStatus.APPROVED ||
-        existingBonus.publication_status === PublicationStatus.PUBLISHED;
-
-      // Log BonusHistoryEvent for each differing field
-      console.log(
-        `[BonusService] Active bonus ${existingBonus.id} has updated fields (isApprovedOrPublished: ${isApprovedOrPublished}). Logging history.`
+      return this.updateExistingBonus(
+        data,
+        existingBonus,
+        null,
+        trueValueScore,
+        now,
+        db,
+        true,
       );
-      const diffs: { field: string; oldVal: string | null; newVal: string | null }[] = [];
-
-      if (!isHeadlineEqual) {
-        diffs.push({ field: "headline_value", oldVal: existingHeadline, newVal: candidateHeadline });
-      }
-      if (!isTypeEqual) {
-        diffs.push({ field: "type", oldVal: existingType, newVal: candidateType });
-      }
-      if (!isWageringEqual) {
-        diffs.push({
-          field: "wagering_requirement",
-          oldVal: existingWagering !== null ? String(existingWagering) : null,
-          newVal: candidateWagering !== null ? String(candidateWagering) : null,
-        });
-      }
-      if (!isMaxConvEqual) {
-        diffs.push({
-          field: "max_conversion",
-          oldVal: existingMaxConv !== null ? String(existingMaxConv) : null,
-          newVal: candidateMaxConv !== null ? String(candidateMaxConv) : null,
-        });
-      }
-
-      for (const diff of diffs) {
-        await db.bonusHistoryEvent.create({
-          data: {
-            bonus_id: existingBonus.id,
-            field_changed: diff.field,
-            old_value: diff.oldVal,
-            new_value: diff.newVal,
-            source_url: sourceUrl || null,
-            changed_at: now,
-          },
-        });
-      }
-
-      if (isApprovedOrPublished) {
-        // CRITICAL: DO NOT overwrite public entity fields when APPROVED/PUBLISHED.
-        // Keep old approved values on the entity row so public API serves approved values.
-        console.log(
-          `[BonusService] Active bonus ${existingBonus.id} is APPROVED/PUBLISHED. Preserving active fields for review transition.`
-        );
-        const updated = await db.bonus.update({
-          where: { id: existingBonus.id },
-          data: {
-            updated_at: now,
-          },
-        });
-        return { bonus: updated, isNew: false, isApprovedOrPublished: true, hasFieldDiffs: true };
-      }
-
-      // If NOT approved or published (e.g. NEW, AWAITING_REVIEW, QUARANTINED), update fields directly on entity row.
-      const updated = await db.bonus.update({
-        where: { id: existingBonus.id },
-        data: {
-          headline_value: candidateHeadline,
-          type: candidateType,
-          wagering_requirement: candidateWagering,
-          max_conversion: candidateMaxConv,
-          true_value_score: trueValueScore,
-          valid_from: data.valid_from ?? existingBonus.valid_from,
-          valid_until: data.valid_until ?? existingBonus.valid_until,
-          status: data.status || "ACTIVE",
-          updated_at: now,
-        },
-      });
-      return { bonus: updated, isNew: false, isApprovedOrPublished: false, hasFieldDiffs: true };
     }
 
-    // No active bonus exists, create a new Bonus record with status ACTIVE, verified_at: null, review_status: NEW, publication_status: UNPUBLISHED
-    const isDevMock = new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
+    const created = await this.createNewBonus(
+      data,
+      trueValueScore,
+      null,
+      now,
+      db,
+    );
+    return {
+      bonus: created,
+      isNew: true,
+      isApprovedOrPublished: false,
+      hasFieldDiffs: false,
+    };
+  }
 
-    const created = await db.bonus.create({
+  private static async updateExistingBonus(
+    data: CreateBonusInput,
+    existingBonus: any,
+    sourceUrl: string | null,
+    trueValueScore: number,
+    now: Date,
+    db: Prisma.TransactionClient | typeof prisma,
+    preserveMissingDates = false,
+  ) {
+    const candidateHeadline = data.headline_value ?? null;
+    const candidateType = data.type;
+    const candidateWagering = data.wagering_requirement ?? null;
+    const candidateMaxConv = data.max_conversion ?? null;
+    const candidateValidFrom = preserveMissingDates
+      ? data.valid_from ?? existingBonus.valid_from ?? null
+      : data.valid_from ?? null;
+    const candidateValidUntil = preserveMissingDates
+      ? data.valid_until ?? existingBonus.valid_until ?? null
+      : data.valid_until ?? null;
+    const candidateStatus = data.status || "ACTIVE";
+
+    const diffs: BonusFieldDiff[] = [];
+    this.appendDiff(
+      diffs,
+      "headline_value",
+      existingBonus.headline_value ?? null,
+      candidateHeadline,
+    );
+    this.appendDiff(diffs, "type", existingBonus.type, candidateType);
+    this.appendDiff(
+      diffs,
+      "wagering_requirement",
+      existingBonus.wagering_requirement ?? null,
+      candidateWagering,
+    );
+    this.appendDiff(
+      diffs,
+      "max_conversion",
+      existingBonus.max_conversion ?? null,
+      candidateMaxConv,
+    );
+    this.appendDateDiff(
+      diffs,
+      "valid_from",
+      existingBonus.valid_from ?? null,
+      candidateValidFrom,
+    );
+    this.appendDateDiff(
+      diffs,
+      "valid_until",
+      existingBonus.valid_until ?? null,
+      candidateValidUntil,
+    );
+    this.appendDiff(diffs, "status", existingBonus.status, candidateStatus);
+
+    const hasFieldDiffs = diffs.length > 0;
+    if (!hasFieldDiffs) {
+      const updated = await db.bonus.update({
+        where: { id: existingBonus.id },
+        data: { updated_at: now },
+      });
+      return {
+        bonus: updated,
+        isNew: false,
+        isApprovedOrPublished: false,
+        hasFieldDiffs: false,
+      };
+    }
+
+    const isApprovedOrPublished =
+      existingBonus.review_status === ReviewStatus.APPROVED ||
+      existingBonus.publication_status === PublicationStatus.PUBLISHED;
+
+    for (const diff of diffs) {
+      await db.bonusHistoryEvent.create({
+        data: {
+          bonus_id: existingBonus.id,
+          field_changed: diff.field,
+          old_value: diff.oldVal,
+          new_value: diff.newVal,
+          source_url: sourceUrl,
+          changed_at: now,
+        },
+      });
+    }
+
+    if (isApprovedOrPublished) {
+      const updated = await db.bonus.update({
+        where: { id: existingBonus.id },
+        data: { updated_at: now },
+      });
+      return {
+        bonus: updated,
+        isNew: false,
+        isApprovedOrPublished: true,
+        hasFieldDiffs: true,
+      };
+    }
+
+    const updated = await db.bonus.update({
+      where: { id: existingBonus.id },
+      data: {
+        headline_value: candidateHeadline,
+        type: candidateType,
+        wagering_requirement: candidateWagering,
+        max_conversion: candidateMaxConv,
+        true_value_score: trueValueScore,
+        valid_from: candidateValidFrom,
+        valid_until: candidateValidUntil,
+        status: candidateStatus,
+        updated_at: now,
+      },
+    });
+    return {
+      bonus: updated,
+      isNew: false,
+      isApprovedOrPublished: false,
+      hasFieldDiffs: true,
+    };
+  }
+
+  private static async createNewBonus(
+    data: CreateBonusInput,
+    trueValueScore: number,
+    sourceOfferKey: string | null,
+    now: Date,
+    db: Prisma.TransactionClient | typeof prisma,
+  ) {
+    const isDevMock =
+      new AIEngine().getActiveProvider().constructor.name === "DevAIProvider";
+
+    return db.bonus.create({
       data: {
         ...data,
+        source_offer_key: sourceOfferKey,
         status: data.status || "ACTIVE",
         true_value_score: trueValueScore,
         data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
@@ -334,7 +457,30 @@ export class BonusService {
         governance_version: 0,
       },
     });
+  }
 
-    return { bonus: created, isNew: true, isApprovedOrPublished: false, hasFieldDiffs: false };
+  private static appendDiff(
+    diffs: BonusFieldDiff[],
+    field: string,
+    oldValue: string | number | null,
+    newValue: string | number | null,
+  ) {
+    if (oldValue === newValue) return;
+    diffs.push({
+      field,
+      oldVal: oldValue === null ? null : String(oldValue),
+      newVal: newValue === null ? null : String(newValue),
+    });
+  }
+
+  private static appendDateDiff(
+    diffs: BonusFieldDiff[],
+    field: string,
+    oldValue: Date | null,
+    newValue: Date | null,
+  ) {
+    const oldIso = oldValue?.toISOString() ?? null;
+    const newIso = newValue?.toISOString() ?? null;
+    this.appendDiff(diffs, field, oldIso, newIso);
   }
 }

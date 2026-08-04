@@ -233,20 +233,13 @@ export class OrchestratorService {
         scrapedContent: string;
         scrapedMetadata: any;
       }) => {
-        await IngestionService.handleExtraction(payload);
+        const extractionResult = await IngestionService.handleExtraction(payload);
 
-        // Find created bonus and enqueue validation
-        const domain = payload.url ? new URL(payload.url).hostname.replace(/^www\./, "") : "";
-        const bonus = await prisma.bonus.findFirst({
-          where: { casino: { website_url: { contains: domain, mode: "insensitive" } } },
-          orderBy: { valid_from: "desc" },
-        });
-
-        if (bonus) {
+        if (extractionResult) {
           await JobQueueService.enqueue(
             "orchestrator-queue",
             "VALIDATE_BONUS",
-            { bonusId: bonus.id, url: payload.url },
+            { bonusId: extractionResult.bonus.id, url: payload.url },
             { priority: "LOW", deduplicate: true }
           );
         }
