@@ -444,7 +444,7 @@ export class PublicationGateService {
 
     // 3. Extract monetary candidates matching currency symbols ($ € £) or codes (EUR USD GBP AUD CAD)
     const matches = Array.from(
-      trimmed.matchAll(/(?:(?:up\s+to\s+)?([$€£])\s*([0-9.,]+|[a-zA-Z]+)|(?:up\s+to\s+)?([0-9.,]+|[a-zA-Z]+)\s*([$€£]|EUR|USD|GBP|AUD|CAD))\b/gi)
+      trimmed.matchAll(/(?:(?:up\s+to\s+)?([$€£])\s*([0-9][0-9.,]*|[a-zA-Z]+)|(?:up\s+to\s+)?([0-9][0-9.,]*|[a-zA-Z]+)\s*(EUR|USD|GBP|AUD|CAD))\b/gi)
     );
 
     if (matches.length === 0) {
@@ -455,6 +455,7 @@ export class PublicationGateService {
     }
 
     const candidates: { val: number; isValid: boolean }[] = [];
+    let ignoredNonCapCandidates = 0;
 
     for (const m of matches) {
       const rawValStr = (m[2] || m[3] || "").replace(/[$€£]/g, "").trim();
@@ -464,10 +465,20 @@ export class PublicationGateService {
 
       const matchIndex = m.index ?? 0;
       const matchText = m[0];
+      const beforeText = trimmed.slice(Math.max(0, matchIndex - 50), matchIndex).toLowerCase();
       const afterText = trimmed.slice(matchIndex + matchText.length, matchIndex + matchText.length + 15).toLowerCase();
 
       // Ignore percentages (100%), wagering multipliers (35x), or free spins (50 spins)
       if (afterText.startsWith("%") || /^\s*(%|x\b|spins?|free\s*spins?)/.test(afterText)) {
+        continue;
+      }
+
+      // A per-spin value or a qualifying play/spend/deposit amount is not a bonus cap.
+      if (
+        /^\s*(?:per|each)\s*(?:free\s*)?spin\b/.test(afterText) ||
+        /(?:when\s+you\s+)?(?:play|spend|stake|deposit)(?:\s+(?:at\s+least|a\s+minimum\s+of|for|of))?\s*$/.test(beforeText)
+      ) {
+        ignoredNonCapCandidates += 1;
         continue;
       }
 
@@ -487,6 +498,12 @@ export class PublicationGateService {
     }
 
     if (candidates.length === 0) {
+      if (ignoredNonCapCandidates > 0) {
+        return {
+          status: "MISSING_CAP",
+          reason: "Headline contains only qualifying or per-spin monetary values, not a bonus cap",
+        };
+      }
       if (hasCurrencyIndicator) {
         return { status: "INVALID_CAP", reason: "Headline has currency indicator but no valid monetary cap" };
       }

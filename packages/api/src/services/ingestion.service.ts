@@ -9,7 +9,7 @@ import {
   ReviewStatus,
   PublicationStatus,
 } from "@savvyedge/database";
-import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent } from "@savvyedge/ai-agents";
+import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent, normalizeBonusExtraction, type BonusSourceSemantics } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
 import { CasinoService } from "./casino.service";
 import { JobQueueService } from "./job-queue.service";
@@ -18,6 +18,28 @@ import { PublicationGateService } from "./publication-gate.service";
 
 function hashString(val: string): string {
   return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
+}
+
+export function resolveHeadlineEvidenceObservation(
+  bonus: { type?: string | null; headline_value?: string | null },
+  semantics: BonusSourceSemantics,
+): string | null {
+  const headline = bonus.headline_value?.trim();
+  if (!headline) return null;
+
+  const capParse = PublicationGateService.parseStructuredMonetaryCap(headline);
+  if (capParse.status === "VALID") {
+    return semantics.headlineSourceText || headline;
+  }
+
+  if (
+    semantics.freeSpinCount &&
+    /\b\d[\d,]*\s+free\s+spins?\b/i.test(headline)
+  ) {
+    return semantics.headlineSourceText || headline;
+  }
+
+  return null;
 }
 
 export interface IngestBonusInput {
@@ -211,10 +233,12 @@ export class IngestionService {
 
     const dummyCasinoId = "00000000-0000-0000-0000-000000000000";
     const targetCasinoId = initialCasino?.id || dummyCasinoId;
-    const bonusInput = await this.bonusAgent.run({
+    const extractedBonusInput = await this.bonusAgent.run({
       rawBonusText: scrapedContent,
       casino_id: targetCasinoId,
     });
+    const { bonus: bonusInput, semantics: bonusSourceSemantics } =
+      normalizeBonusExtraction(scrapedContent, extractedBonusInput);
 
     // 3. Governed Persistence inside a Single Atomic Transaction
     const { casino, bonus, evidence } = await prisma.$transaction(async (tx) => {
@@ -369,31 +393,37 @@ export class IngestionService {
         bonusClaimIds.push(claim.id);
       }
 
-      if (bonusInput.headline_value) {
-        const capParse = PublicationGateService.parseStructuredMonetaryCap(bonusInput.headline_value);
-        if (capParse.status === "VALID") {
-          const claim = await tx.bonusEvidenceClaim.create({
-            data: {
-              evidence_id: evidenceRecord.id,
-              bonus_id: savedBonus.id,
-              field: BonusEvidenceField.HEADLINE_VALUE,
-              observed_value: bonusInput.headline_value,
-              normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(bonusInput.headline_value)}`,
-              verdict: EvidenceVerdict.SUPPORTS,
-            },
-          });
-          bonusClaimIds.push(claim.id);
-        }
+      const headlineEvidence = resolveHeadlineEvidenceObservation(
+        bonusInput,
+        bonusSourceSemantics,
+      );
+      if (headlineEvidence) {
+        const claim = await tx.bonusEvidenceClaim.create({
+          data: {
+            evidence_id: evidenceRecord.id,
+            bonus_id: savedBonus.id,
+            field: BonusEvidenceField.HEADLINE_VALUE,
+            observed_value: headlineEvidence,
+            normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(headlineEvidence)}`,
+            verdict: EvidenceVerdict.SUPPORTS,
+          },
+        });
+        bonusClaimIds.push(claim.id);
       }
 
       if (bonusInput.wagering_requirement !== null && bonusInput.wagering_requirement !== undefined) {
+        const scopedWageringEvidence =
+          bonusSourceSemantics.wagering?.scope === "FREE_SPIN_WINNINGS" &&
+          bonusSourceSemantics.wagering.multiplier === bonusInput.wagering_requirement
+            ? bonusSourceSemantics.wagering.sourceText
+            : String(bonusInput.wagering_requirement);
         const claim = await tx.bonusEvidenceClaim.create({
           data: {
             evidence_id: evidenceRecord.id,
             bonus_id: savedBonus.id,
             field: BonusEvidenceField.WAGERING_REQUIREMENT,
-            observed_value: String(bonusInput.wagering_requirement),
-            normalized_value_hash: `normalizer-v1:WAGERING:${bonusInput.wagering_requirement}`,
+            observed_value: scopedWageringEvidence,
+            normalized_value_hash: `normalizer-v1:WAGERING:${hashString(scopedWageringEvidence)}`,
             verdict: EvidenceVerdict.SUPPORTS,
           },
         });

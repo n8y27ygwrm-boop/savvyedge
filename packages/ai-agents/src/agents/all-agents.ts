@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BaseAgent } from "../core/BaseAgent";
 import { AIEngine } from "../engine/ai.engine";
 import { CreateCasinoInputSchema, CreateBonusInputSchema, CreateCasinoInput, CreateBonusInput } from "@savvyedge/types";
+import { normalizeBonusExtraction } from "../utils/bonus-semantics";
 
 const engine = new AIEngine();
 
@@ -43,9 +44,21 @@ export class BonusAgent extends BaseAgent<BonusInput, CreateBonusInput> {
   protected inputSchema = BonusInputSchema;
   protected outputSchema = CreateBonusInputSchema;
   protected async execute(input: BonusInput) {
-    const prompt = `Extract bonus information for casino ID '${input.casino_id}' from the raw text below:\n\n${input.rawBonusText}`;
+    const prompt = `Extract bonus information for casino ID '${input.casino_id}' from the raw text below.
+
+Semantic rules:
+- headline_value is the primary advertised offer, not a qualifying action.
+- For a free-spins offer, headline_value must preserve the explicit spin count (and explicit per-spin value, if stated), for example "300 FREE SPINS".
+- A currency amount tied to "play", "spend", "stake", or "deposit" is a qualifying condition, not the offer value or max_conversion.
+- Do not treat a play/spend amount as a minimum deposit. Deposit applies only when the source explicitly says deposit.
+- Keep monetary bonus caps, free-spin counts, per-spin values, and max conversion/cashout semantically distinct.
+- wagering_requirement may represent free-spin winnings only when the source explicitly scopes it that way. Do not apply that multiplier to a separate deposit bonus.
+- Use null for fields that are not explicitly supported. Never invent max_conversion, dates, or amounts.
+
+Raw source text:
+${input.rawBonusText}`;
     const res = await engine.generateStructuredObject(prompt, this.outputSchema);
-    return res.data;
+    return normalizeBonusExtraction(input.rawBonusText, res.data).bonus;
   }
 }
 
