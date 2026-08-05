@@ -1,5 +1,6 @@
 import { prisma } from "@savvyedge/database";
 import { DiscoveryAgent } from "@savvyedge/ai-agents";
+import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import { JobQueueService } from "./job-queue.service";
 
 export class DiscoveryService {
@@ -32,7 +33,7 @@ export class DiscoveryService {
 
         // Enqueue into existing Job Queue for asynchronous ingestion
         if (record.status === "DISCOVERED" || record.status === "ENQUEUED") {
-          await JobQueueService.enqueue("ingestion-queue", "INGEST_URL", {
+          await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "INGEST_URL", {
             url: candidate.normalizedUrl,
             discovered_id: record.id,
           });

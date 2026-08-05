@@ -1,3 +1,5 @@
+export * from "./constants/queue-names";
+export * from "./contracts/ingestion-queue.contract";
 export * from "./services/casino.service";
 export * from "./services/bonus.service";
 export * from "./services/ingestion.service";

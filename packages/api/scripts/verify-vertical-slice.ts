@@ -1,6 +1,7 @@
 import { IngestionService } from "../src/services/ingestion.service";
 import { BonusService } from "../src/services/bonus.service";
 import { JobQueueService } from "../src/services/job-queue.service";
+import { INGESTION_QUEUE_NAME } from "../src/constants/queue-names";
 import { prisma } from "@savvyedge/database";
 
 async function verifyVerticalSlice() {
@@ -128,7 +129,7 @@ async function verifyVerticalSlice() {
     let processedAny2 = true;
     let iterations2 = 0;
     while (processedAny2 && iterations2 < 5) {
-      processedAny2 = await JobQueueService.processNextJob("ingestion-queue", handlers);
+      processedAny2 = await JobQueueService.processNextJob(INGESTION_QUEUE_NAME, handlers);
       iterations2++;
     }
     console.log(` -> Re-crawling processed steps: ${iterations2 - 1}`);

@@ -1,4 +1,5 @@
 import { DiscoveryService } from "../src/services/discovery.service";
+import { INGESTION_QUEUE_NAME } from "../src/constants/queue-names";
 import { prisma } from "@savvyedge/database";
 import { execSync } from "child_process";
 
@@ -53,7 +54,7 @@ async function verifyDiscoveryEngine() {
   // Check Enqueued Jobs in JobQueue table
   const enqueuedJobsCount = await prisma.jobQueue.count({
     where: {
-      queue_name: "ingestion-queue",
+      queue_name: INGESTION_QUEUE_NAME,
       task_type: "INGEST_URL",
     },
   });
@@ -87,7 +88,7 @@ async function verifyDiscoveryEngine() {
 2. EXECUTION FLOW
 --------------------------------------------------------------------------------
 Seed Source -> DiscoveryAgent (Scrape & Extract) -> Normalizer & Filter ->
-DiscoveredUrl Table (PostgreSQL) -> JobQueue Table (ingestion-queue) -> Ingestion Worker
+DiscoveredUrl Table (PostgreSQL) -> JobQueue Table (${INGESTION_QUEUE_NAME}) -> Ingestion Worker
 
 3. REMAINING LIMITATIONS & NEXT STEPS
 --------------------------------------------------------------------------------

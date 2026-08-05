@@ -1,6 +1,7 @@
 import { prisma } from "@savvyedge/database";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BonusService } from "../src/services/bonus.service";
+import { INGESTION_QUEUE_NAME } from "../src/constants/queue-names";
 import { IngestionService } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
@@ -207,7 +208,7 @@ describe("Bonus source identity result routing", () => {
 
     expect(rediscover).not.toHaveBeenCalled();
     expect(enqueue).toHaveBeenCalledWith(
-      expect.any(String),
+      INGESTION_QUEUE_NAME,
       "VALIDATE_BONUS",
       {
         bonusId: "bonus-current-offer",

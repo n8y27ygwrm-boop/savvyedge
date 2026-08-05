@@ -1,3 +1,5 @@
+import { assertIngestionQueueJob } from "../contracts/ingestion-queue.contract";
+import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import { prisma } from "@savvyedge/database";
 
 export interface EnqueueOptions {
@@ -26,8 +28,10 @@ export class JobQueueService {
     payload: Record<string, any>,
     options?: EnqueueOptions
   ) {
+    assertIngestionQueueJob(queueName, taskType, payload);
     const stringifiedPayload = JSON.stringify(payload);
-    const domain = options?.domain || payload.domain || this.extractDomainFromPayload(payload);
+    const rawDomain = (payload as Record<string, unknown>).domain;
+    const domain = options?.domain || (typeof rawDomain === "string" ? rawDomain : undefined) || this.extractDomainFromPayload(payload);
     const priority = options?.priority || "NORMAL";
 
     // Deduplication check
@@ -170,6 +174,7 @@ export class JobQueueService {
 
     try {
       const parsedPayload = JSON.parse(job.payload);
+      assertIngestionQueueJob(queueName, job.task_type, parsedPayload);
       await handler(parsedPayload);
 
       await prisma.jobQueue.update({
@@ -223,6 +228,7 @@ export class JobQueueService {
     const now = new Date();
     const staleJobs = await prisma.jobQueue.findMany({
       where: {
+        queue_name: queueName,
         status: "PROCESSING",
         locked_until: { lt: now },
       },

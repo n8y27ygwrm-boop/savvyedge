@@ -1,4 +1,9 @@
 import { prisma } from "@savvyedge/database";
+import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
+import type {
+  IngestionJobPayloadMap,
+  IngestionQueueHandlers,
+} from "../contracts/ingestion-queue.contract";
 import { JobQueueService } from "./job-queue.service";
 import { DiscoveryService } from "./discovery.service";
 import { IngestionService } from "./ingestion.service";
@@ -83,7 +88,7 @@ export class OrchestratorService {
 
     for (let i = 0; i < config.workerConcurrency; i++) {
       const workerId = `worker-node-${i + 1}`;
-      const handle = JobQueueService.startWorker("orchestrator-queue", handlers, 500, {
+      const handle = JobQueueService.startWorker(INGESTION_QUEUE_NAME, handlers, 500, {
         workerId,
         domainLimiter,
       });
@@ -165,7 +170,7 @@ export class OrchestratorService {
     this.recoveryTimer = setInterval(async () => {
       if (!this.isRunning) return;
       try {
-        await JobQueueService.recoverStaleJobs();
+        await JobQueueService.recoverStaleJobs(INGESTION_QUEUE_NAME);
       } catch (err: any) {
         console.error("[PlatformOrchestrator] Error in crash recovery loop:", err.message);
       }
@@ -181,7 +186,7 @@ export class OrchestratorService {
       if (!this.isRunning) return;
       console.log("[PlatformOrchestrator] [Scheduler] Enqueueing periodic DISCOVER_SEEDS job...");
       await JobQueueService.enqueue(
-        "orchestrator-queue",
+        INGESTION_QUEUE_NAME,
         "DISCOVER_SEEDS",
         { seedUrls: config.seedSources },
         { priority: "HIGH", deduplicate: true }
@@ -190,7 +195,7 @@ export class OrchestratorService {
 
     // Initial immediate discovery run
     JobQueueService.enqueue(
-      "orchestrator-queue",
+      INGESTION_QUEUE_NAME,
       "DISCOVER_SEEDS",
       { seedUrls: config.seedSources },
       { priority: "HIGH", deduplicate: true }
@@ -202,27 +207,23 @@ export class OrchestratorService {
   /**
    * Handlers for all stage tasks (DISCOVER_SEEDS -> INGEST_URL -> CRAWL_URL -> EXTRACT_BONUS -> VALIDATE_BONUS)
    */
-  private static getQueueHandlers(seedSources: string[]) {
+  public static getQueueHandlers(seedSources: string[]): IngestionQueueHandlers {
     return {
-      DISCOVER_SEEDS: async (payload: { seedUrls?: string[] }) => {
+      DISCOVER_SEEDS: async (
+        payload: IngestionJobPayloadMap["DISCOVER_SEEDS"],
+      ) => {
         const seeds = payload.seedUrls || seedSources;
         console.log(`[PlatformOrchestrator] Executing DISCOVER_SEEDS across ${seeds.length} seeds...`);
         const result = await DiscoveryService.discoverAndEnqueue(seeds);
         console.log(`[PlatformOrchestrator] DISCOVER_SEEDS complete: ${result.totalEnqueued} URLs enqueued.`);
       },
 
-      INGEST_URL: async (payload: { url: string; discovered_id?: string }) => {
+      INGEST_URL: async (payload: IngestionJobPayloadMap["INGEST_URL"]) => {
         console.log(`[PlatformOrchestrator] Processing INGEST_URL: ${payload.url}`);
-        const scrapeJob = await IngestionService.enqueueIngestion({ url: payload.url });
-        await JobQueueService.enqueue(
-          "orchestrator-queue",
-          "CRAWL_URL",
-          { scrapeJobId: scrapeJob.id, url: payload.url },
-          { priority: "NORMAL", deduplicate: true }
-        );
+        await IngestionService.enqueueIngestion({ url: payload.url });
       },
 
-      CRAWL_URL: async (payload: { scrapeJobId: string; url: string; casinoId?: string }) => {
+      CRAWL_URL: async (payload: IngestionJobPayloadMap["CRAWL_URL"]) => {
         await IngestionService.handleCrawl(payload);
       },
 
@@ -237,7 +238,7 @@ export class OrchestratorService {
 
         if (extractionResult) {
           await JobQueueService.enqueue(
-            "orchestrator-queue",
+            INGESTION_QUEUE_NAME,
             "VALIDATE_BONUS",
             { bonusId: extractionResult.bonus.id, url: payload.url },
             { priority: "LOW", deduplicate: true }
@@ -245,12 +246,9 @@ export class OrchestratorService {
         }
       },
 
-      EXTRACT_GAME_LIST: async (payload: {
-        scrapeJobId: string;
-        url: string;
-        casinoId: string;
-        scrapedContent: string;
-      }) => {
+      EXTRACT_GAME_LIST: async (
+        payload: IngestionJobPayloadMap["EXTRACT_GAME_LIST"],
+      ) => {
         await IngestionService.handleGameListExtraction(payload);
       },
 

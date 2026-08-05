@@ -44,14 +44,14 @@ async function verifyOrchestrator() {
   console.log("\n--- Step 3: Validating Duplicate Job Prevention ---");
   const testUrl = "https://www.casinos.com/us/bonuses";
   const job1 = await JobQueueService.enqueue(
-    "orchestrator-queue",
+    INGESTION_QUEUE_NAME,
     "INGEST_URL",
     { url: testUrl },
     { priority: "HIGH", deduplicate: true }
   );
 
   const job2 = await JobQueueService.enqueue(
-    "orchestrator-queue",
+    INGESTION_QUEUE_NAME,
     "INGEST_URL",
     { url: testUrl },
     { priority: "HIGH", deduplicate: true }
@@ -72,7 +72,7 @@ async function verifyOrchestrator() {
   console.log("\n--- Step 5: Validating Crash Recovery & Stale Job Recovery ---");
   const staleJob = await prisma.jobQueue.create({
     data: {
-      queue_name: "orchestrator-queue",
+      queue_name: INGESTION_QUEUE_NAME,
       task_type: "CRAWL_URL",
       payload: JSON.stringify({ url: "https://example.com/stale" }),
       status: "PROCESSING",

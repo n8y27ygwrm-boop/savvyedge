@@ -1,3 +1,4 @@
+import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import crypto from "crypto";
 import {
   prisma,
@@ -111,7 +112,7 @@ export class IngestionService {
     });
 
     // 3. Enqueue CRAWL_URL job
-    await JobQueueService.enqueue("ingestion-queue", "CRAWL_URL", {
+    await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "CRAWL_URL", {
       scrapeJobId: scrapeJob.id,
       url,
       casinoId: casino_id,
@@ -195,14 +196,14 @@ export class IngestionService {
       if (!casinoId) {
         throw new Error("GAME_LIST crawl payload missing mandatory casinoId");
       }
-      await JobQueueService.enqueue("ingestion-queue", "EXTRACT_GAME_LIST", {
+      await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "EXTRACT_GAME_LIST", {
         scrapeJobId,
         url,
         casinoId,
         scrapedContent: scrapeResult.content,
       });
     } else {
-      await JobQueueService.enqueue("ingestion-queue", "EXTRACT_BONUS", {
+      await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "EXTRACT_BONUS", {
         scrapeJobId,
         url,
         casinoId,
@@ -706,7 +707,7 @@ export class IngestionService {
     // Mark enqueued CRAWL_URL job for this scrapeJob as COMPLETED since executed inline
     await prisma.jobQueue.updateMany({
       where: {
-        queue_name: "ingestion-queue",
+        queue_name: INGESTION_QUEUE_NAME,
         task_type: "CRAWL_URL",
         payload: { contains: scrapeJob.id },
         status: "PENDING",
@@ -737,7 +738,7 @@ export class IngestionService {
     // Find the queued EXTRACT_BONUS job that was created by handleCrawl
     const queuedJob = await prisma.jobQueue.findFirst({
       where: {
-        queue_name: "ingestion-queue",
+        queue_name: INGESTION_QUEUE_NAME,
         task_type: "EXTRACT_BONUS",
         payload: { contains: scrapeJob.id },
         status: "PENDING",
@@ -760,7 +761,7 @@ export class IngestionService {
     // Mark queued jobs as COMPLETED
     await prisma.jobQueue.updateMany({
       where: {
-        queue_name: "ingestion-queue",
+        queue_name: INGESTION_QUEUE_NAME,
         payload: { contains: scrapeJob.id },
       },
       data: { status: "COMPLETED" },
