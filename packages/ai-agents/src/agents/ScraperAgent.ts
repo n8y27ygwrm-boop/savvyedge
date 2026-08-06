@@ -10,6 +10,8 @@ export const ScraperInputSchema = z.object({
 
 export const ScraperOutputSchema = z.object({
   url: z.string(),
+  finalUrl: z.string().url(),
+  title: z.string().optional(),
   content: z.string(),
   rawHtml: z.string().optional(),
   htmlHash: z.string().optional(),
@@ -38,8 +40,13 @@ export class ScraperAgent extends BaseAgent<ScraperInput, ScraperOutput> {
   protected inputSchema = ScraperInputSchema;
   protected outputSchema = ScraperOutputSchema;
 
-  protected async execute(input: ScraperInput, context?: AgentContext): Promise<ScraperOutput> {
-    console.log(`[ScraperAgent] Executing Playwright production scraper for URL: ${input.url}`);
+  protected async execute(
+    input: ScraperInput,
+    context?: AgentContext,
+  ): Promise<ScraperOutput> {
+    console.log(
+      `[ScraperAgent] Executing Playwright production scraper for URL: ${input.url}`,
+    );
 
     try {
       const result = await PlaywrightScraper.scrape({
@@ -50,6 +57,8 @@ export class ScraperAgent extends BaseAgent<ScraperInput, ScraperOutput> {
 
       return {
         url: result.url,
+        finalUrl: result.finalUrl,
+        title: result.title,
         content: result.content,
         rawHtml: result.rawHtml,
         htmlHash: result.htmlHash,
@@ -60,8 +69,12 @@ export class ScraperAgent extends BaseAgent<ScraperInput, ScraperOutput> {
         timestamp: result.timestamp,
       };
     } catch (err: any) {
-      console.error(`[ScraperAgent] Playwright scraping failed for ${input.url}: ${err.message}`);
-      throw new Error(`ScraperAgent: failed to scrape ${input.url} after Playwright retries exhausted: ${err.message}`);
+      console.error(
+        `[ScraperAgent] Playwright scraping failed for ${input.url}: ${err.message}`,
+      );
+      throw new Error(
+        `ScraperAgent: failed to scrape ${input.url} after Playwright retries exhausted: ${err.message}`,
+      );
     }
   }
 }

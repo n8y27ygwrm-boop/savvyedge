@@ -11,12 +11,23 @@ import {
   PublicationStatus,
   Prisma,
 } from "@savvyedge/database";
-import { ScraperAgent, BonusAgent, CasinoResolutionAgent, GameListAgent, normalizeBonusExtraction, type BonusSourceSemantics } from "@savvyedge/ai-agents";
+import {
+  ScraperAgent,
+  BonusAgent,
+  CasinoResolutionAgent,
+  GameListAgent,
+  normalizeBonusExtraction,
+  type BonusSourceSemantics,
+} from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
 import { CasinoService } from "./casino.service";
 import { JobQueueService } from "./job-queue.service";
 import { WorkflowTransitionService } from "./workflow-transition.service";
 import { PublicationGateService } from "./publication-gate.service";
+import {
+  evaluateSourcePageEligibility,
+  SourcePageRejectedError,
+} from "./source-page-eligibility";
 import {
   BonusSourceIdentityError,
   isBonusIdentityUniqueViolation,
@@ -131,22 +142,42 @@ export class IngestionService {
     casinoId?: string;
     taskContext?: "BONUS" | "GAME_LIST";
   }) {
+    const shouldProcess = await this.markScrapeJobProcessing(
+      payload.scrapeJobId,
+    );
+    if (!shouldProcess) {
+      console.log(
+        `[IngestionService] ScrapeJob ${payload.scrapeJobId} is already completed; skipping duplicate crawl`,
+      );
+      return;
+    }
+    try {
+      return await this.performCrawl(payload);
+    } catch (error) {
+      await this.markScrapeJobFailed(payload.scrapeJobId, error, "CRAWL");
+      throw error;
+    }
+  }
+
+  private static async performCrawl(payload: {
+    scrapeJobId: string;
+    url: string;
+    casinoId?: string;
+    taskContext?: "BONUS" | "GAME_LIST";
+  }) {
     const { scrapeJobId, url, casinoId, taskContext = "BONUS" } = payload;
-    console.log(`[IngestionService] [Worker] Crawling URL: ${url} (context: ${taskContext})`);
+    console.log(
+      `[IngestionService] [Worker] Crawling URL: ${url} (context: ${taskContext})`,
+    );
 
     let scrapeResult;
     try {
       scrapeResult = await this.scraperAgent.run({ url });
     } catch (err: any) {
-      console.error(`[IngestionService] [Worker] Crawl failed for URL: ${url}`, err);
-      await prisma.scrapeJob.update({
-        where: { id: scrapeJobId },
-        data: {
-          status: "FAILED",
-          error_log: err.stack || err.message || String(err),
-          completed_at: new Date(),
-        },
-      });
+      console.error(
+        `[IngestionService] [Worker] Crawl failed for URL: ${url}`,
+        err,
+      );
       throw err;
     }
 
@@ -160,9 +191,26 @@ export class IngestionService {
         snapshot_path: scrapeResult.snapshotPath || null,
         html_hash: scrapeResult.htmlHash || null,
         content_hash: scrapeResult.contentHash || null,
-        canonical_url: scrapeResult.canonicalUrl || null,
+        canonical_url:
+          scrapeResult.canonicalUrl ||
+          scrapeResult.finalUrl ||
+          scrapeResult.url ||
+          url,
       },
     });
+
+    const eligibilityInput = {
+      requestedUrl: url,
+      finalUrl: scrapeResult.finalUrl || scrapeResult.url || url,
+      canonicalUrl: scrapeResult.canonicalUrl,
+      title: scrapeResult.title || scrapeResult.metadata?.title,
+      content: scrapeResult.content,
+      taskContext,
+    } as const;
+    const eligibility = evaluateSourcePageEligibility(eligibilityInput);
+    if (!eligibility.eligible) {
+      throw new SourcePageRejectedError(eligibilityInput, eligibility);
+    }
 
     // Check for identical content hash from previous job
     const previousJob = await prisma.scrapeJob.findFirst({
@@ -223,7 +271,25 @@ export class IngestionService {
     scrapedContent: string;
     scrapedMetadata?: any;
   }) {
-    return this.performExtraction(payload);
+    if (payload.scrapeJobId) {
+      const shouldProcess = await this.markScrapeJobProcessing(
+        payload.scrapeJobId,
+      );
+      if (!shouldProcess) {
+        console.log(
+          `[IngestionService] ScrapeJob ${payload.scrapeJobId} is already completed; skipping duplicate bonus extraction`,
+        );
+        return;
+      }
+    }
+    try {
+      return await this.performExtraction(payload);
+    } catch (error) {
+      if (payload.scrapeJobId) {
+        await this.markScrapeJobFailed(payload.scrapeJobId, error, "BONUS");
+      }
+      throw error;
+    }
   }
 
   private static async performExtraction(payload: {
@@ -575,8 +641,33 @@ export class IngestionService {
     casinoId: string;
     scrapedContent: string;
   }) {
+    const shouldProcess = await this.markScrapeJobProcessing(
+      payload.scrapeJobId,
+    );
+    if (!shouldProcess) {
+      console.log(
+        `[IngestionService] ScrapeJob ${payload.scrapeJobId} is already completed; skipping duplicate game-list extraction`,
+      );
+      return;
+    }
+    try {
+      return await this.performGameListExtraction(payload);
+    } catch (error) {
+      await this.markScrapeJobFailed(payload.scrapeJobId, error, "GAME_LIST");
+      throw error;
+    }
+  }
+
+  private static async performGameListExtraction(payload: {
+    scrapeJobId: string;
+    url: string;
+    casinoId: string;
+    scrapedContent: string;
+  }) {
     const { scrapeJobId, url, casinoId, scrapedContent } = payload;
-    console.log(`[IngestionService] [Worker] Extracting game list for Casino ${casinoId} from URL: ${url}`);
+    console.log(
+      `[IngestionService] [Worker] Extracting game list for Casino ${casinoId} from URL: ${url}`,
+    );
 
     const gameListResult = await this.gameListAgent.run({
       url,
@@ -639,6 +730,86 @@ export class IngestionService {
       where: { id: scrapeJobId },
       data: {
         status: "COMPLETED",
+        completed_at: new Date(),
+        error_log: null,
+      },
+    });
+  }
+
+  private static async markScrapeJobProcessing(
+    scrapeJobId: string,
+  ): Promise<boolean> {
+    const result = await prisma.scrapeJob.updateMany({
+      where: {
+        id: scrapeJobId,
+        status: { not: "COMPLETED" },
+      },
+      data: {
+        status: "PROCESSING",
+        started_at: new Date(),
+        completed_at: null,
+        error_log: null,
+      },
+    });
+    if (result.count === 1) {
+      return true;
+    }
+
+    const scrapeJob = await prisma.scrapeJob.findUnique({
+      where: { id: scrapeJobId },
+      select: { status: true },
+    });
+    if (!scrapeJob) {
+      throw new Error(`ScrapeJob ${scrapeJobId} not found`);
+    }
+    return scrapeJob.status !== "COMPLETED";
+  }
+
+  private static async markScrapeJobFailed(
+    scrapeJobId: string,
+    error: unknown,
+    taskContext: "CRAWL" | "BONUS" | "GAME_LIST" = "CRAWL",
+  ) {
+    let errorLog: string;
+    if (error instanceof SourcePageRejectedError) {
+      let parsedReason = "Source page rejected by policy";
+      let category = error.category;
+      try {
+        const rawJson = error.message.replace(/^SOURCE_PAGE_REJECTED\s*/, "");
+        const parsed = JSON.parse(rawJson);
+        if (parsed.category) category = parsed.category;
+        if (parsed.reason) parsedReason = parsed.reason;
+      } catch {}
+      errorLog = JSON.stringify({
+        code: "SOURCE_PAGE_REJECTED",
+        category,
+        reason: parsedReason,
+      });
+    } else if (taskContext === "BONUS") {
+      errorLog = JSON.stringify({
+        code: "BONUS_EXTRACTION_FAILED",
+        reason: "Bonus extraction failed",
+      });
+    } else if (taskContext === "GAME_LIST") {
+      errorLog = JSON.stringify({
+        code: "GAME_LIST_EXTRACTION_FAILED",
+        reason: "Game list extraction failed",
+      });
+    } else {
+      errorLog = JSON.stringify({
+        code: "CRAWL_FAILED",
+        reason: "Crawl processing failed",
+      });
+    }
+
+    await prisma.scrapeJob.updateMany({
+      where: {
+        id: scrapeJobId,
+        status: { not: "COMPLETED" },
+      },
+      data: {
+        status: "FAILED",
+        error_log: errorLog,
         completed_at: new Date(),
       },
     });

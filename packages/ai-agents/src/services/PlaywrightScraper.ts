@@ -4,6 +4,18 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 
+function resolveDocumentUrl(
+  value: string | undefined,
+  base: string,
+): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value, base).toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export interface PlaywrightScrapeOptions {
   url: string;
   timeoutMs?: number;
@@ -13,6 +25,8 @@ export interface PlaywrightScrapeOptions {
 
 export interface PlaywrightScrapeResult {
   url: string;
+  finalUrl: string;
+  title?: string;
   rawHtml: string;
   content: string;
   htmlHash: string;
@@ -38,9 +52,14 @@ export interface PlaywrightScrapeResult {
 export class PlaywrightScraper {
   private static DEFAULT_TIMEOUT_MS = 30000;
   private static DEFAULT_MAX_RETRIES = 3;
-  private static DEFAULT_SNAPSHOT_DIR = path.resolve(process.cwd(), "storage/snapshots");
+  private static DEFAULT_SNAPSHOT_DIR = path.resolve(
+    process.cwd(),
+    "storage/snapshots",
+  );
 
-  public static async scrape(options: PlaywrightScrapeOptions): Promise<PlaywrightScrapeResult> {
+  public static async scrape(
+    options: PlaywrightScrapeOptions,
+  ): Promise<PlaywrightScrapeResult> {
     const startTime = Date.now();
     const timeoutMs = options.timeoutMs ?? this.DEFAULT_TIMEOUT_MS;
     const maxRetries = options.maxRetries ?? this.DEFAULT_MAX_RETRIES;
@@ -51,7 +70,9 @@ export class PlaywrightScraper {
 
     while (attempt < maxRetries) {
       attempt++;
-      console.log(`[PlaywrightScraper] Attempt ${attempt}/${maxRetries} for URL: ${options.url}`);
+      console.log(
+        `[PlaywrightScraper] Attempt ${attempt}/${maxRetries} for URL: ${options.url}`,
+      );
 
       let browser: Browser | null = null;
       try {
@@ -63,12 +84,20 @@ export class PlaywrightScraper {
             const urlObj = new URL(proxyUrl);
             proxyOptions = {
               server: `${urlObj.protocol}//${urlObj.host}`,
-              username: urlObj.username ? decodeURIComponent(urlObj.username) : undefined,
-              password: urlObj.password ? decodeURIComponent(urlObj.password) : undefined,
+              username: urlObj.username
+                ? decodeURIComponent(urlObj.username)
+                : undefined,
+              password: urlObj.password
+                ? decodeURIComponent(urlObj.password)
+                : undefined,
             };
-            console.log(`[PlaywrightScraper] Using rotating proxy: ${proxyOptions.server}`);
+            console.log(
+              `[PlaywrightScraper] Using rotating proxy: ${proxyOptions.server}`,
+            );
           } catch (err: any) {
-            console.warn(`[PlaywrightScraper] Invalid PROXY_URL configured: ${err.message}`);
+            console.warn(
+              `[PlaywrightScraper] Invalid PROXY_URL configured: ${err.message}`,
+            );
           }
         }
 
@@ -94,8 +123,10 @@ export class PlaywrightScraper {
           timezoneId: "America/New_York",
           extraHTTPHeaders: {
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            Accept:
+              "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Sec-Ch-Ua":
+              '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"macOS"',
             "Sec-Fetch-Dest": "document",
@@ -110,18 +141,30 @@ export class PlaywrightScraper {
 
         // Stealth: Hide Webdriver and Emulate Chrome plugins/features
         await context.addInitScript(() => {
-          Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+          Object.defineProperty(navigator, "webdriver", {
+            get: () => undefined,
+          });
           (window as any).chrome = {
             runtime: {},
             loadTimes: function () {},
             csi: function () {},
             app: {},
           };
-          Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+          Object.defineProperty(navigator, "languages", {
+            get: () => ["en-US", "en"],
+          });
           Object.defineProperty(navigator, "plugins", {
             get: () => [
-              { description: "Portable Document Format", filename: "internal-pdf-viewer", name: "Chrome PDF Viewer" },
-              { description: "Portable Document Format", filename: "internal-pdf-viewer", name: "Chromium PDF Viewer" },
+              {
+                description: "Portable Document Format",
+                filename: "internal-pdf-viewer",
+                name: "Chrome PDF Viewer",
+              },
+              {
+                description: "Portable Document Format",
+                filename: "internal-pdf-viewer",
+                name: "Chromium PDF Viewer",
+              },
             ],
           });
         });
@@ -137,12 +180,18 @@ export class PlaywrightScraper {
         // Short wait to ensure dynamic JS rendering / DOM hydration finishes
         await page.waitForTimeout(1500).catch(() => {});
 
+        const finalUrl = page.url();
+        const pageTitle =
+          (await page.title().catch(() => "")).trim() || undefined;
+
         // Extract canonical URL using Playwright locator
         let canonicalUrl: string | undefined = undefined;
         try {
-          const canonicalAttr = await page.locator("link[rel='canonical']").getAttribute("href");
+          const canonicalAttr = await page
+            .locator("link[rel='canonical']")
+            .getAttribute("href");
           if (canonicalAttr) {
-            canonicalUrl = canonicalAttr;
+            canonicalUrl = resolveDocumentUrl(canonicalAttr, finalUrl);
           }
         } catch {
           // Ignore if canonical tag not present
@@ -155,24 +204,30 @@ export class PlaywrightScraper {
         // Parse HTML via Cheerio to extract OpenGraph & metadata
         const $ = cheerio.load(rawHtml);
 
-        const title = $("title").text().trim() || undefined;
+        const documentTitle = $("title").text().trim() || undefined;
         const description =
           $('meta[name="description"]').attr("content") ||
           $('meta[property="og:description"]').attr("content") ||
           undefined;
 
-        const ogTitle = $('meta[property="og:title"]').attr("content") || undefined;
-        const ogDescription = $('meta[property="og:description"]').attr("content") || undefined;
-        const ogImage = $('meta[property="og:image"]').attr("content") || undefined;
+        const ogTitle =
+          $('meta[property="og:title"]').attr("content") || undefined;
+        const ogDescription =
+          $('meta[property="og:description"]').attr("content") || undefined;
+        const ogImage =
+          $('meta[property="og:image"]').attr("content") || undefined;
         const ogSiteName =
           $('meta[property="og:site_name"]').attr("content") ||
           $('meta[name="application-name"]').attr("content") ||
           undefined;
-        const ogType = $('meta[property="og:type"]').attr("content") || undefined;
+        const ogType =
+          $('meta[property="og:type"]').attr("content") || undefined;
         const ogUrl = $('meta[property="og:url"]').attr("content") || undefined;
 
         // Strip noise & extract clean readable text
-        $("script, style, nav, footer, iframe, svg, header, noscript, style, button").remove();
+        $(
+          "script, style, nav, footer, iframe, svg, header, noscript, style, button",
+        ).remove();
         let cleanedText = $("body").text();
         cleanedText = cleanedText
           .split("\n")
@@ -181,8 +236,14 @@ export class PlaywrightScraper {
           .join("\n");
 
         // Compute SHA-256 hashes
-        const htmlHash = crypto.createHash("sha256").update(rawHtml).digest("hex");
-        const contentHash = crypto.createHash("sha256").update(cleanedText).digest("hex");
+        const htmlHash = crypto
+          .createHash("sha256")
+          .update(rawHtml)
+          .digest("hex");
+        const contentHash = crypto
+          .createHash("sha256")
+          .update(cleanedText)
+          .digest("hex");
 
         // Store HTML snapshot on disk
         let snapshotPath: string | undefined;
@@ -193,32 +254,47 @@ export class PlaywrightScraper {
 
           let host = "unknown";
           try {
-            host = new URL(options.url).hostname.replace(/[^a-zA-Z0-9.-]/g, "_");
+            host = new URL(options.url).hostname.replace(
+              /[^a-zA-Z0-9.-]/g,
+              "_",
+            );
           } catch {}
 
-          const hash = crypto.createHash("md5").update(options.url).digest("hex").substring(0, 8);
+          const hash = crypto
+            .createHash("md5")
+            .update(options.url)
+            .digest("hex")
+            .substring(0, 8);
           const dateStr = new Date().toISOString().replace(/[:.]/g, "-");
           const fileName = `${dateStr}_${host}_${hash}.html`;
           snapshotPath = path.join(snapshotDir, fileName);
 
           fs.writeFileSync(snapshotPath, rawHtml, "utf-8");
-          console.log(`[PlaywrightScraper] Saved HTML snapshot to: ${snapshotPath}`);
+          console.log(
+            `[PlaywrightScraper] Saved HTML snapshot to: ${snapshotPath}`,
+          );
         } catch (err: any) {
-          console.warn(`[PlaywrightScraper] Could not save HTML snapshot: ${err.message}`);
+          console.warn(
+            `[PlaywrightScraper] Could not save HTML snapshot: ${err.message}`,
+          );
         }
 
         const durationMs = Date.now() - startTime;
-        console.log(`[PlaywrightScraper] Successfully scraped ${options.url} in ${durationMs}ms`);
+        console.log(
+          `[PlaywrightScraper] Successfully scraped ${options.url} in ${durationMs}ms`,
+        );
 
         return {
           url: options.url,
+          finalUrl,
+          title: pageTitle || documentTitle,
           rawHtml,
           content: cleanedText,
           htmlHash,
           contentHash,
-          canonicalUrl: canonicalUrl || ogUrl,
+          canonicalUrl: canonicalUrl || resolveDocumentUrl(ogUrl, finalUrl),
           metadata: {
-            title: ogTitle || title,
+            title: ogTitle || pageTitle || documentTitle,
             siteName: ogSiteName,
             description: ogDescription || description,
             ogTitle,
@@ -236,7 +312,7 @@ export class PlaywrightScraper {
       } catch (err: any) {
         lastError = err;
         console.warn(
-          `[PlaywrightScraper] Attempt ${attempt} failed for ${options.url}: ${err.message}`
+          `[PlaywrightScraper] Attempt ${attempt} failed for ${options.url}: ${err.message}`,
         );
 
         if (browser) {
@@ -252,7 +328,7 @@ export class PlaywrightScraper {
     }
 
     throw new Error(
-      `PlaywrightScraper failed after ${maxRetries} attempts for ${options.url}. Last error: ${lastError?.message}`
+      `PlaywrightScraper failed after ${maxRetries} attempts for ${options.url}. Last error: ${lastError?.message}`,
     );
   }
 }
