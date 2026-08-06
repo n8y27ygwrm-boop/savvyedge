@@ -1,3 +1,53 @@
+/**
+ * Process-Local Limitations:
+ * Domain rate limiting and concurrency enforcement apply only within a single
+ * process-local WorkerPool instance. Distributed enforcement across multi-worker
+ * clusters requires a shared coordination mechanism (e.g. Redis or DB leases).
+ */
+export class DomainConcurrencyManager {
+  private readonly activeCounts = new Map<string, number>();
+
+  constructor(public readonly maxConcurrentPerDomain: number = 2) {
+    if (
+      typeof maxConcurrentPerDomain !== "number" ||
+      maxConcurrentPerDomain <= 0 ||
+      !Number.isInteger(maxConcurrentPerDomain)
+    ) {
+      throw new Error("maxConcurrentPerDomain must be a positive integer");
+    }
+  }
+
+  public canAcquire(domain: string | undefined): boolean {
+    if (!domain) return true;
+    const current = this.activeCounts.get(domain) ?? 0;
+    return current < this.maxConcurrentPerDomain;
+  }
+
+  public acquire(domain: string | undefined): boolean {
+    if (!domain) return true;
+    const current = this.activeCounts.get(domain) ?? 0;
+    if (current >= this.maxConcurrentPerDomain) {
+      return false;
+    }
+    this.activeCounts.set(domain, current + 1);
+    return true;
+  }
+
+  public release(domain: string | undefined): void {
+    if (!domain) return;
+    const current = this.activeCounts.get(domain) ?? 0;
+    if (current <= 1) {
+      this.activeCounts.delete(domain);
+    } else {
+      this.activeCounts.set(domain, current - 1);
+    }
+  }
+
+  public getActiveCount(domain: string): number {
+    return this.activeCounts.get(domain) ?? 0;
+  }
+}
+
 import { assertIngestionQueueJob } from "../contracts/ingestion-queue.contract";
 import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import { prisma } from "@savvyedge/database";
@@ -12,10 +62,29 @@ export interface EnqueueOptions {
 
 export interface ProcessJobOptions {
   workerId?: string;
-  domainLimiter?: {
-    checkDomainAllowed: (domain: string) => boolean;
-    recordDomainAccess: (domain: string) => void;
-  };
+  maxAttempts?: number;
+  runAt?: Date;
+  maxConcurrentPerDomain?: number;
+  domainLimiter?:
+    | DomainConcurrencyManager
+    | {
+        canAcquire?: (domain: string | undefined) => boolean;
+        checkDomainAllowed?: (domain: string) => boolean;
+        recordDomainAccess?: (domain: string) => void;
+      };
+  concurrency?: number;
+  claimAdapter?: (
+    queueName: string,
+    workerId: string,
+    canAcquireDomain: (domain: string | undefined) => boolean,
+  ) => Promise<{
+    id: string;
+    task_type: string;
+    payload: string;
+    attempts: number;
+    max_attempts: number;
+    domain?: string;
+  } | null>;
 }
 
 export class JobQueueService {
@@ -69,13 +138,27 @@ export class JobQueueService {
   /**
    * Helper to extract domain from payload if present
    */
-  private static extractDomainFromPayload(payload: Record<string, any>): string | undefined {
-    if (payload.url && typeof payload.url === "string") {
-      try {
-        return new URL(payload.url).hostname.replace(/^www\./, "");
-      } catch {}
+  public static extractDomainFromPayload(payload: unknown): string | undefined {
+    if (!payload || typeof payload !== "object") {
+      return undefined;
     }
-    return undefined;
+    const rawUrl = (payload as Record<string, unknown>).url;
+    if (typeof rawUrl !== "string") {
+      return undefined;
+    }
+    try {
+      const parsed = new URL(rawUrl);
+      let hostname = parsed.hostname.toLowerCase();
+      if (hostname.endsWith(".")) {
+        hostname = hostname.slice(0, -1);
+      }
+      if (hostname.startsWith("www.")) {
+        hostname = hostname.slice(4);
+      }
+      return hostname || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -84,120 +167,178 @@ export class JobQueueService {
   public static async processNextJob(
     queueName: string,
     handlers: Record<string, (payload: any) => Promise<any>>,
-    options?: ProcessJobOptions
+    options?: ProcessJobOptions,
   ): Promise<boolean> {
     const now = new Date();
     const workerId = options?.workerId || "worker-default";
-
-    // Priority order for candidate selection
-    const priorityOrder = ["HIGH", "NORMAL", "LOW"];
+    const domainLimiter =
+      options?.domainLimiter ??
+      (options?.maxConcurrentPerDomain !== undefined
+        ? new DomainConcurrencyManager(options.maxConcurrentPerDomain)
+        : undefined);
 
     let candidateJob: any = null;
 
-    // Transactionally find and lock one candidate job respecting priority
-    for (const priority of priorityOrder) {
-      candidateJob = await prisma.$transaction(async (tx) => {
-        const candidate = await tx.jobQueue.findFirst({
-          where: {
-            queue_name: queueName,
-            status: "PENDING",
-            priority,
-            run_at: { lte: now },
-            OR: [
-              { locked_until: null },
-              { locked_until: { lt: now } },
-            ],
-          },
-          orderBy: { run_at: "asc" },
-        });
+    const claimFn = options?.claimAdapter;
+    if (claimFn) {
+      candidateJob = await claimFn(queueName, workerId, (dom) =>
+        domainLimiter
+          ? typeof (domainLimiter as any).canAcquire === "function"
+            ? (domainLimiter as any).canAcquire(dom)
+            : true
+          : true,
+      );
+    } else {
+      const priorityOrder = ["HIGH", "NORMAL", "LOW"];
+      for (const priority of priorityOrder) {
+        candidateJob = await prisma.$transaction(async (tx) => {
+          const candidate = await tx.jobQueue.findFirst({
+            where: {
+              queue_name: queueName,
+              status: "PENDING",
+              priority,
+              run_at: { lte: now },
+              OR: [{ locked_until: null }, { locked_until: { lt: now } }],
+            },
+            orderBy: { run_at: "asc" },
+          });
 
-        if (!candidate) return null;
+          if (!candidate) return null;
 
-        // Domain rate limit check
-        if (candidate.domain && options?.domainLimiter) {
-          const allowed = options.domainLimiter.checkDomainAllowed(candidate.domain);
-          if (!allowed) {
-            return null; // Skip candidate due to rate limit, try next priority/job
+          const jobPayload = (() => {
+            try {
+              return JSON.parse(candidate.payload);
+            } catch {
+              return null;
+            }
+          })();
+
+          const targetDomain =
+            candidate.domain || JobQueueService.extractDomainFromPayload(jobPayload);
+
+          if (domainLimiter) {
+            const allowed =
+              typeof (domainLimiter as any).canAcquire === "function"
+                ? (domainLimiter as any).canAcquire(targetDomain)
+                : targetDomain && typeof (domainLimiter as any).checkDomainAllowed === "function"
+                  ? (domainLimiter as any).checkDomainAllowed(targetDomain)
+                  : true;
+            if (!allowed) {
+              return null;
+            }
           }
-        }
 
-        const lockedUntil = new Date(Date.now() + 2 * 60 * 1000); // 2 minutes lock
-        const updateResult = await tx.jobQueue.updateMany({
-          where: {
-            id: candidate.id,
-            status: "PENDING",
-            OR: [
-              { locked_until: null },
-              { locked_until: { lt: now } },
-            ],
-          },
-          data: {
-            status: "PROCESSING",
-            worker_id: workerId,
-            locked_until: lockedUntil,
-            started_at: now,
-            attempts: { increment: 1 },
-          },
+          const lockedUntil = new Date(Date.now() + 2 * 60 * 1000);
+          const updateResult = await tx.jobQueue.updateMany({
+            where: {
+              id: candidate.id,
+              status: "PENDING",
+              OR: [{ locked_until: null }, { locked_until: { lt: now } }],
+            },
+            data: {
+              status: "PROCESSING",
+              worker_id: workerId,
+              locked_until: lockedUntil,
+              started_at: now,
+              attempts: { increment: 1 },
+            },
+          });
+
+          if (updateResult.count === 0) {
+            return null;
+          }
+
+          return tx.jobQueue.findUnique({ where: { id: candidate.id } });
         });
 
-        if (updateResult.count === 0) {
-          // Another worker raced and locked this job first
-          return null;
-        }
-
-        return tx.jobQueue.findUnique({ where: { id: candidate.id } });
-      });
-
-      if (candidateJob) break;
+        if (candidateJob) break;
+      }
     }
 
     if (!candidateJob) {
-      return false; // No due/eligible jobs found
+      return false;
     }
 
     const job = candidateJob;
-    if (job.domain && options?.domainLimiter) {
-      options.domainLimiter.recordDomainAccess(job.domain);
+    const parsedPayload = (() => {
+      try {
+        return JSON.parse(job.payload);
+      } catch {
+        return {};
+      }
+    })();
+    const targetDomain =
+      job.domain || JobQueueService.extractDomainFromPayload(parsedPayload);
+
+    if (domainLimiter) {
+      if (typeof (domainLimiter as any).acquire === "function") {
+        (domainLimiter as any).acquire(targetDomain);
+      } else if (targetDomain && typeof (domainLimiter as any).recordDomainAccess === "function") {
+        (domainLimiter as any).recordDomainAccess(targetDomain);
+      }
     }
 
     console.log(
-      `[JobQueueWorker] [${queueName}] Worker ${workerId} processing job ${job.id} (Type: ${job.task_type}, Priority: ${job.priority}, Attempt: ${job.attempts}/${job.max_attempts})`
+      `[JobQueueWorker] [${queueName}] Worker ${workerId} processing job ${job.id} (Type: ${job.task_type}, Priority: ${job.priority || "NORMAL"}, Attempt: ${job.attempts}/${job.max_attempts})`,
     );
 
     const handler = handlers[job.task_type];
     if (!handler) {
-      const errorMsg = `No handler registered for task type: ${job.task_type}`;
-      console.error(`[JobQueueWorker] [${queueName}] ${errorMsg}`);
-      await this.handleJobFailure(job.id, new Error(errorMsg), job.attempts, job.max_attempts);
+      try {
+        const errorMsg = `No handler registered for task type: ${job.task_type}`;
+        console.error(`[JobQueueWorker] [${queueName}] ${errorMsg}`);
+        if (!options?.claimAdapter) {
+          await JobQueueService.handleJobFailure(
+            job.id,
+            new Error(errorMsg),
+            job.attempts,
+            job.max_attempts,
+          );
+        }
+      } finally {
+        if (domainLimiter && typeof (domainLimiter as any).release === "function") {
+          (domainLimiter as any).release(targetDomain);
+        }
+      }
       return true;
     }
 
     try {
-      const parsedPayload = JSON.parse(job.payload);
       assertIngestionQueueJob(queueName, job.task_type, parsedPayload);
       await handler(parsedPayload);
 
-      await prisma.jobQueue.update({
-        where: { id: job.id },
-        data: {
-          status: "COMPLETED",
-          completed_at: new Date(),
-          locked_until: null,
-          error_log: null,
-        },
-      });
-      console.log(`[JobQueueWorker] [${queueName}] Job ${job.id} completed successfully`);
+      if (!options?.claimAdapter) {
+        await prisma.jobQueue.update({
+          where: { id: job.id },
+          data: {
+            status: "COMPLETED",
+            completed_at: new Date(),
+            locked_until: null,
+          },
+        });
+      }
     } catch (err: any) {
-      console.error(`[JobQueueWorker] [${queueName}] Job ${job.id} failed:`, err.message);
-      await this.handleJobFailure(job.id, err, job.attempts, job.max_attempts);
+      console.error(
+        `[JobQueueWorker] [${queueName}] Job ${job.id} failed:`,
+        err.message,
+      );
+      if (!options?.claimAdapter) {
+        await JobQueueService.handleJobFailure(
+          job.id,
+          err,
+          job.attempts,
+          job.max_attempts,
+        );
+      }
+    } finally {
+      if (domainLimiter) {
+        (domainLimiter as any).release(targetDomain);
+      }
     }
 
     return true;
   }
 
-  /**
-   * Handle worker failure and schedule retries with exponential backoff
-   */
   private static async handleJobFailure(
     jobId: string,
     error: Error,
