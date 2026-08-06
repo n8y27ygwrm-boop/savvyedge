@@ -224,7 +224,10 @@ export class JobQueueService {
   /**
    * Stale Job Crash Recovery: Resets PROCESSING jobs locked by dead/crashed workers
    */
-  public static async recoverStaleJobs(): Promise<number> {
+  public static async recoverStaleJobs(
+    queueName: string,
+    staleTimeoutMs: number = 300000,
+  ): Promise<number> {
     const now = new Date();
     const staleJobs = await prisma.jobQueue.findMany({
       where: {

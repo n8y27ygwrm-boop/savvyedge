@@ -227,13 +227,9 @@ export class OrchestratorService {
         await IngestionService.handleCrawl(payload);
       },
 
-      EXTRACT_BONUS: async (payload: {
-        scrapeJobId: string;
-        url: string;
-        casinoId?: string;
-        scrapedContent: string;
-        scrapedMetadata: any;
-      }) => {
+      EXTRACT_BONUS: async (
+        payload: IngestionJobPayloadMap["EXTRACT_BONUS"],
+      ) => {
         const extractionResult = await IngestionService.handleExtraction(payload);
 
         if (extractionResult) {
