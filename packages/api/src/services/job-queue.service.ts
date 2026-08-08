@@ -60,6 +60,10 @@ export interface EnqueueOptions {
   deduplicate?: boolean;
 }
 
+export interface WorkerHandle {
+  stop(): Promise<void>;
+}
+
 export interface LegacyDomainLimiter {
   checkDomainAllowed(domain: string): boolean;
   recordDomainAccess?(domain: string): void;
@@ -457,10 +461,13 @@ export class JobQueueService {
     handlers: Record<string, (payload: any) => Promise<any>>,
     pollIntervalMs: number = 1000,
     options?: ProcessJobOptions
-  ) {
+  ): WorkerHandle {
     let active = true;
+    let pollTimer: NodeJS.Timeout | undefined;
+    let currentLoopPromise: Promise<void> | null = null;
+    let stopPromise: Promise<void> | null = null;
 
-    const runLoop = async () => {
+    const executeCycle = async () => {
       if (!active) return;
 
       try {
@@ -468,21 +475,49 @@ export class JobQueueService {
         while (processed && active) {
           processed = await this.processNextJob(queueName, handlers, options);
         }
-      } catch (err: any) {
-        console.error(`[JobQueueWorker] [${queueName}] Error in run loop:`, err.message);
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[JobQueueWorker] [${queueName}] Error in run loop:`, errorMsg);
       } finally {
         if (active) {
-          setTimeout(runLoop, pollIntervalMs);
+          pollTimer = setTimeout(runLoop, pollIntervalMs);
         }
       }
+    };
+
+    const runLoop = () => {
+      if (!active) return;
+      pollTimer = undefined;
+      currentLoopPromise = executeCycle();
     };
 
     runLoop();
 
     return {
-      stop: () => {
+      stop: (): Promise<void> => {
+        if (stopPromise) {
+          return stopPromise;
+        }
+
         console.log(`[JobQueueWorker] [${queueName}] Stopping worker...`);
         active = false;
+
+        if (pollTimer !== undefined) {
+          clearTimeout(pollTimer);
+          pollTimer = undefined;
+        }
+
+        stopPromise = (async () => {
+          if (currentLoopPromise) {
+            try {
+              await currentLoopPromise;
+            } catch {
+              // Gracefully handle any loop error during shutdown
+            }
+          }
+        })();
+
+        return stopPromise;
       },
     };
   }

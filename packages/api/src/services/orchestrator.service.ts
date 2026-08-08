@@ -18,20 +18,39 @@ export interface OrchestratorConfig {
   maxConcurrentPerDomain: number;
   minDomainDelayMs: number;
   seedSources: string[];
+  enableWorkers?: boolean;
+  enableSchedulers?: boolean;
+  enableRecovery?: boolean;
+  workerPollIntervalMs?: number;
 }
 
+export type OrchestratorLifecycleState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING";
+
 export class OrchestratorService {
-  private static isRunning = false;
+  private static lifecycleState: OrchestratorLifecycleState = "STOPPED";
+  private static startPromise: Promise<void> | null = null;
+  private static stopPromise: Promise<void> | null = null;
   private static schedulerTimers: NodeJS.Timeout[] = [];
-  private static workerHandles: Array<{ id: string; stop: () => void }> = [];
+  private static workerHandles: Array<{
+    id: string;
+    stop: () => Promise<void>;
+  }> = [];
   private static heartbeatTimer?: NodeJS.Timeout;
   private static recoveryTimer?: NodeJS.Timeout;
+
+  public static get isRunning(): boolean {
+    return this.lifecycleState === "RUNNING";
+  }
+
+  public static getLifecycleState(): OrchestratorLifecycleState {
+    return this.lifecycleState;
+  }
 
   // Domain rate limiting state
   private static domainActiveCount = new Map<string, number>();
   private static domainLastAccess = new Map<string, number>();
 
-  private static getConfig(): OrchestratorConfig {
+  private static getConfig(): Required<OrchestratorConfig> {
     return {
       discoveryIntervalMs: parseInt(process.env.DISCOVERY_INTERVAL_MS || "300000", 10),
       crawlIntervalMs: parseInt(process.env.CRAWL_INTERVAL_MS || "60000", 10),
@@ -47,56 +66,98 @@ export class OrchestratorService {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
+      enableWorkers: true,
+      enableSchedulers: true,
+      enableRecovery: true,
+      workerPollIntervalMs: 500,
     };
   }
 
   /**
    * Starts the continuous Platform Orchestrator
    */
-  public static async start(customConfig?: Partial<OrchestratorConfig>) {
-    if (this.isRunning) {
+  public static async start(customConfig?: Partial<OrchestratorConfig>): Promise<void> {
+    while (this.lifecycleState === "STOPPING" && this.stopPromise) {
+      try {
+        await this.stopPromise;
+      } catch {
+        // Wait for active stop to settle
+      }
+    }
+
+    if (this.lifecycleState === "RUNNING") {
       console.log("[PlatformOrchestrator] Orchestrator is already running.");
       return;
     }
 
-    const config = { ...this.getConfig(), ...customConfig };
-    this.isRunning = true;
-
-    console.log("=================================================");
-    console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
-    console.log(` -> Worker Concurrency: ${config.workerConcurrency}`);
-    console.log(` -> Discovery Interval: ${config.discoveryIntervalMs} ms`);
-    console.log(` -> Crawl Interval:     ${config.crawlIntervalMs} ms`);
-    console.log(` -> Max Domain Concur:  ${config.maxConcurrentPerDomain}`);
-    console.log("=================================================");
-
-    // 1. Initialize Workers in Database & Memory
-    await this.initializeWorkers(config.workerConcurrency);
-
-    // 2. Start Worker Heartbeat & Crash Recovery Loops
-    this.startHeartbeatLoop(config.workerConcurrency);
-    this.startRecoveryLoop();
-
-    // 3. Register Queue Handlers
-    const handlers = this.getQueueHandlers(config.seedSources);
-
-    // 4. Spawn Worker Loops
-    const domainLimiter = {
-      checkDomainAllowed: (domain: string) => this.checkDomainAllowed(domain, config),
-      recordDomainAccess: (domain: string) => this.recordDomainAccess(domain),
-    };
-
-    for (let i = 0; i < config.workerConcurrency; i++) {
-      const workerId = `worker-node-${i + 1}`;
-      const handle = JobQueueService.startWorker(INGESTION_QUEUE_NAME, handlers, 500, {
-        workerId,
-        domainLimiter,
-      });
-      this.workerHandles.push({ id: workerId, stop: handle.stop });
+    if (this.lifecycleState === "STARTING" && this.startPromise) {
+      return this.startPromise;
     }
 
-    // 5. Initialize Recurring Schedulers
-    this.startSchedulers(config);
+    this.lifecycleState = "STARTING";
+
+    this.startPromise = (async () => {
+      try {
+        const config = { ...this.getConfig(), ...customConfig };
+
+        console.log("=================================================");
+        console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
+        console.log(` -> Worker Concurrency: ${config.workerConcurrency}`);
+        console.log(` -> Discovery Interval: ${config.discoveryIntervalMs} ms`);
+        console.log(` -> Crawl Interval:     ${config.crawlIntervalMs} ms`);
+        console.log(` -> Max Domain Concur:  ${config.maxConcurrentPerDomain}`);
+        console.log(` -> Workers Enabled:    ${config.enableWorkers}`);
+        console.log(` -> Schedulers Enabled: ${config.enableSchedulers}`);
+        console.log(` -> Recovery Enabled:   ${config.enableRecovery}`);
+        console.log("=================================================");
+
+        // 1. Register Queue Handlers
+        const handlers = this.getQueueHandlers(config.seedSources);
+
+        // 2. Spawn Worker Loops
+        const domainLimiter = {
+          checkDomainAllowed: (domain: string) =>
+            this.checkDomainAllowed(domain, config),
+          recordDomainAccess: (domain: string) => this.recordDomainAccess(domain),
+        };
+
+        if (config.enableWorkers) {
+          for (let i = 0; i < config.workerConcurrency; i++) {
+            const workerId = `worker-node-${i + 1}`;
+            const handle = JobQueueService.startWorker(
+              INGESTION_QUEUE_NAME,
+              handlers,
+              config.workerPollIntervalMs,
+              {
+                workerId,
+                domainLimiter,
+              },
+            );
+            this.workerHandles.push({ id: workerId, stop: () => handle.stop() });
+          }
+        }
+
+        // 3. Initialize Recurring Schedulers
+        if (config.enableSchedulers) {
+          await this.startSchedulers(config);
+        }
+
+        this.lifecycleState = "RUNNING";
+      } catch (error) {
+        this.lifecycleState = "STOPPING";
+        this.schedulerTimers.forEach((t) => clearInterval(t));
+        this.schedulerTimers = [];
+        const stops = this.workerHandles.map((w) => w.stop());
+        this.workerHandles = [];
+        await Promise.allSettled(stops);
+        this.lifecycleState = "STOPPED";
+        throw error;
+      } finally {
+        this.startPromise = null;
+      }
+    })();
+
+    return this.startPromise;
   }
 
   /**
@@ -153,7 +214,7 @@ export class OrchestratorService {
 
   private static startHeartbeatLoop(count: number) {
     this.heartbeatTimer = setInterval(async () => {
-      if (!this.isRunning) return;
+      if (this.lifecycleState !== "RUNNING") return;
       for (let i = 0; i < count; i++) {
         const workerName = `worker-node-${i + 1}`;
         try {
@@ -168,11 +229,12 @@ export class OrchestratorService {
 
   private static startRecoveryLoop() {
     this.recoveryTimer = setInterval(async () => {
-      if (!this.isRunning) return;
+      if (this.lifecycleState !== "RUNNING") return;
       try {
         await JobQueueService.recoverStaleJobs(INGESTION_QUEUE_NAME);
-      } catch (err: any) {
-        console.error("[PlatformOrchestrator] Error in crash recovery loop:", err.message);
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error("[PlatformOrchestrator] Error in crash recovery loop:", errorMsg);
       }
     }, 15000);
   }
@@ -180,7 +242,7 @@ export class OrchestratorService {
   /**
    * Starts recurring job schedulers with duplicate protection
    */
-  private static startSchedulers(config: OrchestratorConfig) {
+  private static async startSchedulers(config: OrchestratorConfig) {
     // 1. Discovery Scheduler
     const discoveryTimer = setInterval(async () => {
       if (!this.isRunning) return;
@@ -193,15 +255,19 @@ export class OrchestratorService {
       );
     }, config.discoveryIntervalMs);
 
-    // Initial immediate discovery run
-    JobQueueService.enqueue(
-      INGESTION_QUEUE_NAME,
-      "DISCOVER_SEEDS",
-      { seedUrls: config.seedSources },
-      { priority: "HIGH", deduplicate: true }
-    );
-
     this.schedulerTimers.push(discoveryTimer);
+
+    // Initial immediate discovery run
+    try {
+      await JobQueueService.enqueue(
+        INGESTION_QUEUE_NAME,
+        "DISCOVER_SEEDS",
+        { seedUrls: config.seedSources },
+        { priority: "HIGH", deduplicate: true }
+      );
+    } catch (error) {
+      console.error("[PlatformOrchestrator] Failed initial discovery enqueue:", error);
+    }
   }
 
   /**
@@ -303,31 +369,81 @@ export class OrchestratorService {
   /**
    * Graceful Shutdown
    */
-  public static async stop() {
-    if (!this.isRunning) return;
+  public static async stop(): Promise<void> {
+    if (this.lifecycleState === "STOPPED") {
+      return;
+    }
 
-    console.log("[PlatformOrchestrator] Initiating graceful shutdown...");
-    this.isRunning = false;
+    if (this.lifecycleState === "STOPPING" && this.stopPromise) {
+      return this.stopPromise;
+    }
 
-    // 1. Clear timers
-    this.schedulerTimers.forEach((t) => clearInterval(t));
-    this.schedulerTimers = [];
+    if (this.lifecycleState === "STARTING" && this.startPromise) {
+      try {
+        await this.startPromise;
+      } catch {
+        if (this.getLifecycleState() === "STOPPED") {
+          return;
+        }
+      }
+    }
 
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    if (this.getLifecycleState() === "STOPPED") {
+      return;
+    }
 
-    // 2. Stop workers
-    this.workerHandles.forEach((w) => w.stop());
-    this.workerHandles = [];
+    this.lifecycleState = "STOPPING";
 
-    // 3. Mark worker nodes DEAD in DB
-    try {
-      await prisma.workerNode.updateMany({
-        data: { status: "DEAD" },
-      });
-    } catch {}
+    this.stopPromise = (async () => {
+      console.log("[PlatformOrchestrator] Initiating graceful shutdown...");
+      let firstError: unknown = null;
 
-    console.log("[PlatformOrchestrator] Graceful shutdown complete.");
+      try {
+        // 1. Clear timers
+        this.schedulerTimers.forEach((t) => clearInterval(t));
+        this.schedulerTimers = [];
+
+        if (this.heartbeatTimer) {
+          clearInterval(this.heartbeatTimer);
+          this.heartbeatTimer = undefined;
+        }
+        if (this.recoveryTimer) {
+          clearInterval(this.recoveryTimer);
+          this.recoveryTimer = undefined;
+        }
+
+        // 2. Stop workers
+        const stops = this.workerHandles.map((worker) => worker.stop());
+        this.workerHandles = [];
+        const results = await Promise.allSettled(stops);
+        for (const result of results) {
+          if (result.status === "rejected" && firstError === null) {
+            firstError = result.reason;
+          }
+        }
+
+        // 3. Mark worker nodes DEAD in DB
+        try {
+          await prisma.workerNode.updateMany({
+            data: { status: "DEAD" },
+          });
+        } catch {}
+
+        this.domainActiveCount.clear();
+        this.domainLastAccess.clear();
+
+        console.log("[PlatformOrchestrator] Graceful shutdown complete.");
+      } finally {
+        this.lifecycleState = "STOPPED";
+        this.stopPromise = null;
+      }
+
+      if (firstError) {
+        throw firstError;
+      }
+    })();
+
+    return this.stopPromise;
   }
 
   /**
