@@ -86,6 +86,7 @@ export interface OrchestratorConfig {
   enableRecovery?: boolean;
   workerPollIntervalMs?: number;
   heartbeatIntervalMs?: number;
+  recoveryIntervalMs?: number;
   workerNodeAdapter?: WorkerNodePersistenceAdapter;
 }
 
@@ -102,6 +103,9 @@ export class OrchestratorService {
   }> = [];
   private static heartbeatTimer?: NodeJS.Timeout;
   private static recoveryTimer?: NodeJS.Timeout;
+  private static recoveryInFlight = false;
+  private static currentRecoveryPromise: Promise<void> | null = null;
+  private static recoveryGeneration = 0;
   private static workerNodeAdapter: WorkerNodePersistenceAdapter = defaultWorkerNodePersistence;
   private static ownedWorkerNames: string[] = [];
   private static heartbeatInFlight = false;
@@ -140,6 +144,7 @@ export class OrchestratorService {
       enableRecovery: true,
       workerPollIntervalMs: 500,
       heartbeatIntervalMs: 5000,
+      recoveryIntervalMs: 30000,
       workerNodeAdapter: defaultWorkerNodePersistence,
     };
   }
@@ -166,6 +171,7 @@ export class OrchestratorService {
     }
 
     this.lifecycleState = "STARTING";
+    const generation = ++this.recoveryGeneration;
 
     this.startPromise = (async () => {
       try {
@@ -220,7 +226,12 @@ export class OrchestratorService {
           }
         }
 
-        // 4. Initialize Recurring Schedulers
+        // 4. Initialize Recovery Loop (if enabled)
+        if (config.enableRecovery) {
+          this.startRecoveryLoop(config, generation);
+        }
+
+        // 5. Initialize Recurring Schedulers
         if (config.enableSchedulers) {
           await this.startSchedulers(config);
         }
@@ -228,16 +239,28 @@ export class OrchestratorService {
         this.lifecycleState = "RUNNING";
       } catch (error) {
         this.lifecycleState = "STOPPING";
+        this.recoveryGeneration += 1;
         this.schedulerTimers.forEach((t) => clearInterval(t));
         this.schedulerTimers = [];
         if (this.heartbeatTimer) {
           clearInterval(this.heartbeatTimer);
           this.heartbeatTimer = undefined;
         }
-        if (this.recoveryTimer) {
-          clearInterval(this.recoveryTimer);
+        if (this.recoveryTimer !== undefined) {
+          clearTimeout(this.recoveryTimer);
           this.recoveryTimer = undefined;
         }
+        if (this.currentRecoveryPromise) {
+          try {
+            await this.currentRecoveryPromise;
+          } catch {
+            // Drain recovery
+          }
+        }
+        this.recoveryInFlight = false;
+        this.currentRecoveryPromise = null;
+        this.recoveryTimer = undefined;
+
         const stops = this.workerHandles.map((w) => w.stop());
         this.workerHandles = [];
         await Promise.allSettled(stops);
@@ -322,16 +345,72 @@ export class OrchestratorService {
     }, intervalMs);
   }
 
-  private static startRecoveryLoop() {
-    this.recoveryTimer = setInterval(async () => {
-      if (this.lifecycleState !== "RUNNING") return;
-      try {
-        await JobQueueService.recoverStaleJobs(INGESTION_QUEUE_NAME);
-      } catch (err: unknown) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error("[PlatformOrchestrator] Error in crash recovery loop:", errorMsg);
+  private static startRecoveryLoop(
+    config: Required<OrchestratorConfig>,
+    generation: number,
+  ) {
+    const intervalMs =
+      config.recoveryIntervalMs && config.recoveryIntervalMs > 0
+        ? config.recoveryIntervalMs
+        : 30000;
+
+    const executeSweep = async () => {
+      if (
+        generation !== this.recoveryGeneration ||
+        this.recoveryInFlight ||
+        (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+      ) {
+        return;
       }
-    }, 15000);
+
+      this.recoveryInFlight = true;
+      this.currentRecoveryPromise = (async () => {
+        try {
+          if (
+            generation !== this.recoveryGeneration ||
+            (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+          ) {
+            return;
+          }
+          await JobQueueService.recoverStaleJobs(INGESTION_QUEUE_NAME);
+        } catch (err: unknown) {
+          const errorClassification =
+            err instanceof Error
+              ? `Recovery database operation failed (${err.name || "Error"})`
+              : "Recovery database operation failed";
+          console.warn(
+            `[PlatformOrchestrator] Error in crash recovery loop: ${errorClassification}`,
+          );
+        } finally {
+          if (generation === this.recoveryGeneration) {
+            this.recoveryInFlight = false;
+            this.currentRecoveryPromise = null;
+          }
+        }
+      })();
+
+      await this.currentRecoveryPromise;
+
+      if (
+        generation === this.recoveryGeneration &&
+        (this.lifecycleState === "RUNNING" || this.lifecycleState === "STARTING")
+      ) {
+        this.recoveryTimer = setTimeout(scheduleSweep, intervalMs);
+      }
+    };
+
+    const scheduleSweep = () => {
+      if (
+        generation !== this.recoveryGeneration ||
+        this.lifecycleState !== "RUNNING"
+      ) {
+        return;
+      }
+      this.recoveryTimer = undefined;
+      executeSweep();
+    };
+
+    executeSweep();
   }
 
   /**
@@ -494,7 +573,9 @@ export class OrchestratorService {
       let firstError: unknown = null;
 
       try {
-        // 1. Clear timers and await in-flight heartbeat
+        this.recoveryGeneration += 1;
+
+        // 1. Clear timers and await in-flight heartbeat and recovery
         this.schedulerTimers.forEach((t) => clearInterval(t));
         this.schedulerTimers = [];
 
@@ -511,10 +592,22 @@ export class OrchestratorService {
           }
         }
 
-        if (this.recoveryTimer) {
-          clearInterval(this.recoveryTimer);
+        if (this.recoveryTimer !== undefined) {
+          clearTimeout(this.recoveryTimer);
           this.recoveryTimer = undefined;
         }
+
+        if (this.currentRecoveryPromise) {
+          try {
+            await this.currentRecoveryPromise;
+          } catch {
+            // Recovery failure handled
+          }
+        }
+
+        this.recoveryInFlight = false;
+        this.currentRecoveryPromise = null;
+        this.recoveryTimer = undefined;
 
         // 2. Stop workers
         const stops = this.workerHandles.map((worker) => worker.stop());
@@ -549,6 +642,9 @@ export class OrchestratorService {
         this.stopPromise = null;
         this.workerNodeAdapter = defaultWorkerNodePersistence;
         this.ownedWorkerNames = [];
+        this.recoveryInFlight = false;
+        this.currentRecoveryPromise = null;
+        this.recoveryTimer = undefined;
       }
 
       if (firstError) {
