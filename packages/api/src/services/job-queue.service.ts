@@ -71,6 +71,9 @@ export interface LegacyDomainLimiter {
 
 export type DomainLimiterOption = DomainConcurrencyManager | LegacyDomainLimiter;
 
+export const DEFAULT_JOB_LEASE_DURATION_MS = 120_000;
+export const DEFAULT_JOB_LEASE_RENEW_INTERVAL_MS = 30_000;
+
 export interface ProcessJobOptions {
   workerId?: string;
   maxAttempts?: number;
@@ -78,6 +81,8 @@ export interface ProcessJobOptions {
   maxConcurrentPerDomain?: number;
   domainLimiter?: DomainLimiterOption;
   concurrency?: number;
+  leaseDurationMs?: number;
+  leaseRenewIntervalMs?: number;
   claimAdapter?: (
     queueName: string,
     workerId: string,
@@ -182,6 +187,40 @@ export class JobQueueService {
         ? new DomainConcurrencyManager(options.maxConcurrentPerDomain)
         : undefined);
 
+    const leaseDurationMs =
+      options?.leaseDurationMs !== undefined && options.leaseDurationMs > 0
+        ? options.leaseDurationMs
+        : DEFAULT_JOB_LEASE_DURATION_MS;
+
+    if (leaseDurationMs <= 2) {
+      throw new RangeError(
+        "leaseDurationMs must be greater than 2 to allow a valid leaseRenewIntervalMs",
+      );
+    }
+
+    let leaseRenewIntervalMs: number;
+    if (
+      options?.leaseRenewIntervalMs !== undefined &&
+      options.leaseRenewIntervalMs > 0
+    ) {
+      if (options.leaseRenewIntervalMs >= leaseDurationMs / 2) {
+        throw new RangeError(
+          "leaseRenewIntervalMs must be less than half of leaseDurationMs",
+        );
+      }
+      leaseRenewIntervalMs = options.leaseRenewIntervalMs;
+    } else {
+      leaseRenewIntervalMs = Math.min(
+        DEFAULT_JOB_LEASE_RENEW_INTERVAL_MS,
+        Math.max(1, Math.floor(leaseDurationMs / 4)),
+      );
+      if (leaseRenewIntervalMs >= leaseDurationMs / 2) {
+        throw new RangeError(
+          "leaseRenewIntervalMs must be less than half of leaseDurationMs",
+        );
+      }
+    }
+
     const checkDomainCapacity = (dom: string | undefined): boolean => {
       if (!domainLimiter) return true;
       if (domainLimiter instanceof DomainConcurrencyManager) {
@@ -227,7 +266,7 @@ export class JobQueueService {
             return null;
           }
 
-          const lockedUntil = new Date(Date.now() + 2 * 60 * 1000);
+          const lockedUntil = new Date(Date.now() + leaseDurationMs);
           const updateResult = await tx.jobQueue.updateMany({
             where: {
               id: candidate.id,
@@ -304,11 +343,78 @@ export class JobQueueService {
       return true;
     }
 
+    let renewTimer: NodeJS.Timeout | undefined;
+    let inFlightRenewalPromise: Promise<void> | null = null;
+    let isRenewingActive = true;
+
+    const scheduleNextRenewal = () => {
+      if (!isRenewingActive) return;
+      renewTimer = setTimeout(async () => {
+        if (!isRenewingActive) return;
+        renewTimer = undefined;
+        inFlightRenewalPromise = (async () => {
+          try {
+            const updateResult = await prisma.jobQueue.updateMany({
+              where: {
+                id: job.id,
+                queue_name: queueName,
+                status: "PROCESSING",
+                worker_id: workerId,
+                attempts: job.attempts,
+              },
+              data: {
+                locked_until: new Date(Date.now() + leaseDurationMs),
+              },
+            });
+
+            if (updateResult.count === 0) {
+              isRenewingActive = false;
+              console.warn(
+                `[JobQueueWorker] [${queueName}] Worker ${workerId} lost lease ownership for job ${job.id} (attempt ${job.attempts}); renewal stopped.`,
+              );
+              return;
+            }
+          } catch (err: unknown) {
+            const errorClassification =
+              err instanceof Error
+                ? `Lease renewal database operation failed (${err.name || "Error"})`
+                : "Lease renewal database operation failed";
+            console.warn(
+              `[JobQueueWorker] [${queueName}] Failed to renew lease for job ${job.id}: ${errorClassification}`,
+            );
+          } finally {
+            inFlightRenewalPromise = null;
+          }
+
+          if (isRenewingActive) {
+            scheduleNextRenewal();
+          }
+        })();
+        await inFlightRenewalPromise;
+      }, leaseRenewIntervalMs);
+    };
+
     try {
       assertIngestionQueueJob(queueName, job.task_type, parsedPayload);
+      if (!options?.claimAdapter) {
+        scheduleNextRenewal();
+      }
       await handler(parsedPayload);
 
       if (!options?.claimAdapter) {
+        isRenewingActive = false;
+        if (renewTimer !== undefined) {
+          clearTimeout(renewTimer);
+          renewTimer = undefined;
+        }
+        if (inFlightRenewalPromise) {
+          try {
+            await inFlightRenewalPromise;
+          } catch {
+            // Settle in-flight renewal
+          }
+        }
+
         const updateResult = await prisma.jobQueue.updateMany({
           where: {
             id: job.id,
@@ -337,6 +443,19 @@ export class JobQueueService {
         errorMsg,
       );
       if (!options?.claimAdapter) {
+        isRenewingActive = false;
+        if (renewTimer !== undefined) {
+          clearTimeout(renewTimer);
+          renewTimer = undefined;
+        }
+        if (inFlightRenewalPromise) {
+          try {
+            await inFlightRenewalPromise;
+          } catch {
+            // Settle in-flight renewal
+          }
+        }
+
         await JobQueueService.handleJobFailure(
           job.id,
           err,
@@ -347,6 +466,18 @@ export class JobQueueService {
         );
       }
     } finally {
+      isRenewingActive = false;
+      if (renewTimer !== undefined) {
+        clearTimeout(renewTimer);
+        renewTimer = undefined;
+      }
+      if (inFlightRenewalPromise) {
+        try {
+          await inFlightRenewalPromise;
+        } catch {
+          // Guarantee cleanup
+        }
+      }
       if (domainLimiter instanceof DomainConcurrencyManager) {
         domainLimiter.release(targetDomain);
       }
