@@ -292,6 +292,8 @@ export class JobQueueService {
             new Error(errorMsg),
             job.attempts,
             job.max_attempts,
+            queueName,
+            workerId,
           );
         }
       } finally {
@@ -307,19 +309,32 @@ export class JobQueueService {
       await handler(parsedPayload);
 
       if (!options?.claimAdapter) {
-        await prisma.jobQueue.update({
-          where: { id: job.id },
+        const updateResult = await prisma.jobQueue.updateMany({
+          where: {
+            id: job.id,
+            queue_name: queueName,
+            status: "PROCESSING",
+            worker_id: workerId,
+            attempts: job.attempts,
+          },
           data: {
             status: "COMPLETED",
             completed_at: new Date(),
             locked_until: null,
           },
         });
+
+        if (updateResult.count === 0) {
+          console.warn(
+            `[JobQueueWorker] [${queueName}] Worker ${workerId} lost ownership of job ${job.id} during completion (attempt ${job.attempts}); skipping terminal write.`,
+          );
+        }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(
         `[JobQueueWorker] [${queueName}] Job ${job.id} failed:`,
-        err.message,
+        errorMsg,
       );
       if (!options?.claimAdapter) {
         await JobQueueService.handleJobFailure(
@@ -327,6 +342,8 @@ export class JobQueueService {
           err,
           job.attempts,
           job.max_attempts,
+          queueName,
+          workerId,
         );
       }
     } finally {
@@ -340,25 +357,44 @@ export class JobQueueService {
 
   private static async handleJobFailure(
     jobId: string,
-    error: Error,
+    error: unknown,
     attempts: number,
-    maxAttempts: number
+    maxAttempts: number,
+    queueName: string,
+    workerId: string,
   ) {
     const isFinalFailure = attempts >= maxAttempts;
     const status = isFinalFailure ? "FAILED" : "PENDING";
 
     const backoffMs = Math.pow(2, attempts) * 1000;
     const runAt = new Date(Date.now() + backoffMs);
+    const errorClassification =
+      error instanceof Error
+        ? `Job handler execution failed (${error.name || "Error"})`
+        : "Job handler execution failed";
 
-    await prisma.jobQueue.update({
-      where: { id: jobId },
+    const updateResult = await prisma.jobQueue.updateMany({
+      where: {
+        id: jobId,
+        queue_name: queueName,
+        status: "PROCESSING",
+        worker_id: workerId,
+        attempts,
+      },
       data: {
         status,
+        worker_id: isFinalFailure ? workerId : null,
         locked_until: null,
-        error_log: error.stack || error.message || String(error),
+        error_log: errorClassification,
         run_at: isFinalFailure ? undefined : runAt,
       },
     });
+
+    if (updateResult.count === 0) {
+      console.warn(
+        `[JobQueueWorker] [${queueName}] Worker ${workerId} lost ownership of job ${jobId} during failure handling; skipping state mutation.`,
+      );
+    }
   }
 
   /**
@@ -366,7 +402,7 @@ export class JobQueueService {
    */
   public static async recoverStaleJobs(
     queueName: string,
-    staleTimeoutMs: number = 300000,
+    _staleTimeoutMs?: number,
   ): Promise<number> {
     const now = new Date();
     const staleJobs = await prisma.jobQueue.findMany({
@@ -375,25 +411,47 @@ export class JobQueueService {
         status: "PROCESSING",
         locked_until: { lt: now },
       },
+      orderBy: { locked_until: "asc" },
+      take: 100,
     });
+
+    let recoveredCount = 0;
 
     for (const job of staleJobs) {
       const isFinal = job.attempts >= job.max_attempts;
-      await prisma.jobQueue.update({
-        where: { id: job.id },
+      const backoffMs = Math.pow(2, job.attempts) * 1000;
+      const nextRunAt = new Date(now.getTime() + backoffMs);
+
+      const updateResult = await prisma.jobQueue.updateMany({
+        where: {
+          id: job.id,
+          queue_name: queueName,
+          status: "PROCESSING",
+          worker_id: job.worker_id,
+          attempts: job.attempts,
+          locked_until: job.locked_until,
+        },
         data: {
           status: isFinal ? "FAILED" : "PENDING",
+          worker_id: isFinal ? job.worker_id : null,
           locked_until: null,
-          error_log: `Recovered from crashed/stale worker ${job.worker_id || "unknown"}`,
+          run_at: isFinal ? undefined : nextRunAt,
+          error_log: isFinal
+            ? `Failed after max attempts (${job.attempts}/${job.max_attempts}) - stale worker recovery`
+            : `Recovered from crashed/stale worker (${job.worker_id || "unknown"})`,
         },
       });
+
+      recoveredCount += updateResult.count;
     }
 
-    if (staleJobs.length > 0) {
-      console.log(`[JobQueueService] Crash Recovery: Recovered ${staleJobs.length} stale jobs.`);
+    if (recoveredCount > 0) {
+      console.log(
+        `[JobQueueService] Crash Recovery: Recovered ${recoveredCount} stale jobs in '${queueName}'.`,
+      );
     }
 
-    return staleJobs.length;
+    return recoveredCount;
   }
 
   /**
