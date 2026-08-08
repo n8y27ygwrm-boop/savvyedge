@@ -9,6 +9,69 @@ import { DiscoveryService } from "./discovery.service";
 import { IngestionService } from "./ingestion.service";
 import { BonusService } from "./bonus.service";
 
+export interface WorkerNodePersistenceAdapter {
+  upsertWorker(params: {
+    workerName: string;
+    status: string;
+    activeJobs: number;
+    lastHeartbeat: Date;
+  }): Promise<void>;
+  heartbeatWorkers(params: {
+    workerNames: string[];
+    now: Date;
+  }): Promise<number>;
+  markWorkersDead(params: {
+    workerNames: string[];
+  }): Promise<number>;
+  countActiveWorkers?(): Promise<number>;
+}
+
+export const defaultWorkerNodePersistence: WorkerNodePersistenceAdapter = {
+  async upsertWorker({ workerName, status, activeJobs, lastHeartbeat }) {
+    await prisma.workerNode.upsert({
+      where: { worker_name: workerName },
+      update: {
+        status,
+        active_jobs: activeJobs,
+        last_heartbeat: lastHeartbeat,
+      },
+      create: {
+        worker_name: workerName,
+        status,
+        active_jobs: activeJobs,
+        last_heartbeat: lastHeartbeat,
+      },
+    });
+  },
+  async heartbeatWorkers({ workerNames, now }) {
+    const result = await prisma.workerNode.updateMany({
+      where: {
+        worker_name: { in: workerNames },
+        status: "ACTIVE",
+      },
+      data: {
+        last_heartbeat: now,
+      },
+    });
+    return result.count;
+  },
+  async markWorkersDead({ workerNames }) {
+    const result = await prisma.workerNode.updateMany({
+      where: {
+        worker_name: { in: workerNames },
+      },
+      data: {
+        status: "DEAD",
+        active_jobs: 0,
+      },
+    });
+    return result.count;
+  },
+  async countActiveWorkers() {
+    return prisma.workerNode.count({ where: { status: "ACTIVE" } });
+  },
+};
+
 export interface OrchestratorConfig {
   discoveryIntervalMs: number;
   crawlIntervalMs: number;
@@ -22,6 +85,8 @@ export interface OrchestratorConfig {
   enableSchedulers?: boolean;
   enableRecovery?: boolean;
   workerPollIntervalMs?: number;
+  heartbeatIntervalMs?: number;
+  workerNodeAdapter?: WorkerNodePersistenceAdapter;
 }
 
 export type OrchestratorLifecycleState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING";
@@ -37,6 +102,10 @@ export class OrchestratorService {
   }> = [];
   private static heartbeatTimer?: NodeJS.Timeout;
   private static recoveryTimer?: NodeJS.Timeout;
+  private static workerNodeAdapter: WorkerNodePersistenceAdapter = defaultWorkerNodePersistence;
+  private static ownedWorkerNames: string[] = [];
+  private static heartbeatInFlight = false;
+  private static currentHeartbeatPromise: Promise<void> | null = null;
 
   public static get isRunning(): boolean {
     return this.lifecycleState === "RUNNING";
@@ -70,6 +139,8 @@ export class OrchestratorService {
       enableSchedulers: true,
       enableRecovery: true,
       workerPollIntervalMs: 500,
+      heartbeatIntervalMs: 5000,
+      workerNodeAdapter: defaultWorkerNodePersistence,
     };
   }
 
@@ -99,6 +170,7 @@ export class OrchestratorService {
     this.startPromise = (async () => {
       try {
         const config = { ...this.getConfig(), ...customConfig };
+        this.workerNodeAdapter = config.workerNodeAdapter ?? defaultWorkerNodePersistence;
 
         console.log("=================================================");
         console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
@@ -111,10 +183,22 @@ export class OrchestratorService {
         console.log(` -> Recovery Enabled:   ${config.enableRecovery}`);
         console.log("=================================================");
 
-        // 1. Register Queue Handlers
+        const ownedWorkerNames = Array.from(
+          { length: config.workerConcurrency },
+          (_, i) => `worker-node-${i + 1}`,
+        );
+        this.ownedWorkerNames = ownedWorkerNames;
+
+        // 1. Initialize Workers in Database (Fail-Closed)
+        if (config.enableWorkers) {
+          await this.initializeWorkers(ownedWorkerNames);
+          this.startHeartbeatLoop(ownedWorkerNames, config.heartbeatIntervalMs);
+        }
+
+        // 2. Register Queue Handlers
         const handlers = this.getQueueHandlers(config.seedSources);
 
-        // 2. Spawn Worker Loops
+        // 3. Spawn Worker Loops
         const domainLimiter = {
           checkDomainAllowed: (domain: string) =>
             this.checkDomainAllowed(domain, config),
@@ -122,8 +206,7 @@ export class OrchestratorService {
         };
 
         if (config.enableWorkers) {
-          for (let i = 0; i < config.workerConcurrency; i++) {
-            const workerId = `worker-node-${i + 1}`;
+          for (const workerId of ownedWorkerNames) {
             const handle = JobQueueService.startWorker(
               INGESTION_QUEUE_NAME,
               handlers,
@@ -137,7 +220,7 @@ export class OrchestratorService {
           }
         }
 
-        // 3. Initialize Recurring Schedulers
+        // 4. Initialize Recurring Schedulers
         if (config.enableSchedulers) {
           await this.startSchedulers(config);
         }
@@ -147,10 +230,20 @@ export class OrchestratorService {
         this.lifecycleState = "STOPPING";
         this.schedulerTimers.forEach((t) => clearInterval(t));
         this.schedulerTimers = [];
+        if (this.heartbeatTimer) {
+          clearInterval(this.heartbeatTimer);
+          this.heartbeatTimer = undefined;
+        }
+        if (this.recoveryTimer) {
+          clearInterval(this.recoveryTimer);
+          this.recoveryTimer = undefined;
+        }
         const stops = this.workerHandles.map((w) => w.stop());
         this.workerHandles = [];
         await Promise.allSettled(stops);
         this.lifecycleState = "STOPPED";
+        this.ownedWorkerNames = [];
+        this.workerNodeAdapter = defaultWorkerNodePersistence;
         throw error;
       } finally {
         this.startPromise = null;
@@ -193,38 +286,40 @@ export class OrchestratorService {
   /**
    * Initializes WorkerNode table records
    */
-  private static async initializeWorkers(count: number) {
-    for (let i = 0; i < count; i++) {
-      const workerName = `worker-node-${i + 1}`;
-      await prisma.workerNode.upsert({
-        where: { worker_name: workerName },
-        update: {
-          status: "ACTIVE",
-          last_heartbeat: new Date(),
-        },
-        create: {
-          worker_name: workerName,
-          status: "ACTIVE",
-          active_jobs: 0,
-          last_heartbeat: new Date(),
-        },
+  private static async initializeWorkers(workerNames: string[]) {
+    const now = new Date();
+    for (const workerName of workerNames) {
+      await this.workerNodeAdapter.upsertWorker({
+        workerName,
+        status: "ACTIVE",
+        activeJobs: 0,
+        lastHeartbeat: now,
       });
     }
   }
 
-  private static startHeartbeatLoop(count: number) {
-    this.heartbeatTimer = setInterval(async () => {
-      if (this.lifecycleState !== "RUNNING") return;
-      for (let i = 0; i < count; i++) {
-        const workerName = `worker-node-${i + 1}`;
-        try {
-          await prisma.workerNode.update({
-            where: { worker_name: workerName },
-            data: { status: "ACTIVE", last_heartbeat: new Date() },
-          });
-        } catch {}
+  private static startHeartbeatLoop(workerNames: string[], intervalMs: number = 5000) {
+    this.heartbeatTimer = setInterval(() => {
+      if (this.lifecycleState !== "RUNNING" || this.heartbeatInFlight) {
+        return;
       }
-    }, 5000);
+
+      this.heartbeatInFlight = true;
+      this.currentHeartbeatPromise = (async () => {
+        try {
+          if (this.lifecycleState !== "RUNNING") return;
+          await this.workerNodeAdapter.heartbeatWorkers({
+            workerNames,
+            now: new Date(),
+          });
+        } catch {
+          console.error("[PlatformOrchestrator] Worker heartbeat update failed");
+        } finally {
+          this.heartbeatInFlight = false;
+          this.currentHeartbeatPromise = null;
+        }
+      })();
+    }, intervalMs);
   }
 
   private static startRecoveryLoop() {
@@ -399,7 +494,7 @@ export class OrchestratorService {
       let firstError: unknown = null;
 
       try {
-        // 1. Clear timers
+        // 1. Clear timers and await in-flight heartbeat
         this.schedulerTimers.forEach((t) => clearInterval(t));
         this.schedulerTimers = [];
 
@@ -407,6 +502,15 @@ export class OrchestratorService {
           clearInterval(this.heartbeatTimer);
           this.heartbeatTimer = undefined;
         }
+
+        if (this.currentHeartbeatPromise) {
+          try {
+            await this.currentHeartbeatPromise;
+          } catch {
+            // Heartbeat failure handled
+          }
+        }
+
         if (this.recoveryTimer) {
           clearInterval(this.recoveryTimer);
           this.recoveryTimer = undefined;
@@ -422,12 +526,19 @@ export class OrchestratorService {
           }
         }
 
-        // 3. Mark worker nodes DEAD in DB
+        // 3. Mark owned worker nodes DEAD in DB
         try {
-          await prisma.workerNode.updateMany({
-            data: { status: "DEAD" },
-          });
-        } catch {}
+          if (this.ownedWorkerNames.length > 0) {
+            await this.workerNodeAdapter.markWorkersDead({
+              workerNames: this.ownedWorkerNames,
+            });
+          }
+        } catch (error) {
+          console.error("[PlatformOrchestrator] Failed to persist terminal worker status:", error);
+          if (firstError === null) {
+            firstError = error;
+          }
+        }
 
         this.domainActiveCount.clear();
         this.domainLastAccess.clear();
@@ -436,6 +547,8 @@ export class OrchestratorService {
       } finally {
         this.lifecycleState = "STOPPED";
         this.stopPromise = null;
+        this.workerNodeAdapter = defaultWorkerNodePersistence;
+        this.ownedWorkerNames = [];
       }
 
       if (firstError) {
