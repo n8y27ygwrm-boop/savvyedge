@@ -60,18 +60,19 @@ export interface EnqueueOptions {
   deduplicate?: boolean;
 }
 
+export interface LegacyDomainLimiter {
+  checkDomainAllowed(domain: string): boolean;
+  recordDomainAccess?(domain: string): void;
+}
+
+export type DomainLimiterOption = DomainConcurrencyManager | LegacyDomainLimiter;
+
 export interface ProcessJobOptions {
   workerId?: string;
   maxAttempts?: number;
   runAt?: Date;
   maxConcurrentPerDomain?: number;
-  domainLimiter?:
-    | DomainConcurrencyManager
-    | {
-        canAcquire?: (domain: string | undefined) => boolean;
-        checkDomainAllowed?: (domain: string) => boolean;
-        recordDomainAccess?: (domain: string) => void;
-      };
+  domainLimiter?: DomainLimiterOption;
   concurrency?: number;
   claimAdapter?: (
     queueName: string,
@@ -171,23 +172,25 @@ export class JobQueueService {
   ): Promise<boolean> {
     const now = new Date();
     const workerId = options?.workerId || "worker-default";
-    const domainLimiter =
+    const domainLimiter: DomainLimiterOption | undefined =
       options?.domainLimiter ??
       (options?.maxConcurrentPerDomain !== undefined
         ? new DomainConcurrencyManager(options.maxConcurrentPerDomain)
         : undefined);
 
+    const checkDomainCapacity = (dom: string | undefined): boolean => {
+      if (!domainLimiter) return true;
+      if (domainLimiter instanceof DomainConcurrencyManager) {
+        return domainLimiter.canAcquire(dom);
+      }
+      return dom ? domainLimiter.checkDomainAllowed(dom) : true;
+    };
+
     let candidateJob: any = null;
 
     const claimFn = options?.claimAdapter;
     if (claimFn) {
-      candidateJob = await claimFn(queueName, workerId, (dom) =>
-        domainLimiter
-          ? typeof (domainLimiter as any).canAcquire === "function"
-            ? (domainLimiter as any).canAcquire(dom)
-            : true
-          : true,
-      );
+      candidateJob = await claimFn(queueName, workerId, checkDomainCapacity);
     } else {
       const priorityOrder = ["HIGH", "NORMAL", "LOW"];
       for (const priority of priorityOrder) {
@@ -216,16 +219,8 @@ export class JobQueueService {
           const targetDomain =
             candidate.domain || JobQueueService.extractDomainFromPayload(jobPayload);
 
-          if (domainLimiter) {
-            const allowed =
-              typeof (domainLimiter as any).canAcquire === "function"
-                ? (domainLimiter as any).canAcquire(targetDomain)
-                : targetDomain && typeof (domainLimiter as any).checkDomainAllowed === "function"
-                  ? (domainLimiter as any).checkDomainAllowed(targetDomain)
-                  : true;
-            if (!allowed) {
-              return null;
-            }
+          if (!checkDomainCapacity(targetDomain)) {
+            return null;
           }
 
           const lockedUntil = new Date(Date.now() + 2 * 60 * 1000);
@@ -271,10 +266,10 @@ export class JobQueueService {
       job.domain || JobQueueService.extractDomainFromPayload(parsedPayload);
 
     if (domainLimiter) {
-      if (typeof (domainLimiter as any).acquire === "function") {
-        (domainLimiter as any).acquire(targetDomain);
-      } else if (targetDomain && typeof (domainLimiter as any).recordDomainAccess === "function") {
-        (domainLimiter as any).recordDomainAccess(targetDomain);
+      if (domainLimiter instanceof DomainConcurrencyManager) {
+        domainLimiter.acquire(targetDomain);
+      } else if (targetDomain && typeof domainLimiter.recordDomainAccess === "function") {
+        domainLimiter.recordDomainAccess(targetDomain);
       }
     }
 
@@ -296,8 +291,8 @@ export class JobQueueService {
           );
         }
       } finally {
-        if (domainLimiter && typeof (domainLimiter as any).release === "function") {
-          (domainLimiter as any).release(targetDomain);
+        if (domainLimiter instanceof DomainConcurrencyManager) {
+          domainLimiter.release(targetDomain);
         }
       }
       return true;
@@ -331,8 +326,8 @@ export class JobQueueService {
         );
       }
     } finally {
-      if (domainLimiter) {
-        (domainLimiter as any).release(targetDomain);
+      if (domainLimiter instanceof DomainConcurrencyManager) {
+        domainLimiter.release(targetDomain);
       }
     }
 
