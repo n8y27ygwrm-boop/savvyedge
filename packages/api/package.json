@@ -16,6 +16,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "start:orchestrator": "node --import tsx scripts/run-orchestrator.ts",
     "verify-slice": "tsx scripts/verify-vertical-slice.ts",
     "verify-real-scraping": "tsx scripts/verify-real-scraping.ts",
     "verify-discovery": "tsx scripts/verify-discovery-engine.ts",
