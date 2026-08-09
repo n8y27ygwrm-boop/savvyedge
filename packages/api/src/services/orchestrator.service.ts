@@ -512,9 +512,24 @@ export class OrchestratorService {
 
         const failedChecks: string[] = [];
 
+        let isValidHttpUrl = false;
+        try {
+          if (payload.url && typeof payload.url === "string" && payload.url.trim().length > 0) {
+            const parsed = new URL(payload.url.trim());
+            isValidHttpUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+          }
+        } catch {
+          isValidHttpUrl = false;
+        }
+
+        if (!isValidHttpUrl) {
+          failedChecks.push("source url is invalid or non-http(s)");
+        }
+
         if (!bonus.headline_value || bonus.headline_value.trim() === "") {
           failedChecks.push("headline_value is null or empty");
         }
+
 
         if (bonus.wagering_requirement === null || bonus.wagering_requirement <= 0 || bonus.wagering_requirement > 100) {
           failedChecks.push(`wagering_requirement is invalid (${bonus.wagering_requirement})`);
@@ -549,13 +564,27 @@ export class OrchestratorService {
         if (failedChecks.length > 0) {
           console.log(`[PlatformOrchestrator] [FAIL] Bonus ${bonus.id} failed validation: ${failedChecks.join(", ")}`);
         } else {
-          await prisma.bonus.update({
-            where: { id: bonus.id },
-            data: { status: "VERIFIED" },
+          const verifiedAt = new Date();
+          await prisma.$transaction(async (tx) => {
+            await tx.bonus.update({
+              where: { id: bonus.id },
+              data: { verified_at: verifiedAt },
+            });
+            await tx.bonusHistoryEvent.create({
+              data: {
+                bonus_id: bonus.id,
+                field_changed: "verified_at",
+                old_value: bonus.verified_at ? bonus.verified_at.toISOString() : null,
+                new_value: verifiedAt.toISOString(),
+                changed_at: verifiedAt,
+                source_url: payload.url,
+              },
+            });
           });
-          console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified and set to VERIFIED.`);
+          console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified at ${verifiedAt.toISOString()}.`);
         }
       },
+
 
     };
   }

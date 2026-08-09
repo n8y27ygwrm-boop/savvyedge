@@ -15,7 +15,11 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     vi.spyOn(prisma.workerNode, "upsert").mockResolvedValue({} as never);
     vi.spyOn(prisma.workerNode, "updateMany").mockResolvedValue({ count: 1 });
     vi.spyOn(prisma.workerNode, "count").mockResolvedValue(1);
+    vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
+      callback(prisma),
+    );
     vi.spyOn(console, "log").mockImplementation(() => undefined);
+
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
@@ -353,7 +357,10 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
 
     const bonusUpdateSpy = vi
       .spyOn(prisma.bonus, "update")
-      .mockResolvedValue({ id: "bonus-uuid-999", status: "VERIFIED" } as never);
+      .mockResolvedValue({ id: "bonus-uuid-999", verified_at: new Date() } as never);
+    const historyEventSpy = vi
+      .spyOn(prisma.bonusHistoryEvent, "create")
+      .mockResolvedValue({ id: "event-uuid-1" } as never);
 
     const handlers = OrchestratorService.getQueueHandlers([]);
 
@@ -404,12 +411,23 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     // --- STAGE 5: VALIDATE_BONUS (consuming exact captured payload) ---
     await handlers.VALIDATE_BONUS(validatePayload);
 
-    // Assert Terminal Outcome
+    // Assert Terminal Outcome: verified_at timestamp and BonusHistoryEvent
     expect(bonusUpdateSpy).toHaveBeenCalledWith({
       where: { id: "bonus-uuid-999" },
-      data: { status: "VERIFIED" },
+      data: { verified_at: expect.any(Date) },
+    });
+    expect(historyEventSpy).toHaveBeenCalledWith({
+      data: {
+        bonus_id: "bonus-uuid-999",
+        field_changed: "verified_at",
+        old_value: null,
+        new_value: expect.any(String),
+        changed_at: expect.any(Date),
+        source_url: validatePayload.url,
+      },
     });
   });
+
 
   // Test 7: Extraction failure propagation to ScrapeJob error_log
   it("records bounded failure classification in ScrapeJob error_log when extraction rejects", async () => {
@@ -490,20 +508,21 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
   });
 
   // Test 9: Validation-stage rejection for invalid fields or missing licenses
-  it("does not update bonus to VERIFIED when validation rules fail", async () => {
+  it("does not update bonus or record history when validation rules fail", async () => {
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue({
       id: "bonus-invalid-1",
       headline_value: "", // Empty headline (invalid)
       wagering_requirement: 150, // Wagering > 100 (invalid)
       max_conversion: 0, // max_conversion <= 0 (invalid)
-      status: "NEW",
+      status: "ACTIVE",
       casino: {
         id: "casino-invalid-1",
-        licenses: [], // No active license (invalid)
+        name: "Invalid Casino",
       },
     } as never);
 
     const bonusUpdateSpy = vi.spyOn(prisma.bonus, "update");
+    const historyEventSpy = vi.spyOn(prisma.bonusHistoryEvent, "create");
 
     const handlers = OrchestratorService.getQueueHandlers([]);
 
@@ -513,5 +532,6 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     });
 
     expect(bonusUpdateSpy).not.toHaveBeenCalled();
+    expect(historyEventSpy).not.toHaveBeenCalled();
   });
 });

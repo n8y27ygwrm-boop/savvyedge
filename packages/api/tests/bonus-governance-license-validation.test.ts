@@ -424,14 +424,21 @@ describe("Bonus Validation Governance License Hardening", () => {
       expect(updateSpy).not.toHaveBeenCalled();
     });
 
-    it("successfully sets bonus to VERIFIED only when all bonus field checks AND license eligibility pass", async () => {
-      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue({
-        id: "bonus-valid",
+    it("successfully sets verified_at and creates BonusHistoryEvent while preserving lifecycle status ACTIVE", async () => {
+      const initialBonus = {
+        id: "bonus-active-valid",
         headline_value: "300 FREE SPINS",
         wagering_requirement: 10,
         max_conversion: 500,
+        status: "ACTIVE",
+        verified_at: null,
+        review_status: ReviewStatus.NEW,
+        publication_status: PublicationStatus.UNPUBLISHED,
+        governance_version: 0,
         casino: { id: "casino-eligible", name: "Eligible Casino" },
-      } as any);
+      };
+
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
 
       const licenseAssertionSpy = vi
         .spyOn(
@@ -440,24 +447,227 @@ describe("Bonus Validation Governance License Hardening", () => {
         )
         .mockResolvedValue(undefined);
 
-      const updateSpy = vi.spyOn(prisma.bonus, "update").mockResolvedValue({
-        id: "bonus-valid",
-        status: "VERIFIED",
-      } as any);
+      let capturedBonusUpdateData: any = null;
+      let capturedHistoryEventData: any = null;
+
+      vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) => {
+        const mockTx: any = {
+          bonus: {
+            update: vi.fn().mockImplementation(async ({ where, data }: any) => {
+              capturedBonusUpdateData = data;
+              return { ...initialBonus, ...data };
+            }),
+          },
+          bonusHistoryEvent: {
+            create: vi.fn().mockImplementation(async ({ data }: any) => {
+              capturedHistoryEventData = data;
+              return { id: "event-1", ...data };
+            }),
+          },
+        };
+        return callback(mockTx);
+      });
 
       const handlers = OrchestratorService.getQueueHandlers([]);
 
       await handlers.VALIDATE_BONUS({
-        bonusId: "bonus-valid",
-        url: "https://casino.example.com/promo",
+        bonusId: "bonus-active-valid",
+        url: "https://casino.example.com/promo-terms",
       });
 
       expect(licenseAssertionSpy).toHaveBeenCalledWith("casino-eligible");
-      expect(updateSpy).toHaveBeenCalledWith({
-        where: { id: "bonus-valid" },
-        data: { status: "VERIFIED" },
+
+      // 1. Bonus update sets verified_at and does NOT mutate lifecycle status or governance fields
+      expect(capturedBonusUpdateData).toBeDefined();
+      expect(capturedBonusUpdateData.verified_at).toBeInstanceOf(Date);
+      expect(capturedBonusUpdateData.status).toBeUndefined();
+      expect(capturedBonusUpdateData.review_status).toBeUndefined();
+      expect(capturedBonusUpdateData.publication_status).toBeUndefined();
+      expect(capturedBonusUpdateData.governance_version).toBeUndefined();
+
+      // 2. BonusHistoryEvent created with exact field_changed, timestamps, and source_url
+      expect(capturedHistoryEventData).toBeDefined();
+      expect(capturedHistoryEventData).toEqual({
+        bonus_id: "bonus-active-valid",
+        field_changed: "verified_at",
+        old_value: null,
+        new_value: capturedBonusUpdateData.verified_at.toISOString(),
+        changed_at: capturedBonusUpdateData.verified_at,
+        source_url: "https://casino.example.com/promo-terms",
       });
     });
+
+    it("preserves INACTIVE status upon validation (does not force INACTIVE to ACTIVE)", async () => {
+      const initialBonus = {
+        id: "bonus-inactive-valid",
+        headline_value: "50 FREE SPINS",
+        wagering_requirement: 20,
+        max_conversion: 100,
+        status: "INACTIVE",
+        verified_at: null,
+        casino: { id: "casino-eligible", name: "Eligible Casino" },
+      };
+
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+      vi.spyOn(
+        WorkflowTransitionService.prototype,
+        "assertCasinoHasOneEligibleLicense",
+      ).mockResolvedValue(undefined);
+
+      let capturedBonusUpdateData: any = null;
+      vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) => {
+        const mockTx: any = {
+          bonus: {
+            update: vi.fn().mockImplementation(async ({ data }: any) => {
+              capturedBonusUpdateData = data;
+              return { ...initialBonus, ...data };
+            }),
+          },
+          bonusHistoryEvent: {
+            create: vi.fn().mockResolvedValue({ id: "event-2" }),
+          },
+        };
+        return callback(mockTx);
+      });
+
+      const handlers = OrchestratorService.getQueueHandlers([]);
+
+      await handlers.VALIDATE_BONUS({
+        bonusId: "bonus-inactive-valid",
+        url: "https://casino.example.com/expired-terms",
+      });
+
+      expect(capturedBonusUpdateData).toBeDefined();
+      expect(capturedBonusUpdateData.verified_at).toBeInstanceOf(Date);
+      expect(capturedBonusUpdateData.status).toBeUndefined();
+    });
+
+    it("records serialized previous verified_at in old_value on re-verification", async () => {
+      const previousVerifiedAt = new Date("2026-08-01T12:00:00Z");
+      const initialBonus = {
+        id: "bonus-reverify",
+        headline_value: "300 FREE SPINS",
+        wagering_requirement: 10,
+        max_conversion: 500,
+        status: "ACTIVE",
+        verified_at: previousVerifiedAt,
+        casino: { id: "casino-eligible", name: "Eligible Casino" },
+      };
+
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+      vi.spyOn(
+        WorkflowTransitionService.prototype,
+        "assertCasinoHasOneEligibleLicense",
+      ).mockResolvedValue(undefined);
+
+      let capturedHistoryEventData: any = null;
+      vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) => {
+        const mockTx: any = {
+          bonus: { update: vi.fn() },
+          bonusHistoryEvent: {
+            create: vi.fn().mockImplementation(async ({ data }: any) => {
+              capturedHistoryEventData = data;
+              return { id: "event-3", ...data };
+            }),
+          },
+        };
+        return callback(mockTx);
+      });
+
+      const handlers = OrchestratorService.getQueueHandlers([]);
+
+      await handlers.VALIDATE_BONUS({
+        bonusId: "bonus-reverify",
+        url: "https://casino.example.com/promo-reverify",
+      });
+
+      expect(capturedHistoryEventData.old_value).toBe(previousVerifiedAt.toISOString());
+    });
+
+    it("ensures atomic persistence: if history-event creation fails, transaction rejects", async () => {
+      const initialBonus = {
+        id: "bonus-atomic-fail",
+        headline_value: "300 FREE SPINS",
+        wagering_requirement: 10,
+        max_conversion: 500,
+        status: "ACTIVE",
+        verified_at: null,
+        casino: { id: "casino-eligible", name: "Eligible Casino" },
+      };
+
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+      vi.spyOn(
+        WorkflowTransitionService.prototype,
+        "assertCasinoHasOneEligibleLicense",
+      ).mockResolvedValue(undefined);
+
+      const historyError = new Error("History event table locked");
+      vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) => {
+        const mockTx: any = {
+          bonus: { update: vi.fn() },
+          bonusHistoryEvent: {
+            create: vi.fn().mockRejectedValue(historyError),
+          },
+        };
+        return callback(mockTx);
+      });
+
+      const handlers = OrchestratorService.getQueueHandlers([]);
+
+      await expect(
+        handlers.VALIDATE_BONUS({
+          bonusId: "bonus-atomic-fail",
+          url: "https://casino.example.com/promo-fail",
+        }),
+      ).rejects.toThrow("History event table locked");
+    });
+
+    it.each([
+      ["empty URL", ""],
+      ["whitespace URL", "   "],
+      ["malformed URL", "not-a-valid-url"],
+      ["javascript scheme", "javascript:alert(1)"],
+      ["data scheme", "data:text/html,<html></html>"],
+      ["file scheme", "file:///etc/passwd"],
+      ["ftp scheme", "ftp://ftp.example.com/file"],
+    ])("rejects validation without persisting verification when source URL is %s", async (_, invalidUrl) => {
+
+      const initialBonus = {
+        id: "bonus-url-invalid",
+        headline_value: "300 FREE SPINS",
+        wagering_requirement: 10,
+        max_conversion: 500,
+        status: "ACTIVE",
+        verified_at: null,
+        review_status: ReviewStatus.NEW,
+        publication_status: PublicationStatus.UNPUBLISHED,
+        governance_version: 0,
+        casino: { id: "casino-eligible", name: "Eligible Casino" },
+      };
+
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+      vi.spyOn(
+        WorkflowTransitionService.prototype,
+        "assertCasinoHasOneEligibleLicense",
+      ).mockResolvedValue(undefined);
+
+      const updateSpy = vi.spyOn(prisma.bonus, "update");
+      const historyEventSpy = vi.spyOn(prisma.bonusHistoryEvent, "create");
+      const transactionSpy = vi.spyOn(prisma, "$transaction");
+
+      const handlers = OrchestratorService.getQueueHandlers([]);
+
+      await handlers.VALIDATE_BONUS({
+        bonusId: "bonus-url-invalid",
+        url: invalidUrl,
+      });
+
+      expect(transactionSpy).not.toHaveBeenCalled();
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(historyEventSpy).not.toHaveBeenCalled();
+    });
+
+
 
     it("rethrows unexpected WorkflowTransitionError (e.g. STALE_GOVERNANCE_VERSION) and does not swallow it as validation failure", async () => {
       vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue({
