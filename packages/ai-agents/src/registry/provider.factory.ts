@@ -136,9 +136,14 @@ export class ProviderFactory {
         return new GenericOpenAICompatibleProvider({
           id: "ollama",
           name: "Ollama (Local)",
-          defaultModel: "llama3",
+          defaultModel: process.env.OLLAMA_MODEL || "llama3",
           baseURL: process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1",
+          pricing: {
+            promptTokenUsdPer1k: 0,
+            completionTokenUsdPer1k: 0,
+          },
         });
+
 
       case "lmstudio":
         return new GenericOpenAICompatibleProvider({

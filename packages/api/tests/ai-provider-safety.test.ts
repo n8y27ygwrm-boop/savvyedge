@@ -28,11 +28,14 @@ describe("AI Provider Safety & Fail-Closed Configuration", () => {
     delete process.env.TOGETHER_API_KEY;
     delete process.env.PERPLEXITY_API_KEY;
     delete process.env.GEMINI_MODEL;
+    delete process.env.OLLAMA_MODEL;
+    delete process.env.OLLAMA_BASE_URL;
     delete process.env.ACTIVE_AI_PROVIDER;
     delete process.env.FALLBACK_AI_PROVIDERS;
 
     ProviderRegistry.resetForTesting();
   });
+
 
   afterEach(() => {
     process.env = originalEnv;
@@ -56,6 +59,30 @@ describe("AI Provider Safety & Fail-Closed Configuration", () => {
       expect(provider.metadata.defaultModel).toBe("gemini-2.5-flash");
     });
   });
+
+  describe("Ollama Configuration & Pricing", () => {
+    it("defaults to llama3 model when OLLAMA_MODEL is not set", () => {
+      const provider = ProviderFactory.createProvider("ollama");
+      expect(provider.metadata.id).toBe("ollama");
+      expect(provider.metadata.defaultModel).toBe("llama3");
+    });
+
+    it("overrides default model when OLLAMA_MODEL is set (e.g. qwen2.5:7b)", () => {
+      process.env.OLLAMA_MODEL = "qwen2.5:7b";
+      const provider = ProviderFactory.createProvider("ollama");
+      expect(provider.metadata.id).toBe("ollama");
+      expect(provider.metadata.defaultModel).toBe("qwen2.5:7b");
+    });
+
+    it("has zero telemetry pricing for local Ollama inference", () => {
+      const provider = ProviderFactory.createProvider("ollama");
+      expect(provider.metadata.pricing).toEqual({
+        promptTokenUsdPer1k: 0,
+        completionTokenUsdPer1k: 0,
+      });
+    });
+  });
+
 
   describe("Remote Provider Authentication Fail-Closed Enforcement", () => {
     it("resolves GeminiProvider when valid key is provided", () => {
