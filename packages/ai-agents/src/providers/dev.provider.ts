@@ -4,7 +4,7 @@ import { ProviderMetadata, ExecutionOptions } from "../types/provider.types";
 
 export class DevAIProvider extends BaseAIProvider {
   public readonly metadata: ProviderMetadata = {
-    id: "gemini", // Impersonates active provider or dev
+    id: "dev",
     name: "Development Local Heuristic AI Provider",
     defaultModel: "dev-fallback-v1",
     contextWindow: 128000,

@@ -14,6 +14,13 @@ export class ProviderRegistry {
     return ProviderRegistry.instance;
   }
 
+  public static resetForTesting(): void {
+    if (ProviderRegistry.instance) {
+      ProviderRegistry.instance.providers.clear();
+    }
+  }
+
+
   public getProvider(id: AIProviderId): AIProvider {
     if (!this.providers.has(id)) {
       const provider = ProviderFactory.createProvider(id);

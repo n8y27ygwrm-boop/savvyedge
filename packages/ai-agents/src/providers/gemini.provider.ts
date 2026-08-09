@@ -5,26 +5,29 @@ import { BaseAIProvider } from "./base.provider";
 import { ProviderMetadata, ExecutionOptions } from "../types/provider.types";
 
 export class GeminiProvider extends BaseAIProvider {
-  public readonly metadata: ProviderMetadata = {
-    id: "gemini",
-    name: "Google Gemini",
-    defaultModel: "gemini-1.5-pro",
-    contextWindow: 1048576,
-    capabilities: {
-      supportsStructuredOutput: true,
-      supportsFunctionCalling: true,
-      supportsReasoning: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsEmbeddings: true,
-      supportsRerank: false,
-      supportsModeration: false,
-    },
-    pricing: {
-      promptTokenUsdPer1k: 0.00125,
-      completionTokenUsdPer1k: 0.005,
-    },
-  };
+  public get metadata(): ProviderMetadata {
+    return {
+      id: "gemini",
+      name: "Google Gemini",
+      defaultModel: process.env.GEMINI_MODEL || "gemini-2.5-pro",
+      contextWindow: 1048576,
+      capabilities: {
+        supportsStructuredOutput: true,
+        supportsFunctionCalling: true,
+        supportsReasoning: true,
+        supportsVision: true,
+        supportsStreaming: true,
+        supportsEmbeddings: true,
+        supportsRerank: false,
+        supportsModeration: false,
+      },
+      pricing: {
+        promptTokenUsdPer1k: 0.00125,
+        completionTokenUsdPer1k: 0.005,
+      },
+    };
+  }
+
 
   protected async doGenerateText(
     prompt: string,

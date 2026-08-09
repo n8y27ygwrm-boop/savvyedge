@@ -17,7 +17,9 @@ export type AIProviderId =
   | "bedrock"
   | "vertex"
   | "huggingface"
-  | "perplexity";
+  | "perplexity"
+  | "dev";
+
 
 export interface ProviderCapabilities {
   supportsStructuredOutput: boolean;

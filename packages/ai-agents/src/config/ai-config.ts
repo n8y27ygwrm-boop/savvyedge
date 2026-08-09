@@ -11,11 +11,14 @@ export class AIConfigLoader {
   public static loadConfig(): AIEngineConfig {
     const activeProvider = (process.env.ACTIVE_AI_PROVIDER as AIProviderId) || "gemini";
     
-    const fallbackEnv = process.env.FALLBACK_AI_PROVIDERS || "openai,anthropic,openrouter";
-    const fallbackProviders = fallbackEnv
-      .split(",")
-      .map((p) => p.trim() as AIProviderId)
-      .filter((p) => p !== activeProvider);
+    const fallbackEnv = process.env.FALLBACK_AI_PROVIDERS;
+    const fallbackProviders: AIProviderId[] = fallbackEnv
+      ? fallbackEnv
+          .split(",")
+          .map((p) => p.trim() as AIProviderId)
+          .filter((p) => Boolean(p) && p !== activeProvider)
+      : [];
+
 
     return {
       activeProvider,
