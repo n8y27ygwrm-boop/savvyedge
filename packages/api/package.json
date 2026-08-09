@@ -23,7 +23,9 @@
     "verify-orchestrator": "tsx scripts/verify-orchestrator.ts",
     "verify-tvs": "tsx scripts/verify-tvs-calculator.ts",
     "verify-trust": "tsx scripts/verify-phase1-trust.ts",
+    "verify:ukgc": "tsx scripts/verify-ukgc-license.ts",
     "test": "vitest run tests --maxWorkers=1"
+
   },
   "dependencies": {
     "@savvyedge/database": "workspace:*",

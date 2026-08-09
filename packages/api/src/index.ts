@@ -10,4 +10,6 @@ export * from "./services/publication-gate.service";
 export * from "./services/workflow-transition.errors";
 export * from "./services/workflow-transition.policy";
 export * from "./services/workflow-transition.service";
+export * from "./services/ukgc-parser";
+export * from "./services/ukgc-license-verifier.service";
 export * from "./utils/auth.utils";
