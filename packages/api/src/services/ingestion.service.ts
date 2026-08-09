@@ -76,6 +76,52 @@ export function resolveBonusSourceProvenance(
   };
 }
 
+/**
+ * Sanitizes a URL for safe operational logging.
+ * Strips authentication credentials, query parameters, path tokens, and hash fragments.
+ * Returns only protocol + host (e.g. "https://example.com").
+ */
+export function sanitizeUrlForLogging(
+  rawUrl: string | undefined | null,
+): string {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    return "<unknown-url>";
+  }
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+const ALLOWED_ERROR_NAMES = new Set([
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "AbortError",
+  "TimeoutError",
+  "Error",
+]);
+
+/**
+ * Classifies an error for safe operational logging using a finite bounded allowlist.
+ * Never emits arbitrary or mutable error.name strings.
+ */
+export function classifyErrorForLogging(err: unknown): string {
+  if (err instanceof SourcePageRejectedError) {
+    return "SOURCE_PAGE_REJECTED";
+  }
+  if (err instanceof Error) {
+    if (typeof err.name === "string" && ALLOWED_ERROR_NAMES.has(err.name)) {
+      return err.name;
+    }
+    return "Error";
+  }
+  return "UnknownError";
+}
+
 export class IngestionService {
   private static scraperAgent = new ScraperAgent();
   private static bonusAgent = new BonusAgent();
@@ -87,7 +133,8 @@ export class IngestionService {
    * Asynchronous entrypoint.
    */
   public static async enqueueIngestion({ url, casino_id, taskContext = "BONUS" }: IngestBonusInput) {
-    console.log(`[IngestionService] Enqueueing ingestion for URL: ${url} (context: ${taskContext})`);
+    const safeUrl = sanitizeUrlForLogging(url);
+    console.log(`[IngestionService] Enqueueing ingestion for URL: ${safeUrl} (context: ${taskContext})`);
 
     if (taskContext === "GAME_LIST" && !casino_id) {
       throw new Error("GAME_LIST ingestion requires a casino_id");
@@ -166,17 +213,18 @@ export class IngestionService {
     taskContext?: "BONUS" | "GAME_LIST";
   }) {
     const { scrapeJobId, url, casinoId, taskContext = "BONUS" } = payload;
+    const safeUrl = sanitizeUrlForLogging(url);
     console.log(
-      `[IngestionService] [Worker] Crawling URL: ${url} (context: ${taskContext})`,
+      `[IngestionService] [Worker] Crawling URL: ${safeUrl} (context: ${taskContext})`,
     );
 
     let scrapeResult;
     try {
       scrapeResult = await this.scraperAgent.run({ url });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorClassification = classifyErrorForLogging(err);
       console.error(
-        `[IngestionService] [Worker] Crawl failed for URL: ${url}`,
-        err,
+        `[IngestionService] [Worker] Crawl failed for URL: ${safeUrl} (${errorClassification})`,
       );
       throw err;
     }
@@ -300,14 +348,15 @@ export class IngestionService {
     scrapedMetadata?: any;
   }) {
     const { scrapeJobId, url, casinoId, scrapedContent, scrapedMetadata } = payload;
-    console.log(`[IngestionService] [Worker] Extracting entities for URL: ${url}`);
+    const safeUrl = sanitizeUrlForLogging(url);
+    console.log(`[IngestionService] [Worker] Extracting entities for URL: ${safeUrl}`);
 
     // 1. Resolve domain
     let domain = "example.com";
     try {
       domain = new URL(url).hostname.replace(/^www\./, "");
     } catch {
-      domain = url;
+      domain = "<invalid-domain>";
     }
 
     // 2. AI Entity Resolution (executed outside DB transaction)
@@ -665,8 +714,9 @@ export class IngestionService {
     scrapedContent: string;
   }) {
     const { scrapeJobId, url, casinoId, scrapedContent } = payload;
+    const safeUrl = sanitizeUrlForLogging(url);
     console.log(
-      `[IngestionService] [Worker] Extracting game list for Casino ${casinoId} from URL: ${url}`,
+      `[IngestionService] [Worker] Extracting game list for Casino ${casinoId} from URL: ${safeUrl}`,
     );
 
     const gameListResult = await this.gameListAgent.run({
