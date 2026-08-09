@@ -5,6 +5,8 @@ import { DiscoveryService } from "../src/services/discovery.service";
 import { IngestionService } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
+import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
+
 
 describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B)", () => {
   beforeEach(() => {
@@ -331,6 +333,11 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     } as never);
 
     // Mocks for Validation Stage
+    vi.spyOn(
+      WorkflowTransitionService.prototype,
+      "assertCasinoHasOneEligibleLicense",
+    ).mockResolvedValue(undefined);
+
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue({
       id: "bonus-uuid-999",
       headline_value: "100% Up to $1000",
@@ -339,15 +346,10 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
       status: "NEW",
       casino: {
         id: "casino-uuid-1",
-        licenses: [
-          {
-            id: "license-1",
-            status: "ACTIVE",
-            license_number: "MGA/B2C/123/2020",
-          },
-        ],
+        name: "Test Casino",
       },
     } as never);
+
 
     const bonusUpdateSpy = vi
       .spyOn(prisma.bonus, "update")

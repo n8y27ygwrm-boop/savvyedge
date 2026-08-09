@@ -967,11 +967,28 @@ export class WorkflowTransitionService {
     return null;
   }
 
+  /**
+   * Asserts that a casino has exactly one governance-eligible active approved license
+   * supported by non-expired evidence linked to an immutable APPROVED audit event.
+   *
+   * Throws `ELIGIBLE_LICENSE_REQUIRED` if zero eligible licenses exist.
+   * Throws `ELIGIBLE_LICENSE_AMBIGUOUS` if more than one eligible license exists.
+   */
+  public async assertCasinoHasOneEligibleLicense(
+    casinoId: string,
+    now: Date = new Date(),
+  ): Promise<void> {
+    return this.inSerializableTransaction((tx) =>
+      this.requireOneEligibleCasinoLicense(tx, casinoId, now),
+    );
+  }
+
   private async requireOneEligibleCasinoLicense(
     tx: Prisma.TransactionClient,
     casinoId: string,
     now: Date,
   ): Promise<void> {
+
     // License has no expiry scalar in the committed schema. Eligibility therefore
     // uses current ACTIVE status plus non-expired evidence linked to an immutable
     // License APPROVED event. No text fields or array order determine applicability.

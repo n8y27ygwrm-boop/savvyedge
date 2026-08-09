@@ -8,6 +8,9 @@ import { JobQueueService } from "./job-queue.service";
 import { DiscoveryService } from "./discovery.service";
 import { IngestionService } from "./ingestion.service";
 import { BonusService } from "./bonus.service";
+import { WorkflowTransitionService } from "./workflow-transition.service";
+import { WorkflowTransitionError } from "./workflow-transition.errors";
+
 
 export interface WorkerNodePersistenceAdapter {
   upsertWorker(params: {
@@ -494,10 +497,9 @@ export class OrchestratorService {
           where: { id: payload.bonusId },
           include: {
             casino: {
-              include: {
-                licenses: {
-                  where: { status: "ACTIVE" },
-                },
+              select: {
+                id: true,
+                name: true,
               },
             },
           },
@@ -522,9 +524,26 @@ export class OrchestratorService {
           failedChecks.push(`max_conversion is invalid (${bonus.max_conversion})`);
         }
 
-        const activeLicenses = bonus.casino?.licenses || [];
-        if (activeLicenses.length === 0) {
-          failedChecks.push("casino has no active license");
+        if (!bonus.casino?.id) {
+          failedChecks.push("casino not found");
+        } else {
+          try {
+            const workflowService = new WorkflowTransitionService(prisma);
+            await workflowService.assertCasinoHasOneEligibleLicense(bonus.casino.id);
+          } catch (error) {
+            if (error instanceof WorkflowTransitionError) {
+              if (error.code === "ELIGIBLE_LICENSE_REQUIRED") {
+                failedChecks.push("casino has no governance-eligible license");
+              } else if (error.code === "ELIGIBLE_LICENSE_AMBIGUOUS") {
+                failedChecks.push("casino has ambiguous governance-eligible licenses");
+              } else {
+                throw error;
+              }
+            } else {
+              throw error;
+            }
+          }
+
         }
 
         if (failedChecks.length > 0) {
@@ -537,6 +556,7 @@ export class OrchestratorService {
           console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified and set to VERIFIED.`);
         }
       },
+
     };
   }
 
