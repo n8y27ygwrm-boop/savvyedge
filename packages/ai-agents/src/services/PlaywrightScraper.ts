@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { SnapshotStorage } from "./SnapshotStorage";
 
 function resolveDocumentUrl(
   value: string | undefined,
@@ -245,38 +246,20 @@ export class PlaywrightScraper {
           .update(cleanedText)
           .digest("hex");
 
-        // Store HTML snapshot on disk
+        // Store HTML snapshot on disk using hardened SnapshotStorage
         let snapshotPath: string | undefined;
         try {
-          if (!fs.existsSync(snapshotDir)) {
-            fs.mkdirSync(snapshotDir, { recursive: true });
+          const snapshotResult = SnapshotStorage.saveSnapshot({
+            url: options.url,
+            rawHtml,
+            htmlHash,
+            snapshotRoot: options.snapshotDir,
+          });
+          if (snapshotResult.saved) {
+            snapshotPath = snapshotResult.relativePath;
           }
-
-          let host = "unknown";
-          try {
-            host = new URL(options.url).hostname.replace(
-              /[^a-zA-Z0-9.-]/g,
-              "_",
-            );
-          } catch {}
-
-          const hash = crypto
-            .createHash("md5")
-            .update(options.url)
-            .digest("hex")
-            .substring(0, 8);
-          const dateStr = new Date().toISOString().replace(/[:.]/g, "-");
-          const fileName = `${dateStr}_${host}_${hash}.html`;
-          snapshotPath = path.join(snapshotDir, fileName);
-
-          fs.writeFileSync(snapshotPath, rawHtml, "utf-8");
-          console.log(
-            `[PlaywrightScraper] Saved HTML snapshot to: ${snapshotPath}`,
-          );
-        } catch (err: any) {
-          console.warn(
-            `[PlaywrightScraper] Could not save HTML snapshot: ${err.message}`,
-          );
+        } catch {
+          // Bounded fallback: snapshot failure never crashes scraper
         }
 
         const durationMs = Date.now() - startTime;
