@@ -371,7 +371,25 @@ export class UkgcLicenseVerifierService {
         claimIds.push(claim.id);
       }
 
-      // 8. Governance Workflow Execution
+      // 8. Atomically update Casino verification state and append authoritative CasinoHistoryEvent
+      await tx.casino.update({
+        where: { id: casinoId },
+        data: {
+          verified_at: now,
+        },
+      });
+
+      await tx.casinoHistoryEvent.create({
+        data: {
+          casino_id: casinoId,
+          event_type: "VERIFICATION",
+          description: `Authoritative UKGC domain and licence verification (${resolved.domainName} -> ${resolved.licenceNumber})`,
+          occurred_at: now,
+          source_url: domainEvidence.source_url,
+        },
+      });
+
+      // 9. Governance Workflow Execution
       const workflowService = new WorkflowTransitionService(tx as any);
       let finalReviewStatus = license.review_status;
       let finalGovernanceVersion = license.governance_version;
