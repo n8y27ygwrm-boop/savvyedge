@@ -24,6 +24,7 @@
     "verify-tvs": "tsx scripts/verify-tvs-calculator.ts",
     "verify-trust": "tsx scripts/verify-phase1-trust.ts",
     "verify:ukgc": "tsx scripts/verify-ukgc-license.ts",
+    "verify:d2": "tsx scripts/verify-d2-vertical-slice.ts",
     "test": "vitest run tests --maxWorkers=1"
 
   },
