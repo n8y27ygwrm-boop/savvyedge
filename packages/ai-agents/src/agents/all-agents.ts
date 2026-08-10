@@ -54,6 +54,11 @@ Semantic rules:
 - Keep monetary bonus caps, free-spin counts, per-spin values, and max conversion/cashout semantically distinct.
 - wagering_requirement may represent free-spin winnings only when the source explicitly scopes it that way. Do not apply that multiplier to a separate deposit bonus.
 - Use null for fields that are not explicitly supported. Never invent max_conversion, dates, or amounts.
+- status must be exactly ACTIVE or INACTIVE.
+- Use INACTIVE only when the source explicitly supports that the offer has ended, expired, is unavailable, or is inactive.
+- Otherwise use ACTIVE for the currently presented offer.
+- Never return explanatory prose in status.
+- Never return verification/governance states such as VERIFIED, APPROVED, etc.
 
 Raw source text:
 ${input.rawBonusText}`;

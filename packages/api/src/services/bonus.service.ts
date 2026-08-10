@@ -1,5 +1,9 @@
 import { Prisma, PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
-import { CreateBonusInput } from "@savvyedge/types";
+import {
+  BonusLifecycleStatus,
+  BonusLifecycleStatusSchema,
+  CreateBonusInput,
+} from "@savvyedge/types";
 import { AIEngine } from "@savvyedge/ai-agents";
 import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
 
@@ -190,6 +194,12 @@ export class BonusService {
     return Math.round(rawScore * 100) / 100;
   }
 
+  public static normalizeLifecycleStatus(
+    status: unknown,
+  ): BonusLifecycleStatus {
+    return BonusLifecycleStatusSchema.parse(status);
+  }
+
   static async createBonus(
     data: CreateBonusInput,
     provenance?: BonusSourceProvenance,
@@ -214,20 +224,23 @@ export class BonusService {
     isApprovedOrPublished: boolean;
     hasFieldDiffs: boolean;
   }> {
+    const status = this.normalizeLifecycleStatus(data.status);
+    const normalizedData: CreateBonusInput = { ...data, status };
+
     const sourceOfferKey = createBonusSourceOfferKey(
       provenance.sourceIdentityUrl,
     );
     const trueValueScore = this.calculateTrueValueScore(
-      data.headline_value,
-      data.wagering_requirement,
-      data.max_conversion,
+      normalizedData.headline_value,
+      normalizedData.wagering_requirement,
+      normalizedData.max_conversion,
     );
     const now = new Date();
 
     const existingBonus = await db.bonus.findUnique({
       where: {
         casino_id_source_offer_key: {
-          casino_id: data.casino_id,
+          casino_id: normalizedData.casino_id,
           source_offer_key: sourceOfferKey,
         },
       },
@@ -235,7 +248,7 @@ export class BonusService {
 
     if (existingBonus) {
       return this.updateExistingBonus(
-        data,
+        normalizedData,
         existingBonus,
         provenance.sourceUrl,
         trueValueScore,
@@ -245,7 +258,7 @@ export class BonusService {
     }
 
     const created = await this.createNewBonus(
-      data,
+      normalizedData,
       trueValueScore,
       sourceOfferKey,
       now,
@@ -264,10 +277,13 @@ export class BonusService {
     data: CreateBonusInput,
     db: Prisma.TransactionClient | typeof prisma,
   ) {
+    const status = this.normalizeLifecycleStatus(data.status);
+    const normalizedData: CreateBonusInput = { ...data, status };
+
     const trueValueScore = this.calculateTrueValueScore(
-      data.headline_value,
-      data.wagering_requirement,
-      data.max_conversion,
+      normalizedData.headline_value,
+      normalizedData.wagering_requirement,
+      normalizedData.max_conversion,
     );
     const now = new Date();
 
@@ -276,7 +292,7 @@ export class BonusService {
     // identified offer must never be selected or overwritten heuristically.
     const existingBonus = await db.bonus.findFirst({
       where: {
-        casino_id: data.casino_id,
+        casino_id: normalizedData.casino_id,
         source_offer_key: null,
         status: "ACTIVE",
       },
@@ -285,7 +301,7 @@ export class BonusService {
 
     if (existingBonus) {
       return this.updateExistingBonus(
-        data,
+        normalizedData,
         existingBonus,
         null,
         trueValueScore,
@@ -296,7 +312,7 @@ export class BonusService {
     }
 
     const created = await this.createNewBonus(
-      data,
+      normalizedData,
       trueValueScore,
       null,
       now,
@@ -329,7 +345,7 @@ export class BonusService {
     const candidateValidUntil = preserveMissingDates
       ? data.valid_until ?? existingBonus.valid_until ?? null
       : data.valid_until ?? null;
-    const candidateStatus = data.status || "ACTIVE";
+    const candidateStatus = data.status;
 
     const diffs: BonusFieldDiff[] = [];
     this.appendDiff(
@@ -445,7 +461,7 @@ export class BonusService {
       data: {
         ...data,
         source_offer_key: sourceOfferKey,
-        status: data.status || "ACTIVE",
+        status: data.status,
         true_value_score: trueValueScore,
         data_source_type: isDevMock ? "DEV_MOCK" : "SCRAPED",
         created_at: now,

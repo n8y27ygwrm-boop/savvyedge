@@ -30,6 +30,18 @@ export type CreateCasinoInput = z.infer<typeof CreateCasinoInputSchema>;
 
 // --- Bonus Schemas ---
 
+export const BONUS_LIFECYCLE_STATUSES = ["ACTIVE", "INACTIVE"] as const;
+export type BonusLifecycleStatus = (typeof BONUS_LIFECYCLE_STATUSES)[number];
+
+export const BonusLifecycleStatusSchema = z.preprocess(
+  (val) => (typeof val === "string" ? val.trim().toUpperCase() : val),
+  z.enum(BONUS_LIFECYCLE_STATUSES),
+) as unknown as z.ZodType<
+  BonusLifecycleStatus,
+  z.ZodTypeDef,
+  BonusLifecycleStatus
+>;
+
 export const BonusSchema = z.object({
   id: z.string().uuid(),
   casino_id: z.string().uuid(),
@@ -40,7 +52,7 @@ export const BonusSchema = z.object({
   true_value_score: z.number().nullable(),
   valid_from: z.date().nullable(),
   valid_until: z.date().nullable(),
-  status: z.string(),
+  status: BonusLifecycleStatusSchema,
   data_source_type: z.string().default("SCRAPED"),
 });
 
