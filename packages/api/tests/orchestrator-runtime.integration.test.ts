@@ -6,6 +6,7 @@ import { IngestionService } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
 import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
+import { BonusReverificationService } from "../src/services/bonus-reverification.service";
 
 
 describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B)", () => {
@@ -361,6 +362,15 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     const historyEventSpy = vi
       .spyOn(prisma.bonusHistoryEvent, "create")
       .mockResolvedValue({ id: "event-uuid-1" } as never);
+    const reverifySpy = vi
+      .spyOn(BonusReverificationService, "reverifyBonus")
+      .mockResolvedValue({
+        status: "VERIFIED_UNCHANGED",
+        bonusId: "bonus-uuid-999",
+        verifiedAt: new Date("2026-08-10T10:00:00.000Z"),
+        evidenceRecordId: "evidence-reverification-1",
+        claimIds: ["claim-reverification-1"],
+      });
 
     const handlers = OrchestratorService.getQueueHandlers([]);
 
@@ -411,21 +421,10 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
     // --- STAGE 5: VALIDATE_BONUS (consuming exact captured payload) ---
     await handlers.VALIDATE_BONUS(validatePayload);
 
-    // Assert Terminal Outcome: verified_at timestamp and BonusHistoryEvent
-    expect(bonusUpdateSpy).toHaveBeenCalledWith({
-      where: { id: "bonus-uuid-999" },
-      data: { verified_at: expect.any(Date) },
-    });
-    expect(historyEventSpy).toHaveBeenCalledWith({
-      data: {
-        bonus_id: "bonus-uuid-999",
-        field_changed: "verified_at",
-        old_value: null,
-        new_value: expect.any(String),
-        changed_at: expect.any(Date),
-        source_url: validatePayload.url,
-      },
-    });
+    // Stage 5 delegates freshness and evidence persistence to the canonical service.
+    expect(reverifySpy).toHaveBeenCalledWith("bonus-uuid-999");
+    expect(bonusUpdateSpy).not.toHaveBeenCalled();
+    expect(historyEventSpy).not.toHaveBeenCalled();
   });
 
 

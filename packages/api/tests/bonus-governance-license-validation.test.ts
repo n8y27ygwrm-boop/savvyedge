@@ -11,6 +11,7 @@ import {
   WorkflowTransitionService,
   WorkflowTransitionError,
   OrchestratorService,
+  BonusReverificationService,
 } from "../src";
 
 describe("Bonus Validation Governance License Hardening", () => {
@@ -424,7 +425,7 @@ describe("Bonus Validation Governance License Hardening", () => {
       expect(updateSpy).not.toHaveBeenCalled();
     });
 
-    it("successfully sets verified_at and creates BonusHistoryEvent while preserving lifecycle status ACTIVE", async () => {
+    it("delegates successful freshness renewal to the canonical service without direct writes", async () => {
       const initialBonus = {
         id: "bonus-active-valid",
         headline_value: "300 FREE SPINS",
@@ -437,6 +438,17 @@ describe("Bonus Validation Governance License Hardening", () => {
         governance_version: 0,
         casino: { id: "casino-eligible", name: "Eligible Casino" },
       };
+
+      const verifiedAt = new Date("2026-08-10T10:00:00.000Z");
+      const reverifySpy = vi
+        .spyOn(BonusReverificationService, "reverifyBonus")
+        .mockResolvedValue({
+          status: "VERIFIED_UNCHANGED",
+          bonusId: initialBonus.id,
+          verifiedAt,
+          evidenceRecordId: "evidence-fresh",
+          claimIds: ["claim-fresh"],
+        });
 
       vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
 
@@ -475,29 +487,13 @@ describe("Bonus Validation Governance License Hardening", () => {
         url: "https://casino.example.com/promo-terms",
       });
 
-      expect(licenseAssertionSpy).toHaveBeenCalledWith("casino-eligible");
-
-      // 1. Bonus update sets verified_at and does NOT mutate lifecycle status or governance fields
-      expect(capturedBonusUpdateData).toBeDefined();
-      expect(capturedBonusUpdateData.verified_at).toBeInstanceOf(Date);
-      expect(capturedBonusUpdateData.status).toBeUndefined();
-      expect(capturedBonusUpdateData.review_status).toBeUndefined();
-      expect(capturedBonusUpdateData.publication_status).toBeUndefined();
-      expect(capturedBonusUpdateData.governance_version).toBeUndefined();
-
-      // 2. BonusHistoryEvent created with exact field_changed, timestamps, and source_url
-      expect(capturedHistoryEventData).toBeDefined();
-      expect(capturedHistoryEventData).toEqual({
-        bonus_id: "bonus-active-valid",
-        field_changed: "verified_at",
-        old_value: null,
-        new_value: capturedBonusUpdateData.verified_at.toISOString(),
-        changed_at: capturedBonusUpdateData.verified_at,
-        source_url: "https://casino.example.com/promo-terms",
-      });
+      expect(reverifySpy).toHaveBeenCalledWith("bonus-active-valid");
+      expect(licenseAssertionSpy).not.toHaveBeenCalled();
+      expect(capturedBonusUpdateData).toBeNull();
+      expect(capturedHistoryEventData).toBeNull();
     });
 
-    it("preserves INACTIVE status upon validation (does not force INACTIVE to ACTIVE)", async () => {
+    it("delegates an inactive observation without directly mutating lifecycle status", async () => {
       const initialBonus = {
         id: "bonus-inactive-valid",
         headline_value: "50 FREE SPINS",
@@ -507,6 +503,18 @@ describe("Bonus Validation Governance License Hardening", () => {
         verified_at: null,
         casino: { id: "casino-eligible", name: "Eligible Casino" },
       };
+
+      const reverifySpy = vi
+        .spyOn(BonusReverificationService, "reverifyBonus")
+        .mockResolvedValue({
+          status: "OFFER_INACTIVE",
+          bonusId: initialBonus.id,
+          diffs: [],
+          reviewStatus: ReviewStatus.AWAITING_REVIEW,
+          governanceVersion: 1,
+          evidenceRecordId: "evidence-inactive",
+          claimIds: ["claim-inactive"],
+        });
 
       vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
       vi.spyOn(
@@ -537,12 +545,11 @@ describe("Bonus Validation Governance License Hardening", () => {
         url: "https://casino.example.com/expired-terms",
       });
 
-      expect(capturedBonusUpdateData).toBeDefined();
-      expect(capturedBonusUpdateData.verified_at).toBeInstanceOf(Date);
-      expect(capturedBonusUpdateData.status).toBeUndefined();
+      expect(reverifySpy).toHaveBeenCalledWith("bonus-inactive-valid");
+      expect(capturedBonusUpdateData).toBeNull();
     });
 
-    it("records serialized previous verified_at in old_value on re-verification", async () => {
+    it("does not reconstruct canonical verified_at history in the orchestrator", async () => {
       const previousVerifiedAt = new Date("2026-08-01T12:00:00Z");
       const initialBonus = {
         id: "bonus-reverify",
@@ -553,6 +560,16 @@ describe("Bonus Validation Governance License Hardening", () => {
         verified_at: previousVerifiedAt,
         casino: { id: "casino-eligible", name: "Eligible Casino" },
       };
+
+      const reverifySpy = vi
+        .spyOn(BonusReverificationService, "reverifyBonus")
+        .mockResolvedValue({
+          status: "VERIFIED_UNCHANGED",
+          bonusId: initialBonus.id,
+          verifiedAt: new Date("2026-08-10T10:00:00.000Z"),
+          evidenceRecordId: "evidence-reverify",
+          claimIds: ["claim-reverify"],
+        });
 
       vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
       vi.spyOn(
@@ -581,10 +598,11 @@ describe("Bonus Validation Governance License Hardening", () => {
         url: "https://casino.example.com/promo-reverify",
       });
 
-      expect(capturedHistoryEventData.old_value).toBe(previousVerifiedAt.toISOString());
+      expect(reverifySpy).toHaveBeenCalledWith("bonus-reverify");
+      expect(capturedHistoryEventData).toBeNull();
     });
 
-    it("ensures atomic persistence: if history-event creation fails, transaction rejects", async () => {
+    it("propagates an atomic persistence failure from the canonical service", async () => {
       const initialBonus = {
         id: "bonus-atomic-fail",
         headline_value: "300 FREE SPINS",
@@ -602,6 +620,9 @@ describe("Bonus Validation Governance License Hardening", () => {
       ).mockResolvedValue(undefined);
 
       const historyError = new Error("History event table locked");
+      vi.spyOn(BonusReverificationService, "reverifyBonus").mockRejectedValue(
+        historyError,
+      );
       vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) => {
         const mockTx: any = {
           bonus: { update: vi.fn() },
@@ -679,6 +700,9 @@ describe("Bonus Validation Governance License Hardening", () => {
       } as any);
 
       const staleError = new WorkflowTransitionError("STALE_GOVERNANCE_VERSION");
+      vi.spyOn(BonusReverificationService, "reverifyBonus").mockRejectedValue(
+        staleError,
+      );
       vi.spyOn(
         WorkflowTransitionService.prototype,
         "assertCasinoHasOneEligibleLicense",
@@ -707,6 +731,9 @@ describe("Bonus Validation Governance License Hardening", () => {
       } as any);
 
       const dbError = new Error("Database connection lost");
+      vi.spyOn(BonusReverificationService, "reverifyBonus").mockRejectedValue(
+        dbError,
+      );
       vi.spyOn(
         WorkflowTransitionService.prototype,
         "assertCasinoHasOneEligibleLicense",

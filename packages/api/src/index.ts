@@ -13,4 +13,5 @@ export * from "./services/workflow-transition.service";
 export * from "./services/ukgc-parser";
 export * from "./services/ukgc-license-verifier.service";
 export * from "./services/freshness.policy";
+export * from "./services/bonus-reverification.service";
 export * from "./utils/auth.utils";

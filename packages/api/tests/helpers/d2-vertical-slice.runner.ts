@@ -340,7 +340,35 @@ export async function executeD2AcceptanceRunner(
   // =========================================================================
   log("STAGE 5: Bonus Machine Verification via Orchestrator VALIDATE_BONUS...");
 
-  const taskHandlers = OrchestratorService.getQueueHandlers([]);
+  const bonusReverificationNow = new Date();
+  const taskHandlers = OrchestratorService.getQueueHandlers([], {
+    now: bonusReverificationNow,
+    scraperAgent: {
+      run: async () => ({
+        url: offerUrl,
+        finalUrl: offerUrl,
+        title: "D2 Welcome Bonus Terms",
+        content:
+          "100% Match Bonus up to £200. Wagering 35x. Max conversion £500.",
+        contentHash: `reverify-content-${runId}`,
+        htmlHash: `reverify-html-${runId}`,
+        snapshotPath: `/tmp/reverify-snapshot-${runId}.html`,
+        timestamp: bonusReverificationNow,
+      }),
+    },
+    bonusAgent: {
+      run: async ({ casino_id }) => ({
+        casino_id,
+        type: "WELCOME",
+        headline_value: "100% Match Bonus up to £200",
+        wagering_requirement: 35,
+        max_conversion: 500,
+        status: "ACTIVE",
+        valid_from: new Date("2026-01-01T00:00:00.000Z"),
+        valid_until: null,
+      }),
+    },
+  });
   await taskHandlers.VALIDATE_BONUS({
     bonusId: initialBonus.id,
     url: offerUrl,

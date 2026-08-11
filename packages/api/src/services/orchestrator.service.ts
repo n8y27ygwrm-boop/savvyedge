@@ -8,9 +8,10 @@ import { JobQueueService } from "./job-queue.service";
 import { DiscoveryService } from "./discovery.service";
 import { IngestionService } from "./ingestion.service";
 import { BonusService } from "./bonus.service";
-import { WorkflowTransitionService } from "./workflow-transition.service";
-import { WorkflowTransitionError } from "./workflow-transition.errors";
-
+import {
+  BonusReverificationService,
+  type ReverificationOverrides,
+} from "./bonus-reverification.service";
 
 export interface WorkerNodePersistenceAdapter {
   upsertWorker(params: {
@@ -450,7 +451,10 @@ export class OrchestratorService {
   /**
    * Handlers for all stage tasks (DISCOVER_SEEDS -> INGEST_URL -> CRAWL_URL -> EXTRACT_BONUS -> VALIDATE_BONUS)
    */
-  public static getQueueHandlers(seedSources: string[]): IngestionQueueHandlers {
+  public static getQueueHandlers(
+    seedSources: string[],
+    bonusReverificationOverrides?: ReverificationOverrides,
+  ): IngestionQueueHandlers {
     return {
       DISCOVER_SEEDS: async (
         payload: IngestionJobPayloadMap["DISCOVER_SEEDS"],
@@ -492,100 +496,25 @@ export class OrchestratorService {
       },
 
       VALIDATE_BONUS: async (payload: { bonusId: string; url: string }) => {
-        console.log(`[PlatformOrchestrator] Validating Bonus ${payload.bonusId}...`);
-        const bonus = await prisma.bonus.findUnique({
-          where: { id: payload.bonusId },
-          include: {
-            casino: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        });
+        console.log(`[PlatformOrchestrator] Re-verifying Bonus ${payload.bonusId}...`);
+        const result = bonusReverificationOverrides
+          ? await BonusReverificationService.reverifyBonus(
+              payload.bonusId,
+              bonusReverificationOverrides,
+            )
+          : await BonusReverificationService.reverifyBonus(payload.bonusId);
 
-        if (!bonus) {
-          console.log(`[PlatformOrchestrator] [FAIL] Bonus ${payload.bonusId} not found.`);
+        if (result.status === "VERIFIED_UNCHANGED") {
+          console.log(
+            `[PlatformOrchestrator] [PASS] Bonus ${payload.bonusId} verified at ${result.verifiedAt.toISOString()}.`,
+          );
           return;
         }
 
-        const failedChecks: string[] = [];
-
-        let isValidHttpUrl = false;
-        try {
-          if (payload.url && typeof payload.url === "string" && payload.url.trim().length > 0) {
-            const parsed = new URL(payload.url.trim());
-            isValidHttpUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
-          }
-        } catch {
-          isValidHttpUrl = false;
-        }
-
-        if (!isValidHttpUrl) {
-          failedChecks.push("source url is invalid or non-http(s)");
-        }
-
-        if (!bonus.headline_value || bonus.headline_value.trim() === "") {
-          failedChecks.push("headline_value is null or empty");
-        }
-
-
-        if (bonus.wagering_requirement === null || bonus.wagering_requirement <= 0 || bonus.wagering_requirement > 100) {
-          failedChecks.push(`wagering_requirement is invalid (${bonus.wagering_requirement})`);
-        }
-
-        if (bonus.max_conversion !== null && bonus.max_conversion <= 0) {
-          failedChecks.push(`max_conversion is invalid (${bonus.max_conversion})`);
-        }
-
-        if (!bonus.casino?.id) {
-          failedChecks.push("casino not found");
-        } else {
-          try {
-            const workflowService = new WorkflowTransitionService(prisma);
-            await workflowService.assertCasinoHasOneEligibleLicense(bonus.casino.id);
-          } catch (error) {
-            if (error instanceof WorkflowTransitionError) {
-              if (error.code === "ELIGIBLE_LICENSE_REQUIRED") {
-                failedChecks.push("casino has no governance-eligible license");
-              } else if (error.code === "ELIGIBLE_LICENSE_AMBIGUOUS") {
-                failedChecks.push("casino has ambiguous governance-eligible licenses");
-              } else {
-                throw error;
-              }
-            } else {
-              throw error;
-            }
-          }
-
-        }
-
-        if (failedChecks.length > 0) {
-          console.log(`[PlatformOrchestrator] [FAIL] Bonus ${bonus.id} failed validation: ${failedChecks.join(", ")}`);
-        } else {
-          const verifiedAt = new Date();
-          await prisma.$transaction(async (tx) => {
-            await tx.bonus.update({
-              where: { id: bonus.id },
-              data: { verified_at: verifiedAt },
-            });
-            await tx.bonusHistoryEvent.create({
-              data: {
-                bonus_id: bonus.id,
-                field_changed: "verified_at",
-                old_value: bonus.verified_at ? bonus.verified_at.toISOString() : null,
-                new_value: verifiedAt.toISOString(),
-                changed_at: verifiedAt,
-                source_url: payload.url,
-              },
-            });
-          });
-          console.log(`[PlatformOrchestrator] [PASS] Bonus ${bonus.id} verified at ${verifiedAt.toISOString()}.`);
-        }
+        console.log(
+          `[PlatformOrchestrator] [FAIL] Bonus ${payload.bonusId} was not freshness-renewed (${result.status}).`,
+        );
       },
-
-
     };
   }
 
