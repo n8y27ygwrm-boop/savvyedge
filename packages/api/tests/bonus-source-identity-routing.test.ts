@@ -53,12 +53,14 @@ describe("Bonus source identity result routing", () => {
           url: string;
           casinoId: string;
           scrapedContent: string;
+          observedAt: string;
         }) => Promise<typeof persisted>;
       }
     ).performExtraction({
       url: "https://casino.example.com/promotions/welcome",
       casinoId: persisted.casino.id,
       scrapedContent: "100% up to £200",
+      observedAt: "2026-08-11T10:20:30.456Z",
     });
 
     expect(result.casino).toBe(persisted.casino);
@@ -86,7 +88,8 @@ describe("Bonus source identity result routing", () => {
           data_source_id: "source-canonical",
           canonical_url:
             "https://casino.example.com/promotions/canonical-welcome",
-          snapshot_path: "/isolated/snapshot.html",
+          snapshot_path:
+            "supabase://savvyedge-evidence/v1/initial-observation.html",
           html_hash: "html-canonical",
           content_hash: "content-canonical",
         }),
@@ -146,6 +149,7 @@ describe("Bonus source identity result routing", () => {
           url: string;
           casinoId: string;
           scrapedContent: string;
+          observedAt: string;
         }) => Promise<{
           casino: typeof casino;
           bonus: typeof savedBonus;
@@ -157,6 +161,7 @@ describe("Bonus source identity result routing", () => {
       url: "https://casino.example.com/go/welcome",
       casinoId: casino.id,
       scrapedContent: "100% up to £200, wagering 35x",
+      observedAt: "2026-08-11T10:21:30.456Z",
     });
 
     expect(
@@ -170,6 +175,13 @@ describe("Bonus source identity result routing", () => {
     expect(transition).toHaveBeenCalledWith(
       expect.objectContaining({ subjectId: savedBonus.id }),
     );
+    expect(transaction.evidenceRecord.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        observed_at: new Date("2026-08-11T10:21:30.456Z"),
+        snapshot_path:
+          "supabase://savvyedge-evidence/v1/initial-observation.html",
+      }),
+    });
     expect(result.bonus).toBe(savedBonus);
     expect(result.evidence).toBe(evidence);
   });
@@ -204,6 +216,7 @@ describe("Bonus source identity result routing", () => {
       casinoId: "casino-shared",
       scrapedContent: "current offer",
       scrapedMetadata: {},
+      observedAt: "2026-08-11T10:20:30.456Z",
     });
 
     expect(rediscover).not.toHaveBeenCalled();

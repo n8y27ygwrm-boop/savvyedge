@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { prisma } from "@savvyedge/database";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INGESTION_QUEUE_NAME } from "../src/constants/queue-names";
 import {
   INGESTION_JOB_TYPES,
@@ -12,6 +12,20 @@ import { DiscoveryService } from "../src/services/discovery.service";
 import { IngestionService } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
+import { EvidenceArtifactStorageService } from "../src/services/evidence-artifact-storage.service";
+
+const OBSERVED_AT = new Date("2026-08-11T10:20:30.456Z");
+
+beforeEach(() => {
+  vi.spyOn(
+    EvidenceArtifactStorageService,
+    "persistObservation",
+  ).mockResolvedValue({
+    locator: "supabase://savvyedge-evidence/v1/queue-contract.html",
+    htmlHash: "queue-contract-html",
+    byteSize: 128,
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -143,6 +157,7 @@ describe("unified ingestion queue contract", () => {
         "run",
       ).mockResolvedValue({
         content,
+        rawHtml: `<html><body>${content}</body></html>`,
         metadata: { title },
         snapshotPath: "/isolated/queue-contract.html",
         htmlHash: "queue-contract-html",
@@ -150,6 +165,7 @@ describe("unified ingestion queue contract", () => {
         finalUrl: url,
         title,
         canonicalUrl: url,
+        timestamp: OBSERVED_AT,
       });
       vi.spyOn(prisma.scrapeJob, "updateMany").mockResolvedValue({ count: 1 });
       vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
@@ -205,6 +221,7 @@ describe("unified ingestion queue contract", () => {
       scrapeJobId: "scrape-job-id",
       url: "https://operator.example.com/promotions/welcome",
       scrapedContent: "Welcome bonus",
+      observedAt: OBSERVED_AT.toISOString(),
     } as never);
 
     expect(enqueue).toHaveBeenCalledWith(

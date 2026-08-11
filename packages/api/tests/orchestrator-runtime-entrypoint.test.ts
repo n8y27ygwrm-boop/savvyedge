@@ -124,6 +124,10 @@ describe("Orchestrator Runtime Entrypoint (Boundary C3A)", () => {
     ): NodeJS.ProcessEnv => ({
       SAVVY_ENV: "production",
       DATABASE_URL: "postgresql://example.invalid/savvyedge",
+      SAVVY_EVIDENCE_STORAGE_BACKEND: "supabase",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SECRET_KEY: "sb_secret_test_only",
+      SAVVY_EVIDENCE_STORAGE_BUCKET: "savvyedge-evidence",
       ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "false",
       ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER: "true",
       ...overrides,
@@ -162,6 +166,41 @@ describe("Orchestrator Runtime Entrypoint (Boundary C3A)", () => {
       expect(() =>
         parseRuntimeConfig(productionEnv({ DATABASE_URL: "" })),
       ).toThrowError(ConfigurationError);
+    });
+
+    it("requires explicit durable Supabase storage in production", () => {
+      expect(() =>
+        parseRuntimeConfig(
+          productionEnv({ SAVVY_EVIDENCE_STORAGE_BACKEND: "filesystem" }),
+        ),
+      ).toThrowError(ConfigurationError);
+
+      const implicitBackend = productionEnv();
+      delete implicitBackend.SAVVY_EVIDENCE_STORAGE_BACKEND;
+      expect(() => parseRuntimeConfig(implicitBackend)).toThrowError(
+        ConfigurationError,
+      );
+    });
+
+    it.each([
+      "SUPABASE_URL",
+      "SUPABASE_SECRET_KEY",
+      "SAVVY_EVIDENCE_STORAGE_BUCKET",
+    ])("requires production evidence storage setting %s", (name) => {
+      const env = productionEnv();
+      delete env[name];
+      expect(() => parseRuntimeConfig(env)).toThrowError(ConfigurationError);
+    });
+
+    it("accepts the legacy service-role key only as a compatibility alias", () => {
+      expect(
+        parseRuntimeConfig(
+          productionEnv({
+            SUPABASE_SECRET_KEY: "",
+            SUPABASE_SERVICE_ROLE_KEY: "legacy-service-role-test-only",
+          }),
+        ),
+      ).toEqual(expect.objectContaining({ seedSources: [] }));
     });
 
     it.each([

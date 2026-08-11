@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   ActorKind,
   EvidenceType,
@@ -15,6 +15,7 @@ import {
   UkgcLicenseVerifierService,
   UKGC_DATASET_URLS,
   WorkflowTransitionService,
+  EvidenceArtifactStorageService,
 } from "../../src";
 import {
   isD2AcceptanceEnabled,
@@ -90,6 +91,8 @@ export async function executeD2AcceptanceRunner(
   const originalCasinoAgentRun = (IngestionService as any).casinoResolutionAgent.run;
   const originalBonusAgentRun = (IngestionService as any).bonusAgent.run;
   const originalScraperAgentRun = (IngestionService as any).scraperAgent.run;
+  const originalPersistObservation =
+    EvidenceArtifactStorageService.persistObservation;
 
   // Capture original environment values to contain synthetic AI environment strictly to ingestion scope
   const originalActiveAiProvider = process.env.ACTIVE_AI_PROVIDER;
@@ -98,6 +101,12 @@ export async function executeD2AcceptanceRunner(
   try {
     process.env.ACTIVE_AI_PROVIDER = "openai";
     process.env.OPENAI_API_KEY = "d2-acceptance-key";
+
+    EvidenceArtifactStorageService.persistObservation = async (input) => ({
+      locator: `d2-fixtures/${input.observationId}.html`,
+      htmlHash: input.expectedHtmlHash,
+      byteSize: Buffer.byteLength(input.rawHtml, "utf8"),
+    });
 
     (IngestionService as any).casinoResolutionAgent.run = async () => ({
       name: `D2 Casino ${runId}`,
@@ -118,14 +127,21 @@ export async function executeD2AcceptanceRunner(
       valid_until: null,
     });
 
-    (IngestionService as any).scraperAgent.run = async () => ({
-      url: offerUrl,
-      content: "100% Match Bonus up to £200. Wagering 35x. Max conversion £500.",
-      html: "<html><body>100% Match Bonus up to £200. Wagering 35x. Max conversion £500.</body></html>",
-      contentHash: `content-${runId}`,
-      htmlHash: `html-${runId}`,
-      snapshotPath: `/tmp/snapshot-${runId}.html`,
-    });
+    (IngestionService as any).scraperAgent.run = async () => {
+      const rawHtml =
+        "<html><body>100% Match Bonus up to £200. Wagering 35x. Max conversion £500.</body></html>";
+      return {
+        url: offerUrl,
+        finalUrl: offerUrl,
+        title: "D2 Welcome Bonus Terms",
+        content:
+          "100% Match Bonus up to £200. Wagering 35x. Max conversion £500.",
+        rawHtml,
+        contentHash: `content-${runId}`,
+        htmlHash: createHash("sha256").update(rawHtml).digest("hex"),
+        timestamp: new Date(),
+      };
+    };
 
     await IngestionService.ingestBonusFromUrl({ url: offerUrl });
   } finally {
@@ -145,6 +161,8 @@ export async function executeD2AcceptanceRunner(
     (IngestionService as any).casinoResolutionAgent.run = originalCasinoAgentRun;
     (IngestionService as any).bonusAgent.run = originalBonusAgentRun;
     (IngestionService as any).scraperAgent.run = originalScraperAgentRun;
+    EvidenceArtifactStorageService.persistObservation =
+      originalPersistObservation;
   }
 
   const initialCasino = await prisma.casino.findFirstOrThrow({
@@ -344,16 +362,27 @@ export async function executeD2AcceptanceRunner(
   const taskHandlers = OrchestratorService.getQueueHandlers([], {
     now: bonusReverificationNow,
     scraperAgent: {
-      run: async () => ({
-        url: offerUrl,
-        finalUrl: offerUrl,
-        title: "D2 Welcome Bonus Terms",
-        content:
-          "100% Match Bonus up to £200. Wagering 35x. Max conversion £500.",
-        contentHash: `reverify-content-${runId}`,
-        htmlHash: `reverify-html-${runId}`,
-        snapshotPath: `/tmp/reverify-snapshot-${runId}.html`,
-        timestamp: bonusReverificationNow,
+      run: async () => {
+        const rawHtml =
+          "<html><body>100% Match Bonus up to £200. Wagering 35x. Max conversion £500.</body></html>";
+        return {
+          url: offerUrl,
+          finalUrl: offerUrl,
+          title: "D2 Welcome Bonus Terms",
+          content:
+            "100% Match Bonus up to £200. Wagering 35x. Max conversion £500.",
+          rawHtml,
+          contentHash: `reverify-content-${runId}`,
+          htmlHash: createHash("sha256").update(rawHtml).digest("hex"),
+          timestamp: bonusReverificationNow,
+        };
+      },
+    },
+    artifactStore: {
+      persistObservation: async (input) => ({
+        locator: `d2-fixtures/${input.observationId}.html`,
+        htmlHash: input.expectedHtmlHash,
+        byteSize: Buffer.byteLength(input.rawHtml, "utf8"),
       }),
     },
     bonusAgent: {

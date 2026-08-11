@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   ActorKind,
   BonusEvidenceField,
@@ -22,6 +22,10 @@ import { WorkflowTransitionError } from "./workflow-transition.errors";
 import { BonusService } from "./bonus.service";
 import { resolveHeadlineEvidenceObservation } from "./ingestion.service";
 import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
+import {
+  EvidenceArtifactStorageService,
+  type EvidenceArtifactStore,
+} from "./evidence-artifact-storage.service";
 
 export interface ReverificationOverrides {
   scraperAgent?: { run: (input: { url: string }) => Promise<any> };
@@ -30,6 +34,7 @@ export interface ReverificationOverrides {
   };
   now?: Date;
   overrideSourceUrl?: string;
+  artifactStore?: EvidenceArtifactStore;
 }
 
 export interface BonusFieldDiff {
@@ -361,7 +366,37 @@ export class BonusReverificationService {
       };
     }
 
-    // 6. Fresh Extraction & Normalization
+    const observedAt = asValidDate(scrapeResult.timestamp);
+    const extractedAt = options?.now ?? new Date();
+    if (
+      !observedAt ||
+      observedAt.getTime() < evaluationStartedAt.getTime() ||
+      observedAt.getTime() > extractedAt.getTime()
+    ) {
+      return {
+        status: "SOURCE_REJECTED",
+        bonusId,
+        category: "CRAWL_FAILED",
+        reason:
+          "Scraper did not return a timestamp for the current source observation",
+      };
+    }
+
+    // 6. Durable observation persistence. Failures intentionally escape so
+    // the VALIDATE_BONUS queue retries instead of completing normally.
+    const observationId = randomUUID();
+    const artifactInput = {
+      rawHtml: scrapeResult.rawHtml,
+      expectedHtmlHash: scrapeResult.htmlHash,
+      observationId,
+      sourceUrl: scrapeResult.finalUrl || scrapeResult.url || sourceUrl,
+      observedAt,
+    };
+    const persistedArtifact = options?.artifactStore
+      ? await options.artifactStore.persistObservation(artifactInput)
+      : await EvidenceArtifactStorageService.persistObservation(artifactInput);
+
+    // 7. Fresh Extraction & Normalization
     const bonusAgent = options?.bonusAgent ?? new BonusAgent();
     let rawExtraction: any;
     try {
@@ -394,22 +429,6 @@ export class BonusReverificationService {
       };
     }
 
-    const observedAt = asValidDate(scrapeResult.timestamp);
-    const extractedAt = options?.now ?? new Date();
-    if (
-      !observedAt ||
-      observedAt.getTime() < evaluationStartedAt.getTime() ||
-      observedAt.getTime() > extractedAt.getTime()
-    ) {
-      return {
-        status: "SOURCE_REJECTED",
-        bonusId,
-        category: "CRAWL_FAILED",
-        reason:
-          "Scraper did not return a timestamp for the current source observation",
-      };
-    }
-
     const observedContent =
       typeof scrapeResult.content === "string" ? scrapeResult.content : "";
     const contentHash =
@@ -429,7 +448,7 @@ export class BonusReverificationService {
       };
     }
 
-    // 7. Material Term Diff Computation
+    // 8. Material Term Diff Computation
     const diffs = this.computeBonusDiffs(bonus, normalizedBonus);
     const normalizedStatus = BonusService.normalizeLifecycleStatus(
       normalizedBonus.status,
@@ -437,7 +456,7 @@ export class BonusReverificationService {
     const isOfferInactive = normalizedStatus === "INACTIVE";
     const hasMaterialChanges = diffs.length > 0 || isOfferInactive;
 
-    // 8. Execute Atomic Transitions
+    // 9. Execute Atomic Transitions
     if (!hasMaterialChanges) {
       // -------------------------------------------------------------
       // BRANCH A: UNCHANGED TERMS & ACTIVE OFFER -> RENEW VERIFICATION
@@ -474,8 +493,8 @@ export class BonusReverificationService {
             data_source_id: ds.id,
             evidence_type: EvidenceType.OPERATOR_PAGE,
             source_url: sourceUrl,
-            snapshot_path: scrapeResult.snapshotPath || null,
-            html_hash: scrapeResult.htmlHash || null,
+            snapshot_path: persistedArtifact.locator,
+            html_hash: persistedArtifact.htmlHash,
             content_hash: contentHash,
             observed_at: observedAt,
             extracted_at: extractedAt,
@@ -562,8 +581,8 @@ export class BonusReverificationService {
             data_source_id: ds.id,
             evidence_type: EvidenceType.OPERATOR_PAGE,
             source_url: sourceUrl,
-            snapshot_path: scrapeResult.snapshotPath || null,
-            html_hash: scrapeResult.htmlHash || null,
+            snapshot_path: persistedArtifact.locator,
+            html_hash: persistedArtifact.htmlHash,
             content_hash: contentHash,
             observed_at: observedAt,
             extracted_at: extractedAt,

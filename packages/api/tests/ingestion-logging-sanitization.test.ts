@@ -305,6 +305,7 @@ describe("Ingestion Logging Sanitization (Boundary B2)", () => {
         scrapeJobId: "scrape-job-id",
         url: SENSITIVE_URL,
         scrapedContent: "Bonus offer text",
+        observedAt: "2026-08-11T10:20:30.456Z",
       });
 
       expect(logSpy).toHaveBeenCalled();

@@ -29,6 +29,7 @@
 
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.89.0",
     "@savvyedge/database": "workspace:*",
     "@savvyedge/types": "workspace:*",
     "@savvyedge/ai-agents": "workspace:*"

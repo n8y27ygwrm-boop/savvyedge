@@ -1,9 +1,6 @@
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import * as cheerio from "cheerio";
-import * as fs from "fs";
-import * as path from "path";
 import * as crypto from "crypto";
-import { SnapshotStorage } from "./SnapshotStorage";
 
 function resolveDocumentUrl(
   value: string | undefined,
@@ -53,10 +50,6 @@ export interface PlaywrightScrapeResult {
 export class PlaywrightScraper {
   private static DEFAULT_TIMEOUT_MS = 30000;
   private static DEFAULT_MAX_RETRIES = 3;
-  private static DEFAULT_SNAPSHOT_DIR = path.resolve(
-    process.cwd(),
-    "storage/snapshots",
-  );
 
   public static async scrape(
     options: PlaywrightScrapeOptions,
@@ -64,7 +57,6 @@ export class PlaywrightScraper {
     const startTime = Date.now();
     const timeoutMs = options.timeoutMs ?? this.DEFAULT_TIMEOUT_MS;
     const maxRetries = options.maxRetries ?? this.DEFAULT_MAX_RETRIES;
-    const snapshotDir = options.snapshotDir ?? this.DEFAULT_SNAPSHOT_DIR;
 
     let lastError: Error | null = null;
     let attempt = 0;
@@ -199,6 +191,7 @@ export class PlaywrightScraper {
         }
 
         const rawHtml = await page.content();
+        const observedAt = new Date();
         await browser.close();
         browser = null;
 
@@ -246,22 +239,6 @@ export class PlaywrightScraper {
           .update(cleanedText)
           .digest("hex");
 
-        // Store HTML snapshot on disk using hardened SnapshotStorage
-        let snapshotPath: string | undefined;
-        try {
-          const snapshotResult = SnapshotStorage.saveSnapshot({
-            url: options.url,
-            rawHtml,
-            htmlHash,
-            snapshotRoot: options.snapshotDir,
-          });
-          if (snapshotResult.saved) {
-            snapshotPath = snapshotResult.relativePath;
-          }
-        } catch {
-          // Bounded fallback: snapshot failure never crashes scraper
-        }
-
         const durationMs = Date.now() - startTime;
         console.log(
           `[PlaywrightScraper] Successfully scraped ${options.url} in ${durationMs}ms`,
@@ -287,10 +264,12 @@ export class PlaywrightScraper {
             ogType,
             ogUrl,
           },
-          snapshotPath,
+          // Snapshot persistence is intentionally owned by the API layer after
+          // source-page eligibility has been established.
+          snapshotPath: undefined,
           attemptCount: attempt,
           durationMs,
-          timestamp: new Date(),
+          timestamp: observedAt,
         };
       } catch (err: any) {
         lastError = err;

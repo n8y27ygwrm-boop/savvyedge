@@ -26,6 +26,7 @@ export interface IngestionJobPayloadMap {
     casinoId?: string;
     scrapedContent: string;
     scrapedMetadata?: unknown;
+    observedAt: string;
   };
   EXTRACT_GAME_LIST: {
     scrapeJobId: string;
@@ -168,6 +169,12 @@ export function assertIngestionQueueJob(
       }
       if (!isNonEmptyString(payload.scrapedContent)) {
         invalidPayload(taskType, "scrapedContent is required");
+      }
+      if (
+        !isNonEmptyString(payload.observedAt) ||
+        !Number.isFinite(new Date(payload.observedAt).getTime())
+      ) {
+        invalidPayload(taskType, "observedAt must be a valid timestamp");
       }
       if (
         payload.casinoId !== undefined &&

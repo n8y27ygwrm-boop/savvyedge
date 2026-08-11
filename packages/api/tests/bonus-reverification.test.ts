@@ -13,6 +13,7 @@ import { PublicationGateService } from "../src/services/publication-gate.service
 import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
 import { WorkflowTransitionError } from "../src/services/workflow-transition.errors";
 import { createBonusSourceOfferKey } from "../src/utils/bonus-source-identity";
+import { EvidenceArtifactStorageService } from "../src/services/evidence-artifact-storage.service";
 
 describe("D3B BonusReverificationService (Deterministic True Re-Verification)", () => {
   const FIXED_NOW_T1 = new Date("2026-08-10T10:00:00.000Z");
@@ -98,6 +99,14 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     vi.restoreAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(
+      EvidenceArtifactStorageService,
+      "persistObservation",
+    ).mockResolvedValue({
+      locator: "supabase://savvyedge-evidence/v1/d3b-observation.html",
+      htmlHash: "durable-d3b-html-hash",
+      byteSize: 256,
+    });
 
     // Mock license assertion to succeed by default
     vi.spyOn(
@@ -211,6 +220,10 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     expect(createdEvidenceData).toBeDefined();
     expect(createdEvidenceData.source_url).toBe(SOURCE_URL);
     expect(createdEvidenceData.content_hash).toBe("hash-matching-content");
+    expect(createdEvidenceData.snapshot_path).toBe(
+      "supabase://savvyedge-evidence/v1/d3b-observation.html",
+    );
+    expect(createdEvidenceData.html_hash).toBe("durable-d3b-html-hash");
 
     // 3. verified_at BonusHistoryEvent created
     expect(createdHistoryData).toBeDefined();
@@ -1081,5 +1094,119 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     });
     expect(transitionSpy).not.toHaveBeenCalled();
     expect(repeatedCasData).toEqual({ updated_at: FIXED_NOW_T1 });
+  });
+
+  it("15. unchanged-path upload failure throws before extraction or governed mutation", async () => {
+    const initialBonus = createMockApprovedBonus();
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+    vi.mocked(EvidenceArtifactStorageService.persistObservation).mockRejectedValueOnce(
+      new Error("durable observation unavailable"),
+    );
+    const bonusAgent = vi.fn().mockResolvedValue({
+      headline_value: initialBonus.headline_value,
+      type: initialBonus.type,
+      wagering_requirement: initialBonus.wagering_requirement,
+      max_conversion: initialBonus.max_conversion,
+      status: initialBonus.status,
+    });
+    const transaction = vi.spyOn(prisma, "$transaction");
+
+    await expect(
+      BonusReverificationService.reverifyBonus(initialBonus.id, {
+        scraperAgent: {
+          run: vi.fn().mockResolvedValue({
+            url: SOURCE_URL,
+            finalUrl: SOURCE_URL,
+            title: "Apex Casino Welcome Bonus Offer",
+            content: "Get 100% up to £200. Wagering is 35x.",
+            rawHtml: "<html>Get 100% up to £200. Wagering is 35x.</html>",
+            htmlHash: "a".repeat(64),
+            timestamp: FIXED_NOW_T1,
+          }),
+        },
+        bonusAgent: { run: bonusAgent },
+        now: FIXED_NOW_T1,
+      }),
+    ).rejects.toThrow("durable observation unavailable");
+
+    expect(bonusAgent).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("16. material-path upload failure throws with zero governed mutation", async () => {
+    const initialBonus = createMockApprovedBonus({ wagering_requirement: 35 });
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+    vi.mocked(EvidenceArtifactStorageService.persistObservation).mockRejectedValueOnce(
+      new Error("durable observation unavailable"),
+    );
+    const bonusAgent = vi.fn().mockResolvedValue({
+      headline_value: initialBonus.headline_value,
+      type: initialBonus.type,
+      wagering_requirement: 50,
+      max_conversion: initialBonus.max_conversion,
+      status: initialBonus.status,
+    });
+    const transaction = vi.spyOn(prisma, "$transaction");
+
+    await expect(
+      BonusReverificationService.reverifyBonus(initialBonus.id, {
+        scraperAgent: {
+          run: vi.fn().mockResolvedValue({
+            url: SOURCE_URL,
+            finalUrl: SOURCE_URL,
+            title: "Changed Apex offer terms",
+            content: "Get 100% up to £200. Wagering is now 50x.",
+            rawHtml: "<html>Get 100% up to £200. Wagering is now 50x.</html>",
+            htmlHash: "b".repeat(64),
+            timestamp: FIXED_NOW_T1,
+          }),
+        },
+        bonusAgent: { run: bonusAgent },
+        now: FIXED_NOW_T1,
+      }),
+    ).rejects.toThrow("durable observation unavailable");
+
+    expect(bonusAgent).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("17. object-first success followed by DB rollback never reports governed success", async () => {
+    const initialBonus = createMockApprovedBonus();
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+    vi.spyOn(prisma, "$transaction").mockRejectedValue(
+      new Error("database transaction rolled back"),
+    );
+
+    await expect(
+      BonusReverificationService.reverifyBonus(initialBonus.id, {
+        scraperAgent: {
+          run: vi.fn().mockResolvedValue({
+            url: SOURCE_URL,
+            finalUrl: SOURCE_URL,
+            title: "Apex Casino Welcome Bonus Offer",
+            content: "Get 100% up to £200. Wagering is 35x.",
+            rawHtml: "<html>Get 100% up to £200. Wagering is 35x.</html>",
+            htmlHash: "c".repeat(64),
+            timestamp: FIXED_NOW_T1,
+          }),
+        },
+        bonusAgent: {
+          run: vi.fn().mockResolvedValue({
+            headline_value: initialBonus.headline_value,
+            type: initialBonus.type,
+            wagering_requirement: initialBonus.wagering_requirement,
+            max_conversion: initialBonus.max_conversion,
+            valid_from: null,
+            valid_until: null,
+            status: initialBonus.status,
+          }),
+        },
+        now: FIXED_NOW_T1,
+      }),
+    ).rejects.toThrow("database transaction rolled back");
+
+    expect(
+      EvidenceArtifactStorageService.persistObservation,
+    ).toHaveBeenCalledOnce();
   });
 });

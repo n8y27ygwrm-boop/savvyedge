@@ -33,9 +33,18 @@ import {
   isBonusIdentityUniqueViolation,
   isRetryableBonusIdentityTransactionError,
 } from "../utils/bonus-source-identity";
+import { EvidenceArtifactStorageService } from "./evidence-artifact-storage.service";
 
 function hashString(val: string): string {
   return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
+}
+
+function parseObservedAt(value: string | Date): Date {
+  const observedAt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(observedAt.getTime())) {
+    throw new Error("INVALID_OBSERVATION_TIMESTAMP");
+  }
+  return observedAt;
 }
 
 export function resolveHeadlineEvidenceObservation(
@@ -233,20 +242,6 @@ export class IngestionService {
       where: { id: scrapeJobId },
     });
 
-    await prisma.scrapeJob.update({
-      where: { id: scrapeJobId },
-      data: {
-        snapshot_path: scrapeResult.snapshotPath || null,
-        html_hash: scrapeResult.htmlHash || null,
-        content_hash: scrapeResult.contentHash || null,
-        canonical_url:
-          scrapeResult.canonicalUrl ||
-          scrapeResult.finalUrl ||
-          scrapeResult.url ||
-          url,
-      },
-    });
-
     const eligibilityInput = {
       requestedUrl: url,
       finalUrl: scrapeResult.finalUrl || scrapeResult.url || url,
@@ -259,6 +254,13 @@ export class IngestionService {
     if (!eligibility.eligible) {
       throw new SourcePageRejectedError(eligibilityInput, eligibility);
     }
+
+    const observedAt = parseObservedAt(scrapeResult.timestamp);
+    const canonicalUrl =
+      scrapeResult.canonicalUrl ||
+      scrapeResult.finalUrl ||
+      scrapeResult.url ||
+      url;
 
     // Check for identical content hash from previous job
     const previousJob = await prisma.scrapeJob.findFirst({
@@ -281,12 +283,35 @@ export class IngestionService {
       await prisma.scrapeJob.update({
         where: { id: scrapeJobId },
         data: {
+          snapshot_path: null,
+          html_hash: scrapeResult.htmlHash || null,
+          content_hash: scrapeResult.contentHash || null,
+          canonical_url: canonicalUrl,
           status: "COMPLETED",
           completed_at: new Date(),
         },
       });
       return;
     }
+
+    const persistedArtifact =
+      await EvidenceArtifactStorageService.persistObservation({
+        rawHtml: scrapeResult.rawHtml ?? "",
+        expectedHtmlHash: scrapeResult.htmlHash ?? "",
+        observationId: scrapeJobId,
+        sourceUrl: scrapeResult.finalUrl || scrapeResult.url || url,
+        observedAt,
+      });
+
+    await prisma.scrapeJob.update({
+      where: { id: scrapeJobId },
+      data: {
+        snapshot_path: persistedArtifact.locator,
+        html_hash: persistedArtifact.htmlHash,
+        content_hash: scrapeResult.contentHash || null,
+        canonical_url: canonicalUrl,
+      },
+    });
 
     if (taskContext === "GAME_LIST") {
       if (!casinoId) {
@@ -305,6 +330,7 @@ export class IngestionService {
         casinoId,
         scrapedContent: scrapeResult.content,
         scrapedMetadata: scrapeResult.metadata,
+        observedAt: observedAt.toISOString(),
       });
     }
   }
@@ -318,6 +344,7 @@ export class IngestionService {
     casinoId?: string;
     scrapedContent: string;
     scrapedMetadata?: any;
+    observedAt: string;
   }) {
     if (payload.scrapeJobId) {
       const shouldProcess = await this.markScrapeJobProcessing(
@@ -346,8 +373,17 @@ export class IngestionService {
     casinoId?: string;
     scrapedContent: string;
     scrapedMetadata?: any;
+    observedAt: string;
   }) {
-    const { scrapeJobId, url, casinoId, scrapedContent, scrapedMetadata } = payload;
+    const {
+      scrapeJobId,
+      url,
+      casinoId,
+      scrapedContent,
+      scrapedMetadata,
+      observedAt,
+    } = payload;
+    const sourceObservedAt = parseObservedAt(observedAt);
     const safeUrl = sanitizeUrlForLogging(url);
     console.log(`[IngestionService] [Worker] Extracting entities for URL: ${safeUrl}`);
 
@@ -473,7 +509,7 @@ export class IngestionService {
           snapshot_path: scrapeJob?.snapshot_path || null,
           html_hash: scrapeJob?.html_hash || null,
           content_hash: scrapeJob?.content_hash || null,
-          observed_at: scrapeJob?.started_at || now,
+          observed_at: sourceObservedAt,
           extracted_at: now,
           created_by_id: actor.id,
         },

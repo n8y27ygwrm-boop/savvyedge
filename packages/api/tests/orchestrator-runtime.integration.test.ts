@@ -7,7 +7,9 @@ import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
 import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
 import { BonusReverificationService } from "../src/services/bonus-reverification.service";
+import { EvidenceArtifactStorageService } from "../src/services/evidence-artifact-storage.service";
 
+const OBSERVED_AT = new Date("2026-08-11T10:20:30.456Z");
 
 describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B)", () => {
   beforeEach(() => {
@@ -23,6 +25,14 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
 
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(
+      EvidenceArtifactStorageService,
+      "persistObservation",
+    ).mockResolvedValue({
+      locator: "supabase://savvyedge-evidence/v1/runtime-observation.html",
+      htmlHash: "durable-html-hash",
+      byteSize: 128,
+    });
   });
 
   afterEach(async () => {
@@ -166,11 +176,13 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
       "run",
     ).mockResolvedValue({
       content: "Exclusive 100% Welcome Bonus up to $500",
+      rawHtml: "<html>Exclusive 100% Welcome Bonus up to $500</html>",
       metadata: { title: "Casino Welcome Promo" },
       snapshotPath: null,
       htmlHash: "hash-html-123",
       contentHash: "hash-content-456",
       canonicalUrl: "https://operator.example.com/bonuses/welcome",
+      timestamp: OBSERVED_AT,
     });
 
     const enqueueSpy = vi
@@ -215,11 +227,13 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
       "run",
     ).mockResolvedValue({
       content: "Popular Slots: Starburst, Book of Dead",
+      rawHtml: "<html>Popular Slots: Starburst, Book of Dead</html>",
       metadata: { title: "Game Lobby" },
       snapshotPath: null,
       htmlHash: "games-html-hash",
       contentHash: "games-content-hash",
       canonicalUrl: "https://operator.example.com/games",
+      timestamp: OBSERVED_AT,
     });
 
     const enqueueSpy = vi
@@ -323,11 +337,13 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
       "run",
     ).mockResolvedValue({
       content: "100% Match Bonus up to $1000 with 30x Wagering",
+      rawHtml: "<html>100% Match Bonus up to $1000 with 30x Wagering</html>",
       metadata: { title: "Official Welcome Offer" },
       snapshotPath: null,
       htmlHash: "html-hash-vertical",
       contentHash: "content-hash-vertical",
       canonicalUrl: "https://operator.example.com/welcome-offer",
+      timestamp: OBSERVED_AT,
     });
 
     // Mocks for Extraction Stage
@@ -448,6 +464,7 @@ describe("Deterministic Ingestion Orchestrator Runtime Integration (Boundary C3B
         scrapeJobId: "scrape-job-fail-1",
         url: "https://operator.example.com/promo",
         scrapedContent: "raw promo content",
+        observedAt: OBSERVED_AT.toISOString(),
       }),
     ).rejects.toThrow("AI extraction model timeout");
 

@@ -57,6 +57,7 @@ describe("Ingestion Governance Integration Tests (Real DB)", () => {
       url,
       scrapedContent,
       scrapedMetadata: { title: "Example Casino Promo" },
+      observedAt: "2026-08-11T10:20:30.456Z",
     });
 
     const casino = await db.casino.findFirst({
@@ -84,6 +85,9 @@ describe("Ingestion Governance Integration Tests (Real DB)", () => {
     });
     expect(evidence).not.toBeNull();
     expect(evidence!.evidence_type).toBe(EvidenceType.OPERATOR_PAGE);
+    expect(evidence!.observed_at).toEqual(
+      new Date("2026-08-11T10:20:30.456Z"),
+    );
 
     const casinoClaims = await db.casinoEvidenceClaim.findMany({
       where: { casino_id: casino!.id },
@@ -154,6 +158,7 @@ describe("Ingestion Governance Integration Tests (Real DB)", () => {
       url,
       casinoId: casino.id,
       scrapedContent: newScrapedContent,
+      observedAt: "2026-08-11T10:21:30.456Z",
     });
 
     // 3. Verify Bonus state after re-ingestion

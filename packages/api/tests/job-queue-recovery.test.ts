@@ -692,6 +692,7 @@ describe("JobQueue Ownership-Safe Finalization and Atomic Stale Recovery (Bounda
         scrapeJobId: "scrape-job-1",
         url: "https://example.com/bonus",
         scrapedContent: "100% up to $500",
+        observedAt: "2026-08-11T10:20:30.456Z",
       }),
       status: "PROCESSING",
       priority: "HIGH",

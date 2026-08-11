@@ -244,6 +244,32 @@ export function parseRuntimeConfig(
       );
     }
 
+    if (
+      env.SAVVY_EVIDENCE_STORAGE_BACKEND?.trim().toLowerCase() !== "supabase"
+    ) {
+      throw new ConfigurationError(
+        "Invalid production configuration: SAVVY_EVIDENCE_STORAGE_BACKEND must explicitly equal supabase",
+      );
+    }
+    if (!env.SUPABASE_URL?.trim()) {
+      throw new ConfigurationError(
+        "Invalid production configuration: SUPABASE_URL is required",
+      );
+    }
+    if (
+      !env.SUPABASE_SECRET_KEY?.trim() &&
+      !env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+    ) {
+      throw new ConfigurationError(
+        "Invalid production configuration: SUPABASE_SECRET_KEY is required",
+      );
+    }
+    if (!env.SAVVY_EVIDENCE_STORAGE_BUCKET?.trim()) {
+      throw new ConfigurationError(
+        "Invalid production configuration: SAVVY_EVIDENCE_STORAGE_BUCKET is required",
+      );
+    }
+
     if (enableDiscoveryScheduler === undefined) {
       throw new ConfigurationError(
         "Invalid production configuration: ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER must be explicit",

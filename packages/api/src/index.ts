@@ -14,4 +14,7 @@ export * from "./services/ukgc-parser";
 export * from "./services/ukgc-license-verifier.service";
 export * from "./services/freshness.policy";
 export * from "./services/bonus-reverification.service";
+export * from "./services/evidence-artifact-storage.service";
+export * from "./services/filesystem-evidence-artifact-store";
+export * from "./services/supabase-evidence-artifact-store";
 export * from "./utils/auth.utils";
