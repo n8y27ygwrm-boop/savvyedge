@@ -13,6 +13,22 @@ import {
   type ReverificationOverrides,
 } from "./bonus-reverification.service";
 
+export const BONUS_REVERIFICATION_AGE_MS = 60 * 60 * 60 * 1000;
+export const BONUS_REVERIFICATION_COOLDOWN_MS = 60 * 60 * 1000;
+export const BONUS_REVERIFICATION_BATCH_SIZE = 100;
+export const DEFAULT_BONUS_REVERIFICATION_INTERVAL_MS = 15 * 60 * 1000;
+
+export interface BonusReverificationSweepResult {
+  enqueued: number;
+  skipped: Array<{
+    bonusId: string;
+    reason:
+      | "NO_AUTHORITATIVE_SOURCE_URL"
+      | "SOURCE_IDENTITY_MISMATCH"
+      | "ENQUEUE_FAILED";
+  }>;
+}
+
 export interface WorkerNodePersistenceAdapter {
   upsertWorker(params: {
     workerName: string;
@@ -114,6 +130,8 @@ export class OrchestratorService {
   private static ownedWorkerNames: string[] = [];
   private static heartbeatInFlight = false;
   private static currentHeartbeatPromise: Promise<void> | null = null;
+  private static verificationSweepInFlight = false;
+  private static currentVerificationSweepPromise: Promise<void> | null = null;
 
   public static get isRunning(): boolean {
     return this.lifecycleState === "RUNNING";
@@ -132,7 +150,11 @@ export class OrchestratorService {
       discoveryIntervalMs: parseInt(process.env.DISCOVERY_INTERVAL_MS || "300000", 10),
       crawlIntervalMs: parseInt(process.env.CRAWL_INTERVAL_MS || "60000", 10),
       extractionIntervalMs: parseInt(process.env.EXTRACTION_INTERVAL_MS || "30000", 10),
-      verificationIntervalMs: parseInt(process.env.VERIFICATION_INTERVAL_MS || "60000", 10),
+      verificationIntervalMs: parseInt(
+        process.env.VERIFICATION_INTERVAL_MS ||
+          String(DEFAULT_BONUS_REVERIFICATION_INTERVAL_MS),
+        10,
+      ),
       workerConcurrency: parseInt(process.env.WORKER_CONCURRENCY || "4", 10),
       maxConcurrentPerDomain: parseInt(process.env.DEFAULT_MAX_CONCURRENT_PER_DOMAIN || "2", 10),
       minDomainDelayMs: parseInt(process.env.DEFAULT_MIN_DOMAIN_DELAY_MS || "1000", 10),
@@ -186,6 +208,7 @@ export class OrchestratorService {
         console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
         console.log(` -> Worker Concurrency: ${config.workerConcurrency}`);
         console.log(` -> Discovery Interval: ${config.discoveryIntervalMs} ms`);
+        console.log(` -> Verification Int.: ${config.verificationIntervalMs} ms`);
         console.log(` -> Crawl Interval:     ${config.crawlIntervalMs} ms`);
         console.log(` -> Max Domain Concur:  ${config.maxConcurrentPerDomain}`);
         console.log(` -> Workers Enabled:    ${config.enableWorkers}`);
@@ -237,7 +260,7 @@ export class OrchestratorService {
 
         // 5. Initialize Recurring Schedulers
         if (config.enableSchedulers) {
-          await this.startSchedulers(config);
+          await this.startSchedulers(config, generation);
         }
 
         this.lifecycleState = "RUNNING";
@@ -264,6 +287,15 @@ export class OrchestratorService {
         this.recoveryInFlight = false;
         this.currentRecoveryPromise = null;
         this.recoveryTimer = undefined;
+        if (this.currentVerificationSweepPromise) {
+          try {
+            await this.currentVerificationSweepPromise;
+          } catch {
+            // Verification sweep failures are contained by the scheduler
+          }
+        }
+        this.verificationSweepInFlight = false;
+        this.currentVerificationSweepPromise = null;
 
         const stops = this.workerHandles.map((w) => w.stop());
         this.workerHandles = [];
@@ -420,7 +452,10 @@ export class OrchestratorService {
   /**
    * Starts recurring job schedulers with duplicate protection
    */
-  private static async startSchedulers(config: OrchestratorConfig) {
+  private static async startSchedulers(
+    config: OrchestratorConfig,
+    generation: number,
+  ) {
     // 1. Discovery Scheduler
     const discoveryTimer = setInterval(async () => {
       if (!this.isRunning) return;
@@ -446,6 +481,198 @@ export class OrchestratorService {
     } catch (error) {
       console.error("[PlatformOrchestrator] Failed initial discovery enqueue:", error);
     }
+
+    // 2. Published Bonus Re-Verification Scheduler
+    const verificationTimer = setInterval(() => {
+      void this.runScheduledBonusReverificationSweep(generation);
+    }, config.verificationIntervalMs);
+
+    this.schedulerTimers.push(verificationTimer);
+
+    // Initial immediate re-verification sweep. Errors are contained so a
+    // transient database failure cannot prevent the orchestrator from starting.
+    await this.runScheduledBonusReverificationSweep(generation);
+  }
+
+  private static runScheduledBonusReverificationSweep(
+    generation: number,
+  ): Promise<void> {
+    // D3C v1 assumes one orchestrator scheduler process. Multiple scheduler
+    // replicas require persisted/atomic subject coordination before enablement.
+    if (
+      generation !== this.recoveryGeneration ||
+      this.verificationSweepInFlight ||
+      (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+    ) {
+      return Promise.resolve();
+    }
+
+    this.verificationSweepInFlight = true;
+    const sweepPromise = (async () => {
+      try {
+        if (
+          generation !== this.recoveryGeneration ||
+          (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+        ) {
+          return;
+        }
+        await this.runBonusReverificationSweep(new Date());
+      } catch (error) {
+        const errorClassification =
+          error instanceof Error
+            ? `Bonus re-verification sweep failed (${error.name || "Error"})`
+            : "Bonus re-verification sweep failed";
+        console.warn(
+          `[PlatformOrchestrator] [Scheduler] ${errorClassification}`,
+        );
+      }
+    })();
+    this.currentVerificationSweepPromise = sweepPromise;
+    void sweepPromise.then(() => {
+      if (this.currentVerificationSweepPromise === sweepPromise) {
+        this.verificationSweepInFlight = false;
+        this.currentVerificationSweepPromise = null;
+      }
+    });
+    return sweepPromise;
+  }
+
+  /**
+   * Selects published Bonuses approaching the freshness limit and enqueues the
+   * canonical true source re-verification path. This method is selection-only:
+   * it never writes Bonus state.
+   */
+  public static async runBonusReverificationSweep(
+    now: Date = new Date(),
+  ): Promise<BonusReverificationSweepResult> {
+    const cutoff = new Date(now.getTime() - BONUS_REVERIFICATION_AGE_MS);
+    const cooldownCutoff = new Date(
+      now.getTime() - BONUS_REVERIFICATION_COOLDOWN_MS,
+    );
+
+    const relevantJobs = await prisma.jobQueue.findMany({
+      where: {
+        queue_name: INGESTION_QUEUE_NAME,
+        task_type: "VALIDATE_BONUS",
+        OR: [
+          { status: { in: ["PENDING", "PROCESSING"] } },
+          {
+            status: "COMPLETED",
+            OR: [
+              { completed_at: { gte: cooldownCutoff } },
+              {
+                completed_at: null,
+                updated_at: { gte: cooldownCutoff },
+              },
+            ],
+          },
+          {
+            status: "FAILED",
+            updated_at: { gte: cooldownCutoff },
+          },
+        ],
+      },
+      select: { payload: true },
+    });
+
+    const blockedBonusIds = new Set<string>();
+    for (const job of relevantJobs) {
+      try {
+        const payload = JSON.parse(job.payload) as { bonusId?: unknown };
+        if (typeof payload.bonusId === "string" && payload.bonusId.length > 0) {
+          blockedBonusIds.add(payload.bonusId);
+        }
+      } catch {
+        // Invalid historical payloads cannot identify a Bonus to block.
+      }
+    }
+
+    const candidates = await prisma.bonus.findMany({
+      where: {
+        ...(blockedBonusIds.size > 0
+          ? { id: { notIn: [...blockedBonusIds] } }
+          : {}),
+        status: "ACTIVE",
+        review_status: "APPROVED",
+        publication_status: "PUBLISHED",
+        quarantine_reason: null,
+        OR: [{ verified_at: null }, { verified_at: { lte: cutoff } }],
+        AND: [{ OR: [{ valid_until: null }, { valid_until: { gte: now } }] }],
+        casino: {
+          status: "ACTIVE",
+          review_status: "APPROVED",
+          publication_status: "PUBLISHED",
+          quarantine_reason: null,
+        },
+      },
+      select: {
+        id: true,
+        source_offer_key: true,
+        evidence_claims: {
+          select: {
+            id: true,
+            verdict: true,
+            created_at: true,
+            evidence: {
+              select: {
+                id: true,
+                source_url: true,
+                observed_at: true,
+                extracted_at: true,
+              },
+            },
+          },
+        },
+        history_events: {
+          select: {
+            id: true,
+            field_changed: true,
+            source_url: true,
+            changed_at: true,
+          },
+        },
+      },
+      orderBy: [
+        { verified_at: { sort: "asc", nulls: "first" } },
+        { id: "asc" },
+      ],
+      take: BONUS_REVERIFICATION_BATCH_SIZE,
+    });
+
+    const result: BonusReverificationSweepResult = {
+      enqueued: 0,
+      skipped: [],
+    };
+
+    for (const bonus of candidates) {
+      const source = BonusReverificationService.resolveAuthoritativeSourceUrl(
+        bonus,
+      );
+      if ("error" in source) {
+        result.skipped.push({ bonusId: bonus.id, reason: source.error });
+        console.warn(
+          `[PlatformOrchestrator] [Scheduler] Skipping Bonus ${bonus.id} (${source.error}).`,
+        );
+        continue;
+      }
+
+      try {
+        await JobQueueService.enqueue(
+          INGESTION_QUEUE_NAME,
+          "VALIDATE_BONUS",
+          { bonusId: bonus.id, url: source.url },
+          { priority: "LOW", deduplicate: true, maxAttempts: 3 },
+        );
+        result.enqueued += 1;
+      } catch {
+        result.skipped.push({ bonusId: bonus.id, reason: "ENQUEUE_FAILED" });
+        console.warn(
+          `[PlatformOrchestrator] [Scheduler] Failed to enqueue Bonus ${bonus.id}.`,
+        );
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -587,6 +814,16 @@ export class OrchestratorService {
         this.currentRecoveryPromise = null;
         this.recoveryTimer = undefined;
 
+        if (this.currentVerificationSweepPromise) {
+          try {
+            await this.currentVerificationSweepPromise;
+          } catch {
+            // Verification sweep failures are contained by the scheduler
+          }
+        }
+        this.verificationSweepInFlight = false;
+        this.currentVerificationSweepPromise = null;
+
         // 2. Stop workers
         const stops = this.workerHandles.map((worker) => worker.stop());
         this.workerHandles = [];
@@ -623,6 +860,8 @@ export class OrchestratorService {
         this.recoveryInFlight = false;
         this.currentRecoveryPromise = null;
         this.recoveryTimer = undefined;
+        this.verificationSweepInFlight = false;
+        this.currentVerificationSweepPromise = null;
       }
 
       if (firstError) {
