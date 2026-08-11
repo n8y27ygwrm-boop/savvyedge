@@ -151,6 +151,7 @@ describe("Phase 1: Malformed Explicit Monetary Candidate Parsing Tests", () => {
 
 describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
   const verifiedDate = new Date("2026-01-01T12:00:00Z");
+  const evaluationNow = new Date("2026-01-02T12:00:00Z");
 
   const baseCasino = {
     id: "c-100",
@@ -189,7 +190,7 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
       history_events: [],
     };
     expect(PublicationGateService.getQualifyingBonusEvidence(bonusNoEvidence)).toBeNull();
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusNoEvidence)).toBe(false);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusNoEvidence, validCasino, evaluationNow)).toBe(false);
   });
 
   it("proves unrelated history/DataSource evidence (INGESTION, AUDIT, status=ACTIVE) rejects", () => {
@@ -212,7 +213,7 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
       history_events: [{ field_changed: "status", new_value: "ACTIVE", source_url: "https://apexcasino.com/terms", changed_at: verifiedDate }],
     };
     expect(PublicationGateService.getQualifyingBonusEvidence(bonusStatusActive)).toBeNull();
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusStatusActive)).toBe(false);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusStatusActive, baseCasino, evaluationNow)).toBe(false);
   });
 
   it("proves missing required relations fail closed", () => {
@@ -227,7 +228,7 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
       casino: null,
       history_events: [{ field_changed: "verified_at", source_url: "https://apexcasino.com/terms", changed_at: verifiedDate }],
     };
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusNoCasino)).toBe(false);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusNoCasino, null, evaluationNow)).toBe(false);
 
     const casinoNoLicenses = {
       ...baseCasino,
@@ -255,7 +256,7 @@ describe("Phase 1: Entity Source Evidence Predicates Tests", () => {
     };
 
     expect(PublicationGateService.isCasinoPubliclyEligible(validCasino)).toBe(true);
-    expect(PublicationGateService.isBonusPubliclyEligible(validBonus)).toBe(true);
+    expect(PublicationGateService.isBonusPubliclyEligible(validBonus, validCasino, evaluationNow)).toBe(true);
   });
 });
 
@@ -531,6 +532,7 @@ describe("Phase 1: Zero-Wagering Formula Safety Regression Test", () => {
 
 describe("Phase 2: Governance Fields Publication Gate Integration Tests", () => {
   const verifiedDate = new Date("2026-01-01T12:00:00Z");
+  const evaluationNow = new Date("2026-01-02T12:00:00Z");
 
   const baseCasino = {
     id: "gov-c-100",
@@ -606,7 +608,7 @@ describe("Phase 2: Governance Fields Publication Gate Integration Tests", () => 
       review_status: ReviewStatus.AWAITING_REVIEW,
       quarantine_reason: null,
     };
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusUnpublished)).toBe(false);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusUnpublished, approvedCasino, evaluationNow)).toBe(false);
 
     // Bonus PUBLISHED + APPROVED + null quarantine
     const bonusApprovedPublished = {
@@ -615,7 +617,7 @@ describe("Phase 2: Governance Fields Publication Gate Integration Tests", () => 
       review_status: ReviewStatus.APPROVED,
       quarantine_reason: null,
     };
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusApprovedPublished)).toBe(true);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusApprovedPublished, approvedCasino, evaluationNow)).toBe(true);
 
     // Bonus PUBLISHED but quarantine_reason not null
     const bonusQuarantined = {
@@ -624,10 +626,10 @@ describe("Phase 2: Governance Fields Publication Gate Integration Tests", () => 
       review_status: ReviewStatus.APPROVED,
       quarantine_reason: "EXPIRED_TERMS",
     };
-    expect(PublicationGateService.isBonusPubliclyEligible(bonusQuarantined)).toBe(false);
+    expect(PublicationGateService.isBonusPubliclyEligible(bonusQuarantined, approvedCasino, evaluationNow)).toBe(false);
 
     // Verify whereBonusPublic filters
-    const whereBonus = PublicationGateService.whereBonusPublic();
+    const whereBonus = PublicationGateService.whereBonusPublic(evaluationNow);
     expect(whereBonus.publication_status).toBe(PublicationStatus.PUBLISHED);
     expect(whereBonus.review_status).toBe(ReviewStatus.APPROVED);
     expect(whereBonus.quarantine_reason).toBeNull();

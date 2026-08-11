@@ -1,5 +1,10 @@
 import { Prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
 import { BonusService } from "./bonus.service";
+import {
+  BonusFreshnessPolicy,
+  DEFAULT_BONUS_FRESHNESS_POLICY,
+  isBonusFresh,
+} from "./freshness.policy";
 
 /**
  * ARCHITECTURAL MIGRATION NOTICE & TODO (Phase 2 Requirement):
@@ -268,15 +273,24 @@ export class PublicationGateService {
   /**
    * Conservative Prisma 'where' clause prefilter for Bonus queries.
    */
-  public static whereBonusPublic(): Prisma.BonusWhereInput {
-    const now = new Date();
+  public static whereBonusPublic(
+    now: Date = new Date(),
+    policy?: Partial<BonusFreshnessPolicy>,
+  ): Prisma.BonusWhereInput {
+    const maxAgeMs =
+      policy?.maxAgeMs ?? DEFAULT_BONUS_FRESHNESS_POLICY.maxAgeMs;
+    const minVerifiedAt = new Date(now.getTime() - maxAgeMs);
+
     return {
       publication_status: PublicationStatus.PUBLISHED,
       review_status: ReviewStatus.APPROVED,
       quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: { notIn: EXCLUDED_DATA_SOURCES },
-      verified_at: { not: null },
+      verified_at: {
+        gte: minVerifiedAt,
+        lte: now,
+      },
       OR: [{ valid_until: null }, { valid_until: { gte: now } }],
       history_events: {
         some: {
@@ -343,9 +357,15 @@ export class PublicationGateService {
 
   /**
    * Runtime in-memory predicate for Bonus eligibility.
-   * FAILS CLOSED if targetCasino is ineligible or getQualifyingBonusEvidence() returns null.
+   * FAILS CLOSED if targetCasino is ineligible, bonus verification is stale,
+   * or getQualifyingBonusEvidence() returns null.
    */
-  public static isBonusPubliclyEligible(bonus: any, casino?: any): boolean {
+  public static isBonusPubliclyEligible(
+    bonus: any,
+    casino?: any,
+    now?: Date,
+    policy?: Partial<BonusFreshnessPolicy>,
+  ): boolean {
     if (!bonus || typeof bonus !== "object") return false;
     if (bonus.publication_status !== PublicationStatus.PUBLISHED) return false;
     if (bonus.review_status !== ReviewStatus.APPROVED) return false;
@@ -358,10 +378,16 @@ export class PublicationGateService {
     ) {
       return false;
     }
-    if (!bonus.verified_at) return false;
+
+    const evalNow = now ?? new Date();
+
+    if (!isBonusFresh(bonus.verified_at, evalNow, policy)) {
+      return false;
+    }
+
     if (bonus.valid_until) {
       const expiry = new Date(bonus.valid_until);
-      if (isNaN(expiry.getTime()) || expiry < new Date()) {
+      if (isNaN(expiry.getTime()) || expiry < evalNow) {
         return false;
       }
     }
@@ -534,7 +560,12 @@ export class PublicationGateService {
    * - UNSUPPORTED_TYPE: Bonus type is not supported for EV calculation
    * - INELIGIBLE_BONUS: Bonus fails public data publication gate
    */
-  public static validateCalculatorEligibility(bonus: any, casino?: any): CalculatorValidationResult {
+  public static validateCalculatorEligibility(
+    bonus: any,
+    casino?: any,
+    now?: Date,
+    policy?: Partial<BonusFreshnessPolicy>,
+  ): CalculatorValidationResult {
     if (!bonus || typeof bonus !== "object") {
       return { status: "MISSING_FIELDS", reason: "Bonus record is missing or null" };
     }
@@ -549,7 +580,7 @@ export class PublicationGateService {
       return { status: "UNSUPPORTED_TYPE", reason: `Bonus type '${rawType}' is not supported for EV calculation` };
     }
 
-    if (!this.isBonusPubliclyEligible(bonus, casino)) {
+    if (!this.isBonusPubliclyEligible(bonus, casino, now, policy)) {
       return { status: "INELIGIBLE_BONUS", reason: "Bonus fails public data publication gate" };
     }
 
@@ -593,7 +624,12 @@ export class PublicationGateService {
   /**
    * Boolean wrapper around validateCalculatorEligibility.
    */
-  public static isCalculatorEligible(bonus: any, casino?: any): boolean {
-    return this.validateCalculatorEligibility(bonus, casino).status === "VALID";
+  public static isCalculatorEligible(
+    bonus: any,
+    casino?: any,
+    now?: Date,
+    policy?: Partial<BonusFreshnessPolicy>,
+  ): boolean {
+    return this.validateCalculatorEligibility(bonus, casino, now, policy).status === "VALID";
   }
 }
