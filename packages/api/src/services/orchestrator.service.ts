@@ -103,6 +103,8 @@ export interface OrchestratorConfig {
   seedSources: string[];
   enableWorkers?: boolean;
   enableSchedulers?: boolean;
+  enableDiscoveryScheduler?: boolean;
+  enableBonusReverificationScheduler?: boolean;
   enableRecovery?: boolean;
   workerPollIntervalMs?: number;
   heartbeatIntervalMs?: number;
@@ -167,6 +169,8 @@ export class OrchestratorService {
         .filter(Boolean),
       enableWorkers: true,
       enableSchedulers: true,
+      enableDiscoveryScheduler: true,
+      enableBonusReverificationScheduler: true,
       enableRecovery: true,
       workerPollIntervalMs: 500,
       heartbeatIntervalMs: 5000,
@@ -201,7 +205,18 @@ export class OrchestratorService {
 
     this.startPromise = (async () => {
       try {
-        const config = { ...this.getConfig(), ...customConfig };
+        const defaultConfig = this.getConfig();
+        const masterSchedulersEnabled =
+          customConfig?.enableSchedulers ?? defaultConfig.enableSchedulers;
+        const config: Required<OrchestratorConfig> = {
+          ...defaultConfig,
+          ...customConfig,
+          enableDiscoveryScheduler:
+            customConfig?.enableDiscoveryScheduler ?? masterSchedulersEnabled,
+          enableBonusReverificationScheduler:
+            customConfig?.enableBonusReverificationScheduler ??
+            masterSchedulersEnabled,
+        };
         this.workerNodeAdapter = config.workerNodeAdapter ?? defaultWorkerNodePersistence;
 
         console.log("=================================================");
@@ -212,7 +227,13 @@ export class OrchestratorService {
         console.log(` -> Crawl Interval:     ${config.crawlIntervalMs} ms`);
         console.log(` -> Max Domain Concur:  ${config.maxConcurrentPerDomain}`);
         console.log(` -> Workers Enabled:    ${config.enableWorkers}`);
-        console.log(` -> Schedulers Enabled: ${config.enableSchedulers}`);
+        console.log(` -> Scheduler Master:   ${config.enableSchedulers}`);
+        console.log(
+          ` -> Discovery Sched.:   ${config.enableDiscoveryScheduler}`,
+        );
+        console.log(
+          ` -> Bonus Reverify:     ${config.enableBonusReverificationScheduler}`,
+        );
         console.log(` -> Recovery Enabled:   ${config.enableRecovery}`);
         console.log("=================================================");
 
@@ -259,7 +280,10 @@ export class OrchestratorService {
         }
 
         // 5. Initialize Recurring Schedulers
-        if (config.enableSchedulers) {
+        if (
+          config.enableDiscoveryScheduler ||
+          config.enableBonusReverificationScheduler
+        ) {
           await this.startSchedulers(config, generation);
         }
 
@@ -450,48 +474,58 @@ export class OrchestratorService {
   }
 
   /**
-   * Starts recurring job schedulers with duplicate protection
+   * Starts independently enabled recurring schedulers.
+   *
+   * Production v1 supports exactly one scheduler-enabled process. Multiple
+   * scheduler replicas require persisted/atomic coordination in a later phase.
    */
   private static async startSchedulers(
-    config: OrchestratorConfig,
+    config: Required<OrchestratorConfig>,
     generation: number,
   ) {
-    // 1. Discovery Scheduler
-    const discoveryTimer = setInterval(async () => {
-      if (!this.isRunning) return;
-      console.log("[PlatformOrchestrator] [Scheduler] Enqueueing periodic DISCOVER_SEEDS job...");
-      await JobQueueService.enqueue(
-        INGESTION_QUEUE_NAME,
-        "DISCOVER_SEEDS",
-        { seedUrls: config.seedSources },
-        { priority: "HIGH", deduplicate: true }
-      );
-    }, config.discoveryIntervalMs);
+    if (config.enableDiscoveryScheduler) {
+      const discoveryTimer = setInterval(async () => {
+        if (!this.isRunning) return;
+        console.log(
+          "[PlatformOrchestrator] [Scheduler] Enqueueing periodic DISCOVER_SEEDS job...",
+        );
+        await JobQueueService.enqueue(
+          INGESTION_QUEUE_NAME,
+          "DISCOVER_SEEDS",
+          { seedUrls: config.seedSources },
+          { priority: "HIGH", deduplicate: true },
+        );
+      }, config.discoveryIntervalMs);
 
-    this.schedulerTimers.push(discoveryTimer);
+      this.schedulerTimers.push(discoveryTimer);
 
-    // Initial immediate discovery run
-    try {
-      await JobQueueService.enqueue(
-        INGESTION_QUEUE_NAME,
-        "DISCOVER_SEEDS",
-        { seedUrls: config.seedSources },
-        { priority: "HIGH", deduplicate: true }
-      );
-    } catch (error) {
-      console.error("[PlatformOrchestrator] Failed initial discovery enqueue:", error);
+      // Initial immediate discovery run
+      try {
+        await JobQueueService.enqueue(
+          INGESTION_QUEUE_NAME,
+          "DISCOVER_SEEDS",
+          { seedUrls: config.seedSources },
+          { priority: "HIGH", deduplicate: true },
+        );
+      } catch (error) {
+        console.error(
+          "[PlatformOrchestrator] Failed initial discovery enqueue:",
+          error,
+        );
+      }
     }
 
-    // 2. Published Bonus Re-Verification Scheduler
-    const verificationTimer = setInterval(() => {
-      void this.runScheduledBonusReverificationSweep(generation);
-    }, config.verificationIntervalMs);
+    if (config.enableBonusReverificationScheduler) {
+      const verificationTimer = setInterval(() => {
+        void this.runScheduledBonusReverificationSweep(generation);
+      }, config.verificationIntervalMs);
 
-    this.schedulerTimers.push(verificationTimer);
+      this.schedulerTimers.push(verificationTimer);
 
-    // Initial immediate re-verification sweep. Errors are contained so a
-    // transient database failure cannot prevent the orchestrator from starting.
-    await this.runScheduledBonusReverificationSweep(generation);
+      // Initial immediate re-verification sweep. Errors are contained so a
+      // transient database failure cannot prevent the orchestrator from starting.
+      await this.runScheduledBonusReverificationSweep(generation);
+    }
   }
 
   private static runScheduledBonusReverificationSweep(

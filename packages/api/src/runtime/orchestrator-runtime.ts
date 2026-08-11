@@ -97,6 +97,15 @@ function parseSeedSources(value: string | undefined): string[] | undefined {
   return seeds.length > 0 ? seeds : undefined;
 }
 
+function isExplicitProductionEnvironment(env: NodeJS.ProcessEnv): boolean {
+  return [env.SAVVY_ENV, env.NEXT_PUBLIC_APP_ENV, env.NODE_ENV].some(
+    (value) => {
+      const normalized = value?.trim().toLowerCase();
+      return normalized === "production" || normalized === "prod";
+    },
+  );
+}
+
 export function parseRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): Partial<OrchestratorConfig> {
@@ -198,6 +207,23 @@ export function parseRuntimeConfig(
     config.enableSchedulers = enableSchedulers;
   }
 
+  const enableDiscoveryScheduler = parseBoolean(
+    "ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER",
+    env.ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER,
+  );
+  if (enableDiscoveryScheduler !== undefined) {
+    config.enableDiscoveryScheduler = enableDiscoveryScheduler;
+  }
+
+  const enableBonusReverificationScheduler = parseBoolean(
+    "ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER",
+    env.ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER,
+  );
+  if (enableBonusReverificationScheduler !== undefined) {
+    config.enableBonusReverificationScheduler =
+      enableBonusReverificationScheduler;
+  }
+
   const enableRecovery = parseBoolean(
     "ORCHESTRATOR_ENABLE_RECOVERY",
     env.ORCHESTRATOR_ENABLE_RECOVERY,
@@ -209,6 +235,35 @@ export function parseRuntimeConfig(
   const seedSources = parseSeedSources(env.SEED_SOURCES);
   if (seedSources !== undefined) {
     config.seedSources = seedSources;
+  }
+
+  if (isExplicitProductionEnvironment(env)) {
+    if (!env.DATABASE_URL?.trim()) {
+      throw new ConfigurationError(
+        "Invalid production configuration: DATABASE_URL is required",
+      );
+    }
+
+    if (enableDiscoveryScheduler === undefined) {
+      throw new ConfigurationError(
+        "Invalid production configuration: ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER must be explicit",
+      );
+    }
+    if (enableBonusReverificationScheduler === undefined) {
+      throw new ConfigurationError(
+        "Invalid production configuration: ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER must be explicit",
+      );
+    }
+
+    if (enableDiscoveryScheduler && seedSources === undefined) {
+      throw new ConfigurationError(
+        "Invalid production configuration: SEED_SOURCES is required when discovery scheduling is enabled",
+      );
+    }
+
+    // Override development-only service fallbacks. With discovery disabled an
+    // empty seed set is valid and D3C can continue independently.
+    config.seedSources = seedSources ?? [];
   }
 
   return config;

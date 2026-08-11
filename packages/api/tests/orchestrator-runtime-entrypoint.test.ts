@@ -48,21 +48,29 @@ describe("Orchestrator Runtime Entrypoint (Boundary C3A)", () => {
       const envTrue: NodeJS.ProcessEnv = {
         ORCHESTRATOR_ENABLE_WORKERS: "true",
         ORCHESTRATOR_ENABLE_SCHEDULERS: "TRUE",
+        ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "False",
+        ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER: "True",
         ORCHESTRATOR_ENABLE_RECOVERY: "True",
       };
       const configTrue = parseRuntimeConfig(envTrue);
       expect(configTrue.enableWorkers).toBe(true);
       expect(configTrue.enableSchedulers).toBe(true);
+      expect(configTrue.enableDiscoveryScheduler).toBe(false);
+      expect(configTrue.enableBonusReverificationScheduler).toBe(true);
       expect(configTrue.enableRecovery).toBe(true);
 
       const envFalse: NodeJS.ProcessEnv = {
         ORCHESTRATOR_ENABLE_WORKERS: "false",
         ORCHESTRATOR_ENABLE_SCHEDULERS: "FALSE",
+        ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "TRUE",
+        ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER: "False",
         ORCHESTRATOR_ENABLE_RECOVERY: "False",
       };
       const configFalse = parseRuntimeConfig(envFalse);
       expect(configFalse.enableWorkers).toBe(false);
       expect(configFalse.enableSchedulers).toBe(false);
+      expect(configFalse.enableDiscoveryScheduler).toBe(true);
+      expect(configFalse.enableBonusReverificationScheduler).toBe(false);
       expect(configFalse.enableRecovery).toBe(false);
     });
 
@@ -102,11 +110,75 @@ describe("Orchestrator Runtime Entrypoint (Boundary C3A)", () => {
       ["ORCHESTRATOR_ENABLE_WORKERS", "yes"],
       ["ORCHESTRATOR_ENABLE_WORKERS", "x"],
       ["ORCHESTRATOR_ENABLE_SCHEDULERS", "0"],
+      ["ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER", "enabled"],
+      ["ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER", "disabled"],
       ["ORCHESTRATOR_ENABLE_RECOVERY", "no"],
     ])("fails closed on invalid boolean %s=%s", (envName, value) => {
+      expect(() => parseRuntimeConfig({ [envName]: value })).toThrowError(
+        ConfigurationError,
+      );
+    });
+
+    const productionEnv = (
+      overrides: NodeJS.ProcessEnv = {},
+    ): NodeJS.ProcessEnv => ({
+      SAVVY_ENV: "production",
+      DATABASE_URL: "postgresql://example.invalid/savvyedge",
+      ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "false",
+      ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER: "true",
+      ...overrides,
+    });
+
+    it("accepts the production D4B1 profile without seed sources", () => {
+      expect(parseRuntimeConfig(productionEnv())).toEqual(
+        expect.objectContaining({
+          enableDiscoveryScheduler: false,
+          enableBonusReverificationScheduler: true,
+          seedSources: [],
+        }),
+      );
+    });
+
+    it("requires explicit production seeds only when discovery is enabled", () => {
       expect(() =>
-        parseRuntimeConfig({ [envName]: value }),
+        parseRuntimeConfig(
+          productionEnv({
+            ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "true",
+          }),
+        ),
       ).toThrowError(ConfigurationError);
+
+      expect(
+        parseRuntimeConfig(
+          productionEnv({
+            ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER: "true",
+            SEED_SOURCES: "https://operator.example.test/promotions",
+          }),
+        ).seedSources,
+      ).toEqual(["https://operator.example.test/promotions"]);
+    });
+
+    it("requires DATABASE_URL in explicit production", () => {
+      expect(() =>
+        parseRuntimeConfig(productionEnv({ DATABASE_URL: "" })),
+      ).toThrowError(ConfigurationError);
+    });
+
+    it.each([
+      "ORCHESTRATOR_ENABLE_DISCOVERY_SCHEDULER",
+      "ORCHESTRATOR_ENABLE_BONUS_REVERIFICATION_SCHEDULER",
+    ])("requires explicit production capability flag %s", (name) => {
+      const env = productionEnv();
+      delete env[name];
+      expect(() => parseRuntimeConfig(env)).toThrowError(ConfigurationError);
+    });
+
+    it("parses the D3C 15-minute production interval", () => {
+      expect(
+        parseRuntimeConfig(
+          productionEnv({ VERIFICATION_INTERVAL_MS: "900000" }),
+        ).verificationIntervalMs,
+      ).toBe(900_000);
     });
   });
 
