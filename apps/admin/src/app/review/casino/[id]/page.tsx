@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
+import { EvidenceArtifactViewer } from "@/components/evidence/EvidenceArtifactViewer";
 import { ReviewActionControls } from "../../components/ReviewActionControls";
 
 export interface CasinoDetailPageProps {
@@ -386,6 +387,7 @@ export default async function CasinoReviewDetailPage(
                           .replace("T", " ")}
                       </span>
                     </div>
+                    <EvidenceArtifactViewer evidenceId={claim.evidence.id} />
                   </div>
                 ))}
               </div>

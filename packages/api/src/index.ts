@@ -17,4 +17,5 @@ export * from "./services/bonus-reverification.service";
 export * from "./services/evidence-artifact-storage.service";
 export * from "./services/filesystem-evidence-artifact-store";
 export * from "./services/supabase-evidence-artifact-store";
+export * from "./services/evidence-artifact-retrieval.service";
 export * from "./utils/auth.utils";
