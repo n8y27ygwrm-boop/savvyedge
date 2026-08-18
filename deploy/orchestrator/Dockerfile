@@ -13,6 +13,14 @@ COPY --chown=pwuser:pwuser packages ./packages
 
 RUN pnpm install --frozen-lockfile --filter @savvyedge/api...
 
+# @savvyedge/types is the only workspace dependency in @savvyedge/api's
+# runtime graph whose package.json "main" points at compiled output
+# (./dist/index.js) rather than TypeScript source. Every other workspace
+# dependency (@savvyedge/ai-agents, @savvyedge/database) resolves to source
+# and is transpiled on the fly by tsx at runtime, so only this one package
+# needs an explicit build step here.
+RUN pnpm --filter @savvyedge/types run build
+
 ENV NODE_ENV=production
 
 USER pwuser
