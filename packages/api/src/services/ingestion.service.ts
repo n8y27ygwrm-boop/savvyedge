@@ -34,6 +34,15 @@ import {
   isRetryableBonusIdentityTransactionError,
 } from "../utils/bonus-source-identity";
 import { EvidenceArtifactStorageService } from "./evidence-artifact-storage.service";
+import {
+  IngestionEnqueueService,
+  sanitizeUrlForLogging,
+  type IngestBonusInput,
+} from "./ingestion-enqueue.service";
+
+// Re-exported so the existing public surface of this module is unchanged.
+export { sanitizeUrlForLogging } from "./ingestion-enqueue.service";
+export type { IngestBonusInput } from "./ingestion-enqueue.service";
 
 function hashString(val: string): string {
   return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
@@ -69,12 +78,6 @@ export function resolveHeadlineEvidenceObservation(
   return null;
 }
 
-export interface IngestBonusInput {
-  url: string;
-  casino_id?: string;
-  taskContext?: "BONUS" | "GAME_LIST";
-}
-
 export function resolveBonusSourceProvenance(
   requestedUrl: string,
   scrapeJob: { canonical_url?: string | null } | null,
@@ -83,25 +86,6 @@ export function resolveBonusSourceProvenance(
     sourceUrl: requestedUrl,
     sourceIdentityUrl: scrapeJob?.canonical_url ?? requestedUrl,
   };
-}
-
-/**
- * Sanitizes a URL for safe operational logging.
- * Strips authentication credentials, query parameters, path tokens, and hash fragments.
- * Returns only protocol + host (e.g. "https://example.com").
- */
-export function sanitizeUrlForLogging(
-  rawUrl: string | undefined | null,
-): string {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return "<unknown-url>";
-  }
-  try {
-    const parsed = new URL(rawUrl.trim());
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return "<invalid-url>";
-  }
 }
 
 const ALLOWED_ERROR_NAMES = new Set([
@@ -140,53 +124,13 @@ export class IngestionService {
   /**
    * Enqueues an ingestion pipeline for a given URL.
    * Asynchronous entrypoint.
+   *
+   * Delegates to the lightweight control-plane service so worker and web
+   * runtimes share one enqueue implementation without the web runtime having
+   * to load this (execution-plane) module.
    */
-  public static async enqueueIngestion({ url, casino_id, taskContext = "BONUS" }: IngestBonusInput) {
-    const safeUrl = sanitizeUrlForLogging(url);
-    console.log(`[IngestionService] Enqueueing ingestion for URL: ${safeUrl} (context: ${taskContext})`);
-
-    if (taskContext === "GAME_LIST" && !casino_id) {
-      throw new Error("GAME_LIST ingestion requires a casino_id");
-    }
-
-    const sourceType = taskContext === "GAME_LIST" ? "CASINO_GAME_LOBBY_PAGE" : "CASINO_PROMOTION_PAGE";
-
-    // 1. Find or create DataSource
-    let dataSource = await prisma.dataSource.findFirst({ where: { url } });
-    if (!dataSource) {
-      dataSource = await prisma.dataSource.create({
-        data: {
-          url,
-          source_type: sourceType,
-          last_scraped_at: new Date(),
-        },
-      });
-    } else {
-      await prisma.dataSource.update({
-        where: { id: dataSource.id },
-        data: { last_scraped_at: new Date() },
-      });
-    }
-
-    // 2. Create ScrapeJob
-    const scrapeJob = await prisma.scrapeJob.create({
-      data: {
-        data_source_id: dataSource.id,
-        status: "PROCESSING",
-        started_at: new Date(),
-        retry_count: 0,
-      },
-    });
-
-    // 3. Enqueue CRAWL_URL job
-    await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "CRAWL_URL", {
-      scrapeJobId: scrapeJob.id,
-      url,
-      casinoId: casino_id,
-      taskContext,
-    });
-
-    return scrapeJob;
+  public static async enqueueIngestion(input: IngestBonusInput) {
+    return IngestionEnqueueService.enqueueIngestion(input);
   }
 
   /**

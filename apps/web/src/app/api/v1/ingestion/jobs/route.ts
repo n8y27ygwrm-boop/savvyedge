@@ -1,4 +1,7 @@
-import { IngestionService, verifyApiAuthorization } from "@savvyedge/api";
+import {
+  IngestionEnqueueService,
+  verifyApiAuthorization,
+} from "@savvyedge/api/ingestion-entrypoint";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -67,7 +70,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const scrapeJob = await IngestionService.enqueueIngestion(parsed.data);
+    const scrapeJob = await IngestionEnqueueService.enqueueIngestion(
+      parsed.data,
+    );
 
     return NextResponse.json(
       {

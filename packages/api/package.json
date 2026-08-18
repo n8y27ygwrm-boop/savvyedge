@@ -12,6 +12,10 @@
     "./workflow": {
       "types": "./dist/workflow.d.ts",
       "default": "./dist/workflow.js"
+    },
+    "./ingestion-entrypoint": {
+      "types": "./dist/ingestion-entrypoint.d.ts",
+      "default": "./dist/ingestion-entrypoint.js"
     }
   },
   "scripts": {

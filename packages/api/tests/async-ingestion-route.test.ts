@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IngestionService } from "@savvyedge/api";
+import { IngestionEnqueueService } from "@savvyedge/api/ingestion-entrypoint";
 import { POST } from "../../../apps/web/src/app/api/v1/ingestion/jobs/route";
 
 const endpoint = "http://localhost/api/v1/ingestion/jobs";
@@ -44,7 +45,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
   });
 
   it("returns 401 when authentication is missing", async () => {
-    const enqueue = vi.spyOn(IngestionService, "enqueueIngestion");
+    const enqueue = vi.spyOn(IngestionEnqueueService, "enqueueIngestion");
 
     const response = await POST(request({ url: "https://example.com/bonus" }));
 
@@ -53,7 +54,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
   });
 
   it("returns 403 when authentication is invalid", async () => {
-    const enqueue = vi.spyOn(IngestionService, "enqueueIngestion");
+    const enqueue = vi.spyOn(IngestionEnqueueService, "enqueueIngestion");
 
     const response = await POST(
       request({ url: "https://example.com/bonus" }, "Bearer invalid-secret"),
@@ -64,7 +65,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
   });
 
   it("returns 400 when request body contains malformed JSON", async () => {
-    const enqueue = vi.spyOn(IngestionService, "enqueueIngestion");
+    const enqueue = vi.spyOn(IngestionEnqueueService, "enqueueIngestion");
 
     const response = await POST(
       rawRequest("{" + "invalid-json", `Bearer ${secret}`),
@@ -97,7 +98,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
       "invalid taskContext",
     ],
   ])("returns 400 for %s (%s)", async (body) => {
-    const enqueue = vi.spyOn(IngestionService, "enqueueIngestion");
+    const enqueue = vi.spyOn(IngestionEnqueueService, "enqueueIngestion");
 
     const response = await POST(request(body, `Bearer ${secret}`));
 
@@ -111,7 +112,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
       status: "PENDING",
     };
     const enqueue = vi
-      .spyOn(IngestionService, "enqueueIngestion")
+      .spyOn(IngestionEnqueueService, "enqueueIngestion")
       .mockResolvedValue(scrapeJob as never);
 
     const response = await POST(
@@ -144,7 +145,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
       canonical_url: null,
     };
     const enqueue = vi
-      .spyOn(IngestionService, "enqueueIngestion")
+      .spyOn(IngestionEnqueueService, "enqueueIngestion")
       .mockResolvedValue(scrapeJob);
 
     const response = await POST(
@@ -195,7 +196,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
       canonical_url: null,
     };
     const enqueue = vi
-      .spyOn(IngestionService, "enqueueIngestion")
+      .spyOn(IngestionEnqueueService, "enqueueIngestion")
       .mockResolvedValue(scrapeJob);
     const synchronousIngestion = vi.spyOn(
       IngestionService,
@@ -243,7 +244,7 @@ describe("POST /api/v1/ingestion/jobs", () => {
       "DATABASE_URL=postgresql://admin:secret@internal-db:5432/savvy",
     );
     const enqueue = vi
-      .spyOn(IngestionService, "enqueueIngestion")
+      .spyOn(IngestionEnqueueService, "enqueueIngestion")
       .mockRejectedValue(sensitiveError);
     const synchronousIngestion = vi.spyOn(
       IngestionService,
