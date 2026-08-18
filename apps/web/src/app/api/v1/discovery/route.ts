@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { DiscoveryService, verifyApiAuthorization } from "@savvyedge/api";
+import {
+  DiscoveryService,
+  isExplicitProductionEnvironment,
+  verifyApiAuthorization,
+} from "@savvyedge/api";
 
 export async function GET(request: Request) {
   const auth = verifyApiAuthorization(request);
@@ -26,6 +30,23 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (isExplicitProductionEnvironment(process.env)) {
+    return NextResponse.json(
+      {
+        data: null,
+        meta: {
+          execution: "disabled",
+          reason: "SYNCHRONOUS_DISCOVERY_DISABLED_IN_PRODUCTION",
+        },
+        error: {
+          message:
+            "Synchronous discovery is disabled in production. Discovery runs only via the orchestrator's discovery scheduler.",
+        },
+      },
+      { status: 410 }
+    );
+  }
+
   const auth = verifyApiAuthorization(request);
   if (!auth.authorized) {
     return NextResponse.json(

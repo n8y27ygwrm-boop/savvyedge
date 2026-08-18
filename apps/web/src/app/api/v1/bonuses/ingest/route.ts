@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { IngestionService, verifyApiAuthorization } from "@savvyedge/api";
+import {
+  IngestionService,
+  isExplicitProductionEnvironment,
+  verifyApiAuthorization,
+} from "@savvyedge/api";
 import { z } from "zod";
 
 const IngestRequestBodySchema = z.object({
@@ -8,6 +12,23 @@ const IngestRequestBodySchema = z.object({
 });
 
 export async function POST(request: Request) {
+  if (isExplicitProductionEnvironment(process.env)) {
+    return NextResponse.json(
+      {
+        data: null,
+        meta: {
+          execution: "disabled",
+          reason: "LEGACY_SYNCHRONOUS_INGESTION_DISABLED_IN_PRODUCTION",
+        },
+        error: {
+          message:
+            "This endpoint is disabled in production. Use POST /api/v1/ingestion/jobs for asynchronous ingestion.",
+        },
+      },
+      { status: 410 },
+    );
+  }
+
   const auth = verifyApiAuthorization(request);
   if (!auth.authorized) {
     return NextResponse.json(
