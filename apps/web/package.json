@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "verify:ingestion-trace": "node scripts/verify-ingestion-route-trace.mjs",
     "start": "next start",
     "lint": "eslint"
   },

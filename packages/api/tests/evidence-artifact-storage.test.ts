@@ -7,6 +7,7 @@ import {
   EvidenceArtifactConfigurationError,
   EvidenceArtifactPersistenceError,
   MAX_EVIDENCE_ARTIFACT_SIZE_BYTES,
+  prepareEvidenceArtifact,
   resolveEvidenceArtifactStorageConfig,
   type PersistObservationInput,
 } from "../src/services/evidence-artifact-storage.service";
@@ -88,8 +89,14 @@ describe("durable evidence artifact storage", () => {
     const input = observation();
 
     const result = await store.persistObservation(input);
+    const prepared = prepareEvidenceArtifact(input, {
+      NODE_ENV: "test",
+      SAVVY_EVIDENCE_STORAGE_BACKEND: "filesystem",
+      SAVVY_SNAPSHOT_ROOT: root,
+    });
     const persisted = fs.readFileSync(path.join(root, result.locator));
 
+    expect(prepared).toEqual(result);
     expect(persisted.equals(Buffer.from(input.rawHtml, "utf8"))).toBe(true);
     expect(result.htmlHash).toBe(input.expectedHtmlHash);
     expect(result.byteSize).toBe(Buffer.byteLength(input.rawHtml, "utf8"));
@@ -125,8 +132,16 @@ describe("durable evidence artifact storage", () => {
     const input = observation();
 
     const result = await store.persistObservation(input);
+    const prepared = prepareEvidenceArtifact(input, {
+      NODE_ENV: "test",
+      SAVVY_EVIDENCE_STORAGE_BACKEND: "supabase",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_SECRET_KEY: "sb_secret_test_only",
+      SAVVY_EVIDENCE_STORAGE_BUCKET: "savvyedge-evidence",
+    });
     const [objectKey, body, options] = fake.upload.mock.calls[0];
 
+    expect(prepared).toEqual(result);
     expect(fake.from).toHaveBeenCalledWith("savvyedge-evidence");
     expect(Buffer.isBuffer(body)).toBe(true);
     expect(body.equals(Buffer.from(input.rawHtml, "utf8"))).toBe(true);

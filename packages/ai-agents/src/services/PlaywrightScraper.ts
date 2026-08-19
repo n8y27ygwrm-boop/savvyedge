@@ -55,6 +55,7 @@ export interface PlaywrightScrapeOptions {
 export interface PlaywrightScrapeResult {
   url: string;
   finalUrl: string;
+  httpStatus?: number;
   title?: string;
   rawHtml: string;
   content: string;
@@ -76,6 +77,87 @@ export interface PlaywrightScrapeResult {
   attemptCount: number;
   durationMs: number;
   timestamp: Date;
+}
+
+export interface BuildScrapeResultFromHtmlInput {
+  url: string;
+  finalUrl: string;
+  rawHtml: string;
+  timestamp: Date;
+  httpStatus?: number;
+  title?: string;
+  attemptCount?: number;
+  durationMs?: number;
+}
+
+/**
+ * Deterministically derives the complete scraper result from already-rendered
+ * HTML. Both the local browser and paid geo fallback use this function so
+ * recovery from a durable artifact produces the same hashes, metadata and
+ * readable content as the original attempt.
+ */
+export function buildScrapeResultFromHtml(
+  input: BuildScrapeResultFromHtmlInput,
+): PlaywrightScrapeResult {
+  const $ = cheerio.load(input.rawHtml);
+  const documentTitle = $("title").text().trim() || undefined;
+  const pageTitle = input.title?.trim() || documentTitle;
+  const description =
+    $('meta[name="description"]').attr("content") ||
+    $('meta[property="og:description"]').attr("content") ||
+    undefined;
+  const ogTitle =
+    $('meta[property="og:title"]').attr("content") || undefined;
+  const ogDescription =
+    $('meta[property="og:description"]').attr("content") || undefined;
+  const ogImage =
+    $('meta[property="og:image"]').attr("content") || undefined;
+  const ogSiteName =
+    $('meta[property="og:site_name"]').attr("content") ||
+    $('meta[name="application-name"]').attr("content") ||
+    undefined;
+  const ogType = $('meta[property="og:type"]').attr("content") || undefined;
+  const ogUrl = $('meta[property="og:url"]').attr("content") || undefined;
+  const canonicalAttr = $('link[rel="canonical"]').attr("href");
+  const canonicalUrl =
+    resolveDocumentUrl(canonicalAttr, input.finalUrl) ||
+    resolveDocumentUrl(ogUrl, input.finalUrl);
+  const content = extractReadableText(input.rawHtml);
+  const htmlHash = crypto
+    .createHash("sha256")
+    .update(input.rawHtml)
+    .digest("hex");
+  const contentHash = crypto
+    .createHash("sha256")
+    .update(content)
+    .digest("hex");
+
+  return {
+    url: input.url,
+    finalUrl: input.finalUrl,
+    httpStatus: input.httpStatus,
+    title: pageTitle,
+    rawHtml: input.rawHtml,
+    content,
+    htmlHash,
+    contentHash,
+    canonicalUrl,
+    metadata: {
+      title: ogTitle || pageTitle,
+      siteName: ogSiteName,
+      description: ogDescription || description,
+      ogTitle,
+      ogDescription,
+      ogImage,
+      ogSiteName,
+      ogType,
+      ogUrl,
+    },
+    snapshotPath: undefined,
+    attemptCount: input.attemptCount ?? 0,
+    durationMs: input.durationMs ?? 0,
+    timestamp: input.timestamp,
+  };
 }
 
 export class PlaywrightScraper {
@@ -196,7 +278,7 @@ export class PlaywrightScraper {
         const page: Page = await context.newPage();
 
         // Navigate with timeout
-        await page.goto(options.url, {
+        const navigationResponse = await page.goto(options.url, {
           waitUntil: "domcontentloaded",
           timeout: timeoutMs,
         });
@@ -208,92 +290,26 @@ export class PlaywrightScraper {
         const pageTitle =
           (await page.title().catch(() => "")).trim() || undefined;
 
-        // Extract canonical URL using Playwright locator
-        let canonicalUrl: string | undefined = undefined;
-        try {
-          const canonicalAttr = await page
-            .locator("link[rel='canonical']")
-            .getAttribute("href");
-          if (canonicalAttr) {
-            canonicalUrl = resolveDocumentUrl(canonicalAttr, finalUrl);
-          }
-        } catch {
-          // Ignore if canonical tag not present
-        }
-
         const rawHtml = await page.content();
         const observedAt = new Date();
         await browser.close();
         browser = null;
-
-        // Parse HTML via Cheerio to extract OpenGraph & metadata
-        const $ = cheerio.load(rawHtml);
-
-        const documentTitle = $("title").text().trim() || undefined;
-        const description =
-          $('meta[name="description"]').attr("content") ||
-          $('meta[property="og:description"]').attr("content") ||
-          undefined;
-
-        const ogTitle =
-          $('meta[property="og:title"]').attr("content") || undefined;
-        const ogDescription =
-          $('meta[property="og:description"]').attr("content") || undefined;
-        const ogImage =
-          $('meta[property="og:image"]').attr("content") || undefined;
-        const ogSiteName =
-          $('meta[property="og:site_name"]').attr("content") ||
-          $('meta[name="application-name"]').attr("content") ||
-          undefined;
-        const ogType =
-          $('meta[property="og:type"]').attr("content") || undefined;
-        const ogUrl = $('meta[property="og:url"]').attr("content") || undefined;
-
-        // Strip non-content elements & extract normalized readable text
-        const cleanedText = extractReadableText(rawHtml);
-
-        // Compute SHA-256 hashes
-        const htmlHash = crypto
-          .createHash("sha256")
-          .update(rawHtml)
-          .digest("hex");
-        const contentHash = crypto
-          .createHash("sha256")
-          .update(cleanedText)
-          .digest("hex");
 
         const durationMs = Date.now() - startTime;
         console.log(
           `[PlaywrightScraper] Successfully scraped ${options.url} in ${durationMs}ms`,
         );
 
-        return {
+        return buildScrapeResultFromHtml({
           url: options.url,
           finalUrl,
-          title: pageTitle || documentTitle,
+          httpStatus: navigationResponse?.status(),
+          title: pageTitle,
           rawHtml,
-          content: cleanedText,
-          htmlHash,
-          contentHash,
-          canonicalUrl: canonicalUrl || resolveDocumentUrl(ogUrl, finalUrl),
-          metadata: {
-            title: ogTitle || pageTitle || documentTitle,
-            siteName: ogSiteName,
-            description: ogDescription || description,
-            ogTitle,
-            ogDescription,
-            ogImage,
-            ogSiteName,
-            ogType,
-            ogUrl,
-          },
-          // Snapshot persistence is intentionally owned by the API layer after
-          // source-page eligibility has been established.
-          snapshotPath: undefined,
+          timestamp: observedAt,
           attemptCount: attempt,
           durationMs,
-          timestamp: observedAt,
-        };
+        });
       } catch (err: any) {
         lastError = err;
         console.warn(

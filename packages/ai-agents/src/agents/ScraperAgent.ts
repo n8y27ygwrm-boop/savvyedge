@@ -11,6 +11,7 @@ export const ScraperInputSchema = z.object({
 export const ScraperOutputSchema = z.object({
   url: z.string(),
   finalUrl: z.string().url(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
   title: z.string().optional(),
   content: z.string(),
   rawHtml: z.string().optional(),
@@ -25,6 +26,9 @@ export const ScraperOutputSchema = z.object({
       ogTitle: z.string().optional(),
       ogDescription: z.string().optional(),
       ogImage: z.string().optional(),
+      ogSiteName: z.string().optional(),
+      ogType: z.string().optional(),
+      ogUrl: z.string().optional(),
     })
     .optional(),
   snapshotPath: z.string().optional(),
@@ -58,6 +62,7 @@ export class ScraperAgent extends BaseAgent<ScraperInput, ScraperOutput> {
       return {
         url: result.url,
         finalUrl: result.finalUrl,
+        httpStatus: result.httpStatus,
         title: result.title,
         content: result.content,
         rawHtml: result.rawHtml,

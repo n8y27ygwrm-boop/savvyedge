@@ -34,4 +34,12 @@ export * from "./agents/all-agents";
 export * from "./utils/url-normalizer";
 export * from "./utils/bonus-semantics";
 export * from "./services/SnapshotStorage";
-export { extractReadableText, NON_CONTENT_SELECTOR } from "./services/PlaywrightScraper";
+export {
+  buildScrapeResultFromHtml,
+  extractReadableText,
+  NON_CONTENT_SELECTOR,
+} from "./services/PlaywrightScraper";
+export type {
+  BuildScrapeResultFromHtmlInput,
+  PlaywrightScrapeResult,
+} from "./services/PlaywrightScraper";

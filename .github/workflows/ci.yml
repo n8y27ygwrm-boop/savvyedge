@@ -57,5 +57,8 @@ jobs:
       - name: Build Workspace
         run: pnpm turbo build
 
+      - name: Verify Vercel Ingestion Route Trace
+        run: pnpm --filter web run verify:ingestion-trace
+
       - name: Lint Workspace
         run: pnpm turbo lint

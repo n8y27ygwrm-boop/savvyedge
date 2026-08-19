@@ -185,11 +185,15 @@ describe("unified ingestion queue contract", () => {
         taskContext,
       });
 
-      expect(enqueue).toHaveBeenCalledWith(
+      const expectedArguments = [
         INGESTION_QUEUE_NAME,
         expectedTask,
         expect.objectContaining({ scrapeJobId: "scrape-job-id" }),
-      );
+      ];
+      if (expectedTask === "EXTRACT_BONUS") {
+        expectedArguments.push({ deduplicate: true });
+      }
+      expect(enqueue).toHaveBeenCalledWith(...expectedArguments);
     },
   );
 
@@ -233,6 +237,39 @@ describe("unified ingestion queue contract", () => {
       },
       { priority: "LOW", deduplicate: true },
     );
+  });
+
+  it("deduplicates the exact EXTRACT_BONUS payload while pending", async () => {
+    const payload = {
+      scrapeJobId: "scrape-job-id",
+      url: "https://operator.example.com/promotions/welcome",
+      casinoId: undefined,
+      scrapedContent: "Welcome bonus 100% up to £200",
+      scrapedMetadata: { title: "Welcome bonus" },
+      observedAt: OBSERVED_AT.toISOString(),
+    };
+    const existing = { id: "existing-extraction-job" } as never;
+    vi.spyOn(prisma.jobQueue, "findFirst").mockResolvedValue(existing);
+    const create = vi.spyOn(prisma.jobQueue, "create");
+
+    await expect(
+      JobQueueService.enqueue(
+        INGESTION_QUEUE_NAME,
+        "EXTRACT_BONUS",
+        payload,
+        { deduplicate: true },
+      ),
+    ).resolves.toBe(existing);
+
+    expect(prisma.jobQueue.findFirst).toHaveBeenCalledWith({
+      where: {
+        queue_name: INGESTION_QUEUE_NAME,
+        task_type: "EXTRACT_BONUS",
+        status: { in: ["PENDING", "PROCESSING"] },
+        payload: JSON.stringify(payload),
+      },
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects known ingestion jobs on the legacy queue before persistence", async () => {

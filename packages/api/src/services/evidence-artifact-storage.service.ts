@@ -21,6 +21,8 @@ export interface PersistObservationResult {
   byteSize: number;
 }
 
+export type PreparedObservationArtifact = PersistObservationResult;
+
 export interface EvidenceArtifactStore {
   persistObservation(
     input: PersistObservationInput,
@@ -161,6 +163,29 @@ export function createEvidenceArtifactStore(
     });
   }
   return new SupabaseEvidenceArtifactStore(config);
+}
+
+/**
+ * Computes the exact locator that persistObservation will use without writing
+ * bytes. Geo-fallback recovery checkpoints this locator before attempting the
+ * object-store write, allowing a retry to detect an upload that completed just
+ * before the original worker died.
+ */
+export function prepareEvidenceArtifact(
+  input: PersistObservationInput,
+  env: NodeJS.ProcessEnv = process.env,
+): PreparedObservationArtifact {
+  const { bytes, htmlHash } = validateObservationInput(input);
+  const objectKey = buildEvidenceArtifactObjectKey(input, htmlHash);
+  const config = resolveEvidenceArtifactStorageConfig(env);
+  return {
+    locator:
+      config.backend === "filesystem"
+        ? objectKey.replaceAll("/", "_")
+        : `supabase://${config.bucket}/${objectKey}`,
+    htmlHash,
+    byteSize: bytes.byteLength,
+  };
 }
 
 export function computeEvidenceArtifactHash(bytes: Uint8Array): string {

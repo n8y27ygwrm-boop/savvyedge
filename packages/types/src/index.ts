@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./evidence-governance";
+export * from "./geo-fallback-checkpoint";
 
 // --- Casino Schemas ---
 

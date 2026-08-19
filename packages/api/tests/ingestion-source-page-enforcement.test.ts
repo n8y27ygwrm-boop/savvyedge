@@ -84,10 +84,10 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       taskContext: "BONUS",
     });
 
-    const updateJob = vi
-      .spyOn(prisma.scrapeJob, "update")
-      .mockResolvedValue({} as never);
-    vi.spyOn(prisma.scrapeJob, "updateMany").mockResolvedValue({ count: 1 });
+    vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
+    const updateManyJob = vi
+      .spyOn(prisma.scrapeJob, "updateMany")
+      .mockResolvedValue({ count: 1 });
     vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue({
       id: "scrape-job-1",
       data_source_id: "ds-1",
@@ -103,8 +103,13 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       taskContext: "BONUS",
     });
 
-    expect(updateJob).toHaveBeenCalledWith({
-      where: { id: "scrape-job-1" },
+    const provenanceCall = updateManyJob.mock.calls.find(
+      ([call]) =>
+        call.data.snapshot_path ===
+        "supabase://savvyedge-evidence/v1/observation.html",
+    );
+    expect(provenanceCall?.[0]).toMatchObject({
+      where: { id: "scrape-job-1", retry_count: 0 },
       data: {
         snapshot_path:
           "supabase://savvyedge-evidence/v1/observation.html",
@@ -127,6 +132,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         url: requestedUrl,
         observedAt: OBSERVED_AT.toISOString(),
       }),
+      { deduplicate: true },
     );
   });
 
@@ -210,6 +216,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         scrapeJobId: "scrape-job-3",
         url: requestedUrl,
       }),
+      { deduplicate: true },
     );
   });
 
@@ -225,7 +232,11 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         req: "https://casino.example.com/promotions/welcome/",
         final: "https://casino.example.com/promotions/welcome/",
         title: "Services Unavailable in Your Location",
-        content: "Not available in your country",
+        content:
+          "Not available in your country. " +
+          "This rendered page includes substantial ordinary navigation and account information. ".repeat(
+            12,
+          ),
       },
       {
         req: "https://casino.example.com/promotions/welcome/",
@@ -283,7 +294,11 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       requestedUrl: sensitiveRequestedUrl,
       finalUrl: sensitiveRequestedUrl,
       title: "Services Unavailable in Your Location",
-      content: "Not available in your country",
+      content:
+        "Not available in your country. " +
+        "This rendered page includes substantial ordinary navigation and account information. ".repeat(
+          12,
+        ),
       taskContext: "BONUS",
     });
 
@@ -472,13 +487,16 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       "About Us Apps Blog Home Racing Sponsors Log in Create account";
 
     function mockCrawlJob(id: string) {
-      vi.spyOn(prisma.scrapeJob, "updateMany").mockResolvedValue({ count: 1 });
+      const updateMany = vi
+        .spyOn(prisma.scrapeJob, "updateMany")
+        .mockResolvedValue({ count: 1 });
       vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue({
         id,
         data_source_id: `ds-${id}`,
       } as never);
       vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue(null);
-      return vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
+      vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
+      return updateMany;
     }
 
     it("persists the durable observation before evaluating sufficiency and retains snapshot path, hashes, and canonical URL", async () => {
@@ -489,7 +507,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         title: "Welcome Bonus",
         content: chromeOnlyContent,
       });
-      const update = mockCrawlJob("scrape-job-insufficient");
+      const updateMany = mockCrawlJob("scrape-job-insufficient");
       const enqueue = vi.spyOn(JobQueueService, "enqueue");
       vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -506,9 +524,13 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         EvidenceArtifactStorageService.persistObservation,
       ).toHaveBeenCalledOnce();
       // ...and its provenance was committed to the ScrapeJob.
-      expect(update).toHaveBeenCalledOnce();
-      expect(update).toHaveBeenCalledWith({
-        where: { id: "scrape-job-insufficient" },
+      const provenanceCall = updateMany.mock.calls.find(
+        ([call]) =>
+          call.data.snapshot_path ===
+          "supabase://savvyedge-evidence/v1/observation.html",
+      );
+      expect(provenanceCall?.[0]).toMatchObject({
+        where: { id: "scrape-job-insufficient", retry_count: 0 },
         data: {
           snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
           html_hash: "test-html-sha256-hash",
@@ -598,7 +620,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         title: "Welcome Bonus",
         content: chromeOnlyContent,
       });
-      const update = mockCrawlJob("scrape-job-ordering");
+      const updateMany = mockCrawlJob("scrape-job-ordering");
       const enqueue = vi.spyOn(JobQueueService, "enqueue");
       vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -616,7 +638,12 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       const persistOrder =
         vi.mocked(EvidenceArtifactStorageService.persistObservation).mock
           .invocationCallOrder[0];
-      const updateOrder = update.mock.invocationCallOrder[0];
+      const provenanceIndex = updateMany.mock.calls.findIndex(
+        ([call]) =>
+          call.data.snapshot_path ===
+          "supabase://savvyedge-evidence/v1/observation.html",
+      );
+      const updateOrder = updateMany.mock.invocationCallOrder[provenanceIndex];
       expect(persistOrder).toBeGreaterThan(0);
       expect(updateOrder).toBeGreaterThan(persistOrder);
 
@@ -641,6 +668,16 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         content: sparse,
       });
       mockCrawlJob("scrape-job-gamelist-ungated");
+      const paidFallback = vi.spyOn(
+        (
+          IngestionService as unknown as {
+            scrapingAntFallbackService: {
+              scrape: (url: string) => Promise<unknown>;
+            };
+          }
+        ).scrapingAntFallbackService,
+        "scrape",
+      );
       const enqueue = vi
         .spyOn(JobQueueService, "enqueue")
         .mockResolvedValue({ id: "queue-job-id" } as never);
@@ -653,6 +690,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       });
 
       expect(enqueue).toHaveBeenCalledOnce();
+      expect(paidFallback).not.toHaveBeenCalled();
       expect(enqueue).toHaveBeenCalledWith(
         "ingestion-queue",
         "EXTRACT_GAME_LIST",
@@ -684,14 +722,19 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       });
 
       expect(enqueue).toHaveBeenCalledOnce();
-      expect(enqueue).toHaveBeenCalledWith("ingestion-queue", "EXTRACT_BONUS", {
-        scrapeJobId: "scrape-job-sufficient",
-        url: requestedUrl,
-        casinoId: undefined,
-        scrapedContent: "Get 300 FREE SPINS when you play £30 on slots",
-        scrapedMetadata: { title: "Welcome Bonus" },
-        observedAt: OBSERVED_AT.toISOString(),
-      });
+      expect(enqueue).toHaveBeenCalledWith(
+        "ingestion-queue",
+        "EXTRACT_BONUS",
+        {
+          scrapeJobId: "scrape-job-sufficient",
+          url: requestedUrl,
+          casinoId: undefined,
+          scrapedContent: "Get 300 FREE SPINS when you play £30 on slots",
+          scrapedMetadata: { title: "Welcome Bonus" },
+          observedAt: OBSERVED_AT.toISOString(),
+        },
+        { deduplicate: true },
+      );
     });
 
     it("accepts a terse but real offer, so the boundary does not over-reject", async () => {
@@ -816,9 +859,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         data_source_id: "ds-terminal",
       } as never);
       vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue(null);
-      const provenance = vi
-        .spyOn(prisma.scrapeJob, "update")
-        .mockResolvedValue({} as never);
+      vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
       const scrapeJobWrite = vi
         .spyOn(prisma.scrapeJob, "updateMany")
         .mockResolvedValue({ count: 1 });
@@ -833,8 +874,13 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
 
       // Provenance written before the boundary and never rolled back.
-      expect(provenance).toHaveBeenCalledWith({
-        where: { id: "scrape-job-terminal" },
+      const provenance = scrapeJobWrite.mock.calls.find(
+        ([call]) =>
+          call.data.snapshot_path ===
+          "supabase://savvyedge-evidence/v1/observation.html",
+      );
+      expect(provenance?.[0]).toMatchObject({
+        where: { id: "scrape-job-terminal", retry_count: 0 },
         data: {
           snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
           html_hash: "test-html-sha256-hash",

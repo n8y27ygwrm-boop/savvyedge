@@ -16,8 +16,11 @@ import {
   BonusAgent,
   CasinoResolutionAgent,
   GameListAgent,
+  buildScrapeResultFromHtml,
   normalizeBonusExtraction,
   type BonusSourceSemantics,
+  type PlaywrightScrapeResult,
+  type ScraperOutput,
 } from "@savvyedge/ai-agents";
 import { BonusService } from "./bonus.service";
 import { CasinoService } from "./casino.service";
@@ -37,7 +40,25 @@ import {
   isBonusIdentityUniqueViolation,
   isRetryableBonusIdentityTransactionError,
 } from "../utils/bonus-source-identity";
-import { EvidenceArtifactStorageService } from "./evidence-artifact-storage.service";
+import {
+  EvidenceArtifactStorageService,
+  prepareEvidenceArtifact,
+} from "./evidence-artifact-storage.service";
+import {
+  EvidenceArtifactRetrievalError,
+  EvidenceArtifactRetrievalService,
+} from "./evidence-artifact-retrieval.service";
+import { classifyGeoBlock } from "./geo-block-classifier";
+import {
+  createGeoFallbackCheckpoint,
+  GeoFallbackCheckpointError,
+  parseGeoFallbackCheckpoint,
+  type GeoFallbackCheckpoint,
+} from "@savvyedge/types";
+import {
+  ScrapingAntFallbackError,
+  ScrapingAntFallbackService,
+} from "./scrapingant-fallback.service";
 import {
   IngestionEnqueueService,
   sanitizeUrlForLogging,
@@ -47,6 +68,56 @@ import {
 // Re-exported so the existing public surface of this module is unchanged.
 export { sanitizeUrlForLogging } from "./ingestion-enqueue.service";
 export type { IngestBonusInput } from "./ingestion-enqueue.service";
+
+export const MAX_GEO_FALLBACK_ATTEMPTS = 1;
+const FALLBACK_ARTIFACT_READ_ATTEMPTS = 2;
+const FALLBACK_ARTIFACT_READ_RECHECK_DELAY_MS = 25;
+
+type CrawlScrapeResult = ScraperOutput | PlaywrightScrapeResult;
+
+type ConsumedGeoFallbackCheckpoint = Extract<
+  GeoFallbackCheckpoint,
+  { state: "REQUEST_CLAIMED" | "PROVIDER_FAILED" | "FALLBACK_REJECTED" }
+>;
+
+type GeoFallbackResumeDecision =
+  | { action: "STANDARD" }
+  | { action: "HANDLED" }
+  | { action: "LOCAL_RECOVERY"; checkpoint: ConsumedGeoFallbackCheckpoint };
+
+type GeoFallbackRuntimeErrorCode =
+  | "FALLBACK_RESULT_UNAVAILABLE"
+  | "FALLBACK_REJECTED"
+  | "FALLBACK_BUDGET_EXHAUSTED"
+  | "FALLBACK_CONCURRENT_STATE_CHANGED"
+  | "FALLBACK_ARTIFACT_MISMATCH"
+  | "LOCAL_RECOVERY_REJECTED"
+  | "LOCAL_RECOVERY_STILL_GEO_BLOCKED";
+
+class GeoFallbackRuntimeError extends Error {
+  public constructor(public readonly code: GeoFallbackRuntimeErrorCode) {
+    super(`Geo fallback failed (${code})`);
+    this.name = "GeoFallbackRuntimeError";
+  }
+}
+
+function checkpointJson(
+  checkpoint: GeoFallbackCheckpoint,
+): Prisma.InputJsonValue {
+  return checkpoint as unknown as Prisma.InputJsonValue;
+}
+
+function exactUtf8(bytes: Buffer): string {
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (!Buffer.from(content, "utf8").equals(bytes)) {
+      throw new Error("non-exact UTF-8");
+    }
+    return content;
+  } catch {
+    throw new GeoFallbackRuntimeError("FALLBACK_RESULT_UNAVAILABLE");
+  }
+}
 
 function hashString(val: string): string {
   return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
@@ -121,6 +192,8 @@ export function classifyErrorForLogging(err: unknown): string {
 
 export class IngestionService {
   private static scraperAgent = new ScraperAgent();
+  private static scrapingAntFallbackService = new ScrapingAntFallbackService();
+  private static evidenceArtifactReader = new EvidenceArtifactRetrievalService();
   private static bonusAgent = new BonusAgent();
   private static casinoResolutionAgent = new CasinoResolutionAgent();
   private static gameListAgent = new GameListAgent();
@@ -175,7 +248,22 @@ export class IngestionService {
       `[IngestionService] [Worker] Crawling URL: ${safeUrl} (context: ${taskContext})`,
     );
 
-    let scrapeResult;
+    let currentJob =
+      taskContext === "BONUS"
+        ? await prisma.scrapeJob.findUniqueOrThrow({
+            where: { id: scrapeJobId },
+          })
+        : null;
+
+    const resumeDecision: GeoFallbackResumeDecision =
+      taskContext === "BONUS" && currentJob
+        ? await this.resumeGeoFallbackIfNeeded(payload, currentJob)
+        : { action: "STANDARD" };
+    if (resumeDecision.action === "HANDLED") {
+      return;
+    }
+
+    let scrapeResult: CrawlScrapeResult;
     try {
       scrapeResult = await this.scraperAgent.run({ url });
     } catch (err: unknown) {
@@ -186,19 +274,92 @@ export class IngestionService {
       throw err;
     }
 
-    const currentJob = await prisma.scrapeJob.findUniqueOrThrow({
+    currentJob ??= await prisma.scrapeJob.findUniqueOrThrow({
       where: { id: scrapeJobId },
     });
 
+    if (taskContext === "BONUS") {
+      if (resumeDecision.action === "LOCAL_RECOVERY") {
+        return this.performLocalRecovery(
+          payload,
+          currentJob,
+          resumeDecision.checkpoint,
+          scrapeResult,
+        );
+      }
+      const geoBlock = classifyGeoBlock({
+        title: scrapeResult.title || scrapeResult.metadata?.title,
+        content: scrapeResult.content,
+        httpStatus: scrapeResult.httpStatus,
+      });
+      if (geoBlock.blocked) {
+        return this.performBonusGeoFallback(payload, currentJob, scrapeResult);
+      }
+    }
+
+    return this.processStandardCrawlResult(payload, currentJob, scrapeResult);
+  }
+
+  private static eligibilityForResult(
+    payload: {
+      url: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    scrapeResult: CrawlScrapeResult,
+  ) {
+    const taskContext = payload.taskContext ?? "BONUS";
     const eligibilityInput = {
-      requestedUrl: url,
-      finalUrl: scrapeResult.finalUrl || scrapeResult.url || url,
+      requestedUrl: payload.url,
+      finalUrl: scrapeResult.finalUrl || scrapeResult.url || payload.url,
       canonicalUrl: scrapeResult.canonicalUrl,
       title: scrapeResult.title || scrapeResult.metadata?.title,
       content: scrapeResult.content,
       taskContext,
     } as const;
     const eligibility = evaluateSourcePageEligibility(eligibilityInput);
+    return { eligibilityInput, eligibility };
+  }
+
+  private static async findPreviousDuplicate(
+    currentJob: { id: string; data_source_id: string },
+    hashes: { htmlHash?: string | null; contentHash?: string | null },
+  ) {
+    const previousJob = await prisma.scrapeJob.findFirst({
+      where: {
+        data_source_id: currentJob.data_source_id,
+        status: "COMPLETED",
+        id: { not: currentJob.id },
+      },
+      orderBy: { completed_at: "desc" },
+    });
+
+    return previousJob &&
+      ((hashes.contentHash &&
+        previousJob.content_hash === hashes.contentHash) ||
+        (hashes.htmlHash && previousJob.html_hash === hashes.htmlHash))
+      ? previousJob
+      : null;
+  }
+
+  private static async processStandardCrawlResult(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: {
+      id: string;
+      data_source_id: string;
+      retry_count?: number;
+    },
+    scrapeResult: CrawlScrapeResult,
+  ) {
+    const { scrapeJobId, url, taskContext = "BONUS" } = payload;
+    const { eligibilityInput, eligibility } = this.eligibilityForResult(
+      payload,
+      scrapeResult,
+    );
     if (!eligibility.eligible) {
       throw new SourcePageRejectedError(eligibilityInput, eligibility);
     }
@@ -210,35 +371,49 @@ export class IngestionService {
       scrapeResult.url ||
       url;
 
-    // Check for identical content hash from previous job
-    const previousJob = await prisma.scrapeJob.findFirst({
-      where: {
-        data_source_id: currentJob.data_source_id,
-        status: "COMPLETED",
-        id: { not: scrapeJobId },
-      },
-      orderBy: { completed_at: "desc" },
+    const previousJob = await this.findPreviousDuplicate(currentJob, {
+      contentHash: scrapeResult.contentHash,
+      htmlHash: scrapeResult.htmlHash,
     });
 
-    if (
-      previousJob &&
-      ((scrapeResult.contentHash && previousJob.content_hash === scrapeResult.contentHash) ||
-        (scrapeResult.htmlHash && previousJob.html_hash === scrapeResult.htmlHash))
-    ) {
+    if (previousJob) {
       console.log(
-        `[IngestionService] Content hash matches previous crawl. Short-circuiting ingestion. Skipping LLM parsing.`
+        `[IngestionService] Content hash matches previous crawl. Short-circuiting ingestion. Skipping LLM parsing.`,
       );
-      await prisma.scrapeJob.update({
-        where: { id: scrapeJobId },
-        data: {
-          snapshot_path: null,
-          html_hash: scrapeResult.htmlHash || null,
-          content_hash: scrapeResult.contentHash || null,
-          canonical_url: canonicalUrl,
-          status: "COMPLETED",
-          completed_at: new Date(),
-        },
-      });
+      if (taskContext === "BONUS") {
+        const update = await prisma.scrapeJob.updateMany({
+          where: {
+            id: scrapeJobId,
+            retry_count: currentJob.retry_count ?? 0,
+            geo_fallback_checkpoint: { equals: Prisma.DbNull },
+          },
+          data: {
+            snapshot_path: null,
+            html_hash: scrapeResult.htmlHash || null,
+            content_hash: scrapeResult.contentHash || null,
+            canonical_url: canonicalUrl,
+            status: "COMPLETED",
+            completed_at: new Date(),
+          },
+        });
+        if (update.count !== 1) {
+          throw new GeoFallbackRuntimeError(
+            "FALLBACK_CONCURRENT_STATE_CHANGED",
+          );
+        }
+      } else {
+        await prisma.scrapeJob.update({
+          where: { id: scrapeJobId },
+          data: {
+            snapshot_path: null,
+            html_hash: scrapeResult.htmlHash || null,
+            content_hash: scrapeResult.contentHash || null,
+            canonical_url: canonicalUrl,
+            status: "COMPLETED",
+            completed_at: new Date(),
+          },
+        });
+      }
       return;
     }
 
@@ -251,15 +426,55 @@ export class IngestionService {
         observedAt,
       });
 
-    await prisma.scrapeJob.update({
-      where: { id: scrapeJobId },
-      data: {
-        snapshot_path: persistedArtifact.locator,
-        html_hash: persistedArtifact.htmlHash,
-        content_hash: scrapeResult.contentHash || null,
-        canonical_url: canonicalUrl,
-      },
-    });
+    if (taskContext === "BONUS") {
+      const update = await prisma.scrapeJob.updateMany({
+        where: {
+          id: scrapeJobId,
+          retry_count: currentJob.retry_count ?? 0,
+          geo_fallback_checkpoint: { equals: Prisma.DbNull },
+        },
+        data: {
+          snapshot_path: persistedArtifact.locator,
+          html_hash: persistedArtifact.htmlHash,
+          content_hash: scrapeResult.contentHash || null,
+          canonical_url: canonicalUrl,
+        },
+      });
+      if (update.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+    } else {
+      await prisma.scrapeJob.update({
+        where: { id: scrapeJobId },
+        data: {
+          snapshot_path: persistedArtifact.locator,
+          html_hash: persistedArtifact.htmlHash,
+          content_hash: scrapeResult.contentHash || null,
+          canonical_url: canonicalUrl,
+        },
+      });
+    }
+
+    return this.enqueueExtractionForResult(payload, scrapeResult, observedAt);
+  }
+
+  private static async enqueueExtractionForResult(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    scrapeResult: CrawlScrapeResult,
+    observedAt: Date,
+  ) {
+    const {
+      scrapeJobId,
+      url,
+      casinoId,
+      taskContext = "BONUS",
+    } = payload;
+    const safeUrl = sanitizeUrlForLogging(url);
 
     // Extraction-input boundary. The durable artifact and its provenance are
     // already committed above, so a rejection here keeps the raw HTML available
@@ -296,15 +511,819 @@ export class IngestionService {
         scrapedContent: scrapeResult.content,
       });
     } else {
-      await JobQueueService.enqueue(INGESTION_QUEUE_NAME, "EXTRACT_BONUS", {
-        scrapeJobId,
-        url,
-        casinoId,
-        scrapedContent: scrapeResult.content,
-        scrapedMetadata: scrapeResult.metadata,
-        observedAt: observedAt.toISOString(),
-      });
+      await JobQueueService.enqueue(
+        INGESTION_QUEUE_NAME,
+        "EXTRACT_BONUS",
+        {
+          scrapeJobId,
+          url,
+          casinoId,
+          scrapedContent: scrapeResult.content,
+          scrapedMetadata: scrapeResult.metadata,
+          observedAt: observedAt.toISOString(),
+        },
+        { deduplicate: true },
+      );
     }
+  }
+
+  private static async performLocalRecovery(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: {
+      id: string;
+      data_source_id: string;
+      retry_count: number;
+    },
+    previousCheckpoint: ConsumedGeoFallbackCheckpoint,
+    primaryResult: CrawlScrapeResult,
+  ) {
+    const geoBlock = classifyGeoBlock({
+      title: primaryResult.title || primaryResult.metadata?.title,
+      content: primaryResult.content,
+      httpStatus: primaryResult.httpStatus,
+    });
+    if (geoBlock.blocked) {
+      throw new GeoFallbackRuntimeError(
+        "LOCAL_RECOVERY_STILL_GEO_BLOCKED",
+      );
+    }
+
+    const { eligibility } = this.eligibilityForResult(payload, primaryResult);
+    if (!eligibility.eligible) {
+      throw new GeoFallbackRuntimeError("LOCAL_RECOVERY_REJECTED");
+    }
+
+    const contentHash =
+      primaryResult.contentHash ||
+      crypto.createHash("sha256").update(primaryResult.content).digest("hex");
+    const rawHtml = primaryResult.rawHtml ?? "";
+    const htmlHash =
+      primaryResult.htmlHash ||
+      crypto.createHash("sha256").update(rawHtml).digest("hex");
+
+    const sufficiency = evaluateExtractionInputSufficiency({
+      content: primaryResult.content,
+      taskContext: "BONUS",
+    });
+    const previousJob = sufficiency.sufficient
+      ? await this.findPreviousDuplicate(currentJob, {
+          contentHash,
+          htmlHash,
+        })
+      : null;
+    if (previousJob) {
+      const deduplicatedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "DEDUPLICATED",
+        priorScrapeJobId: previousJob.id,
+      });
+      const completed = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count,
+          geo_fallback_checkpoint: {
+            equals: checkpointJson(previousCheckpoint),
+          },
+        },
+        data: {
+          snapshot_path: null,
+          html_hash: htmlHash,
+          content_hash: contentHash,
+          canonical_url:
+            primaryResult.canonicalUrl ||
+            primaryResult.finalUrl ||
+            primaryResult.url ||
+            payload.url,
+          geo_fallback_checkpoint: checkpointJson(deduplicatedCheckpoint),
+          status: "COMPLETED",
+          completed_at: new Date(),
+        },
+      });
+      if (completed.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      return;
+    }
+
+    const observedAt = parseObservedAt(primaryResult.timestamp);
+    const persistedArtifact =
+      await EvidenceArtifactStorageService.persistObservation({
+        rawHtml,
+        expectedHtmlHash: htmlHash,
+        observationId: `${payload.scrapeJobId}_local_recovery`,
+        sourceUrl:
+          primaryResult.finalUrl || primaryResult.url || payload.url,
+        observedAt,
+      });
+    const recoveredCheckpoint = sufficiency.sufficient
+      ? createGeoFallbackCheckpoint({
+          version: 1,
+          state: "LOCAL_RECOVERED",
+          locator: persistedArtifact.locator,
+          htmlHash: persistedArtifact.htmlHash,
+          contentHash,
+          observedAt: observedAt.toISOString(),
+        })
+      : createGeoFallbackCheckpoint({
+          version: 1,
+          state: "EXTRACTION_REJECTED",
+          locator: persistedArtifact.locator,
+          htmlHash: persistedArtifact.htmlHash,
+          contentHash,
+          observedAt: observedAt.toISOString(),
+          reason: "EXTRACTION_INPUT_INSUFFICIENT",
+        });
+    const recovered = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: currentJob.retry_count,
+        geo_fallback_checkpoint: {
+          equals: checkpointJson(previousCheckpoint),
+        },
+      },
+      data: {
+        snapshot_path: persistedArtifact.locator,
+        html_hash: persistedArtifact.htmlHash,
+        content_hash: contentHash,
+        canonical_url:
+          primaryResult.canonicalUrl ||
+          primaryResult.finalUrl ||
+          primaryResult.url ||
+          payload.url,
+        geo_fallback_checkpoint: checkpointJson(recoveredCheckpoint),
+      },
+    });
+    if (recovered.count !== 1) {
+      throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+    }
+
+    if (!sufficiency.sufficient) {
+      throw new ExtractionInputRejectedError(sufficiency);
+    }
+
+    return this.enqueueExtractionForResult(
+      payload,
+      primaryResult,
+      observedAt,
+    );
+  }
+
+  private static async performBonusGeoFallback(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: {
+      id: string;
+      data_source_id: string;
+      retry_count?: number;
+      snapshot_path?: string | null;
+      html_hash?: string | null;
+      content_hash?: string | null;
+      geo_fallback_checkpoint?: Prisma.JsonValue | null;
+    },
+    primaryResult: CrawlScrapeResult,
+  ) {
+    const observedAt = parseObservedAt(primaryResult.timestamp);
+    const persistedPrimary =
+      await EvidenceArtifactStorageService.persistObservation({
+        rawHtml: primaryResult.rawHtml ?? "",
+        expectedHtmlHash: primaryResult.htmlHash ?? "",
+        observationId: `${payload.scrapeJobId}_geo_primary`,
+        sourceUrl: primaryResult.finalUrl || primaryResult.url || payload.url,
+        observedAt,
+      });
+    const primaryCheckpoint = createGeoFallbackCheckpoint({
+      version: 1,
+      state: "PRIMARY_BLOCKED",
+    });
+
+    const primaryWrite = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: currentJob.retry_count ?? 0,
+        geo_fallback_checkpoint: { equals: Prisma.DbNull },
+      },
+      data: {
+        snapshot_path: persistedPrimary.locator,
+        html_hash: persistedPrimary.htmlHash,
+        content_hash: primaryResult.contentHash || null,
+        canonical_url:
+          primaryResult.canonicalUrl ||
+          primaryResult.finalUrl ||
+          primaryResult.url ||
+          payload.url,
+        geo_fallback_checkpoint: checkpointJson(primaryCheckpoint),
+      },
+    });
+
+    if (primaryWrite.count !== 1) {
+      const latest = await prisma.scrapeJob.findUniqueOrThrow({
+        where: { id: payload.scrapeJobId },
+      });
+      const decision = await this.resumeGeoFallbackIfNeeded(payload, latest);
+      if (decision.action === "HANDLED") return;
+      if (decision.action === "LOCAL_RECOVERY") {
+        throw new GeoFallbackRuntimeError(
+          "LOCAL_RECOVERY_STILL_GEO_BLOCKED",
+        );
+      }
+      throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+    }
+
+    return this.claimAndExecuteGeoFallback(
+      payload,
+      { ...currentJob, retry_count: currentJob.retry_count ?? 0 },
+      primaryCheckpoint,
+    );
+  }
+
+  private static async claimAndExecuteGeoFallback(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: { id: string; data_source_id: string; retry_count: number },
+    primaryCheckpoint: Extract<
+      GeoFallbackCheckpoint,
+      { state: "PRIMARY_BLOCKED" }
+    >,
+  ) {
+    if (currentJob.retry_count >= MAX_GEO_FALLBACK_ATTEMPTS) {
+      throw new GeoFallbackRuntimeError("FALLBACK_BUDGET_EXHAUSTED");
+    }
+    const claimedCheckpoint = createGeoFallbackCheckpoint({
+      version: 1,
+      state: "REQUEST_CLAIMED",
+    });
+    const claim = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: { lt: MAX_GEO_FALLBACK_ATTEMPTS },
+        geo_fallback_checkpoint: { equals: checkpointJson(primaryCheckpoint) },
+      },
+      data: {
+        retry_count: { increment: 1 },
+        geo_fallback_checkpoint: checkpointJson(claimedCheckpoint),
+      },
+    });
+
+    if (claim.count !== 1) {
+      const latest = await prisma.scrapeJob.findUniqueOrThrow({
+        where: { id: payload.scrapeJobId },
+      });
+      const latestCheckpoint = parseGeoFallbackCheckpoint(
+        latest.geo_fallback_checkpoint,
+      );
+      if (latestCheckpoint?.state === "PRIMARY_BLOCKED") {
+        if (latest.retry_count >= MAX_GEO_FALLBACK_ATTEMPTS) {
+          throw new GeoFallbackRuntimeError("FALLBACK_BUDGET_EXHAUSTED");
+        }
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      const decision = await this.resumeGeoFallbackIfNeeded(payload, latest);
+      if (decision.action === "HANDLED") return;
+      throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+    }
+
+    // Two irreducible outcome-unknown windows remain by design:
+    // 1. a worker can die after this paid-call claim but before the request;
+    // 2. it can die after provider success but before RESULT_READY is stored.
+    // Retrying the provider in either case could exceed the one-credit budget,
+    // so these states never pay again. A later queue delivery may still make
+    // one free local-browser recovery attempt.
+    let paidResult: Awaited<
+      ReturnType<ScrapingAntFallbackService["scrape"]>
+    >;
+    try {
+      paidResult = await this.scrapingAntFallbackService.scrape(payload.url);
+    } catch (error: unknown) {
+      const boundedError =
+        error instanceof ScrapingAntFallbackError
+          ? error
+          : new ScrapingAntFallbackError("INVALID_RESPONSE");
+      const failedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "PROVIDER_FAILED",
+        reason: boundedError.code,
+      });
+      const failed = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count + 1,
+          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+        },
+        data: {
+          geo_fallback_checkpoint: checkpointJson(failedCheckpoint),
+        },
+      });
+      if (failed.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      throw boundedError;
+    }
+
+    const fallbackResult = buildScrapeResultFromHtml({
+      url: payload.url,
+      finalUrl: payload.url,
+      rawHtml: paidResult.rawHtml,
+      timestamp: paidResult.observedAt,
+      attemptCount: 1,
+      durationMs: 0,
+    });
+
+    const repeatedGeoBlock = classifyGeoBlock({
+      title: fallbackResult.title || fallbackResult.metadata.title,
+      content: fallbackResult.content,
+      httpStatus: fallbackResult.httpStatus,
+    });
+    const { eligibilityInput, eligibility } = this.eligibilityForResult(
+      payload,
+      fallbackResult,
+    );
+    if (repeatedGeoBlock.blocked || !eligibility.eligible) {
+      const rejectedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "FALLBACK_REJECTED",
+        reason: repeatedGeoBlock.blocked
+          ? "STILL_GEO_BLOCKED"
+          : "SOURCE_PAGE_REJECTED",
+      });
+      const rejected = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count + 1,
+          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+        },
+        data: {
+          geo_fallback_checkpoint: checkpointJson(rejectedCheckpoint),
+        },
+      });
+      if (rejected.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      if (!eligibility.eligible) {
+        throw new SourcePageRejectedError(eligibilityInput, eligibility);
+      }
+      throw new GeoFallbackRuntimeError("FALLBACK_REJECTED");
+    }
+
+    const sufficiency = evaluateExtractionInputSufficiency({
+      content: fallbackResult.content,
+      taskContext: "BONUS",
+    });
+
+    const previousJob = sufficiency.sufficient
+      ? await this.findPreviousDuplicate(currentJob, {
+          contentHash: fallbackResult.contentHash,
+          htmlHash: fallbackResult.htmlHash,
+        })
+      : null;
+    if (previousJob) {
+      const deduplicatedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "DEDUPLICATED",
+        priorScrapeJobId: previousJob.id,
+      });
+      const completed = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count + 1,
+          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+        },
+        data: {
+          snapshot_path: null,
+          html_hash: fallbackResult.htmlHash,
+          content_hash: fallbackResult.contentHash,
+          canonical_url:
+            fallbackResult.canonicalUrl || fallbackResult.finalUrl || payload.url,
+          geo_fallback_checkpoint: checkpointJson(deduplicatedCheckpoint),
+          status: "COMPLETED",
+          completed_at: new Date(),
+        },
+      });
+      if (completed.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      return;
+    }
+
+    const artifactInput = {
+      rawHtml: fallbackResult.rawHtml,
+      expectedHtmlHash: fallbackResult.htmlHash,
+      observationId: `${payload.scrapeJobId}_geo_fallback`,
+      sourceUrl: fallbackResult.finalUrl || fallbackResult.url || payload.url,
+      observedAt: fallbackResult.timestamp,
+    };
+    const preparedArtifact = prepareEvidenceArtifact(artifactInput);
+    const resultReadyCheckpoint = createGeoFallbackCheckpoint({
+      version: 1,
+      state: "RESULT_READY",
+      locator: preparedArtifact.locator,
+      htmlHash: fallbackResult.htmlHash,
+      contentHash: fallbackResult.contentHash,
+      observedAt: fallbackResult.timestamp.toISOString(),
+    });
+    // Persist the deterministic plan before object storage. A crash after the
+    // upload can then recover by reading this exact locator; a crash before the
+    // upload gets only the bounded visibility recheck in rebuildFallbackResult.
+    const checkpointed = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: currentJob.retry_count + 1,
+        geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+      },
+      data: {
+        geo_fallback_checkpoint: checkpointJson(resultReadyCheckpoint),
+      },
+    });
+    if (checkpointed.count !== 1) {
+      throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+    }
+
+    const persistedFallback =
+      await EvidenceArtifactStorageService.persistObservation(artifactInput);
+    if (
+      persistedFallback.locator !== preparedArtifact.locator ||
+      persistedFallback.htmlHash !== preparedArtifact.htmlHash
+    ) {
+      throw new GeoFallbackRuntimeError("FALLBACK_ARTIFACT_MISMATCH");
+    }
+
+    const extractionReadyCheckpoint = sufficiency.sufficient
+      ? createGeoFallbackCheckpoint({
+          ...resultReadyCheckpoint,
+          state: "AVAILABLE",
+        })
+      : createGeoFallbackCheckpoint({
+          ...resultReadyCheckpoint,
+          state: "EXTRACTION_REJECTED",
+          reason: "EXTRACTION_INPUT_INSUFFICIENT",
+        });
+    const promoted = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: currentJob.retry_count + 1,
+        geo_fallback_checkpoint: {
+          equals: checkpointJson(resultReadyCheckpoint),
+        },
+      },
+      data: {
+        snapshot_path: persistedFallback.locator,
+        html_hash: persistedFallback.htmlHash,
+        content_hash: fallbackResult.contentHash,
+        canonical_url:
+          fallbackResult.canonicalUrl || fallbackResult.finalUrl || payload.url,
+        geo_fallback_checkpoint: checkpointJson(extractionReadyCheckpoint),
+      },
+    });
+    if (promoted.count !== 1) {
+      throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+    }
+
+    if (!sufficiency.sufficient) {
+      throw new ExtractionInputRejectedError(sufficiency);
+    }
+
+    return this.enqueueExtractionForResult(
+      payload,
+      fallbackResult,
+      fallbackResult.timestamp,
+    );
+  }
+
+  private static async resumeGeoFallbackIfNeeded(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: {
+      id: string;
+      data_source_id: string;
+      retry_count: number;
+      snapshot_path: string | null;
+      html_hash: string | null;
+      content_hash: string | null;
+      geo_fallback_checkpoint: Prisma.JsonValue | null;
+    },
+  ): Promise<GeoFallbackResumeDecision> {
+    const checkpoint = parseGeoFallbackCheckpoint(
+      currentJob.geo_fallback_checkpoint,
+    );
+    if (!checkpoint) {
+      return { action: "STANDARD" };
+    }
+
+    if (checkpoint.state === "PRIMARY_BLOCKED") {
+      if (currentJob.retry_count >= MAX_GEO_FALLBACK_ATTEMPTS) {
+        throw new GeoFallbackRuntimeError("FALLBACK_BUDGET_EXHAUSTED");
+      }
+      await this.claimAndExecuteGeoFallback(
+        payload,
+        {
+          id: currentJob.id,
+          data_source_id: currentJob.data_source_id,
+          retry_count: currentJob.retry_count,
+        },
+        checkpoint,
+      );
+      return { action: "HANDLED" };
+    }
+
+    if (checkpoint.state === "DEDUPLICATED") {
+      return { action: "HANDLED" };
+    }
+    if (
+      checkpoint.state === "REQUEST_CLAIMED" ||
+      checkpoint.state === "PROVIDER_FAILED" ||
+      checkpoint.state === "FALLBACK_REJECTED"
+    ) {
+      return { action: "LOCAL_RECOVERY", checkpoint };
+    }
+
+    if (checkpoint.state === "EXTRACTION_REJECTED") {
+      if (
+        currentJob.snapshot_path !== checkpoint.locator ||
+        currentJob.html_hash !== checkpoint.htmlHash ||
+        currentJob.content_hash !== checkpoint.contentHash
+      ) {
+        throw new GeoFallbackCheckpointError();
+      }
+      const rejection = evaluateExtractionInputSufficiency({
+        content: "",
+        taskContext: "BONUS",
+      });
+      if (rejection.sufficient) {
+        throw new GeoFallbackRuntimeError("FALLBACK_REJECTED");
+      }
+      throw new ExtractionInputRejectedError(rejection);
+    }
+
+    if (
+      checkpoint.state === "AVAILABLE" ||
+      checkpoint.state === "LOCAL_RECOVERED"
+    ) {
+      if (
+        currentJob.snapshot_path !== checkpoint.locator ||
+        currentJob.html_hash !== checkpoint.htmlHash ||
+        currentJob.content_hash !== checkpoint.contentHash
+      ) {
+        throw new GeoFallbackCheckpointError();
+      }
+      const result = await this.rebuildFallbackResult(payload, checkpoint);
+      await this.finishRecoveredExtractionReadyArtifact(
+        payload,
+        currentJob,
+        checkpoint,
+        result,
+      );
+      return { action: "HANDLED" };
+    }
+
+    const result = await this.rebuildFallbackResult(payload, checkpoint);
+    const sufficiency = evaluateExtractionInputSufficiency({
+      content: result.content,
+      taskContext: "BONUS",
+    });
+    if (!sufficiency.sufficient) {
+      const rejectedCheckpoint = createGeoFallbackCheckpoint({
+        ...checkpoint,
+        state: "EXTRACTION_REJECTED",
+        reason: "EXTRACTION_INPUT_INSUFFICIENT",
+      });
+      const rejected = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count,
+          geo_fallback_checkpoint: { equals: checkpointJson(checkpoint) },
+          snapshot_path: currentJob.snapshot_path,
+          html_hash: currentJob.html_hash,
+        },
+        data: {
+          snapshot_path: checkpoint.locator,
+          html_hash: checkpoint.htmlHash,
+          content_hash: checkpoint.contentHash,
+          canonical_url: result.canonicalUrl || result.finalUrl || payload.url,
+          geo_fallback_checkpoint: checkpointJson(rejectedCheckpoint),
+        },
+      });
+      if (rejected.count !== 1) {
+        const latest = await prisma.scrapeJob.findUniqueOrThrow({
+          where: { id: payload.scrapeJobId },
+        });
+        const latestCheckpoint = parseGeoFallbackCheckpoint(
+          latest.geo_fallback_checkpoint,
+        );
+        if (
+          latestCheckpoint?.state !== "EXTRACTION_REJECTED" ||
+          latestCheckpoint.htmlHash !== checkpoint.htmlHash
+        ) {
+          throw new GeoFallbackRuntimeError(
+            "FALLBACK_CONCURRENT_STATE_CHANGED",
+          );
+        }
+      }
+      throw new ExtractionInputRejectedError(sufficiency);
+    }
+
+    const previousJob = await this.findPreviousDuplicate(currentJob, {
+      contentHash: checkpoint.contentHash,
+      htmlHash: checkpoint.htmlHash,
+    });
+    if (previousJob) {
+      const deduplicatedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "DEDUPLICATED",
+        priorScrapeJobId: previousJob.id,
+      });
+      const completed = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count,
+          geo_fallback_checkpoint: { equals: checkpointJson(checkpoint) },
+        },
+        data: {
+          snapshot_path: null,
+          html_hash: checkpoint.htmlHash,
+          content_hash: checkpoint.contentHash,
+          canonical_url: result.canonicalUrl || result.finalUrl || payload.url,
+          geo_fallback_checkpoint: checkpointJson(deduplicatedCheckpoint),
+          status: "COMPLETED",
+          completed_at: new Date(),
+        },
+      });
+      if (completed.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      return { action: "HANDLED" };
+    }
+
+    const availableCheckpoint = createGeoFallbackCheckpoint({
+      ...checkpoint,
+      state: "AVAILABLE",
+    });
+    const promoted = await prisma.scrapeJob.updateMany({
+      where: {
+        id: payload.scrapeJobId,
+        retry_count: currentJob.retry_count,
+        geo_fallback_checkpoint: { equals: checkpointJson(checkpoint) },
+        snapshot_path: currentJob.snapshot_path,
+        html_hash: currentJob.html_hash,
+      },
+      data: {
+        snapshot_path: checkpoint.locator,
+        html_hash: checkpoint.htmlHash,
+        content_hash: checkpoint.contentHash,
+        canonical_url: result.canonicalUrl || result.finalUrl || payload.url,
+        geo_fallback_checkpoint: checkpointJson(availableCheckpoint),
+      },
+    });
+    if (promoted.count !== 1) {
+      const latest = await prisma.scrapeJob.findUniqueOrThrow({
+        where: { id: payload.scrapeJobId },
+      });
+      const latestCheckpoint = parseGeoFallbackCheckpoint(
+        latest.geo_fallback_checkpoint,
+      );
+      if (
+        latestCheckpoint?.state !== "AVAILABLE" ||
+        latestCheckpoint.htmlHash !== checkpoint.htmlHash
+      ) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+    }
+
+    await this.finishRecoveredExtractionReadyArtifact(
+      payload,
+      currentJob,
+      availableCheckpoint,
+      result,
+    );
+    return { action: "HANDLED" };
+  }
+
+  private static async rebuildFallbackResult(
+    payload: { url: string },
+    checkpoint: Extract<
+      GeoFallbackCheckpoint,
+      { state: "RESULT_READY" | "AVAILABLE" | "LOCAL_RECOVERED" }
+    >,
+  ): Promise<PlaywrightScrapeResult> {
+    let artifact: Awaited<
+      ReturnType<EvidenceArtifactRetrievalService["readArtifact"]>
+    > | null = null;
+
+    for (
+      let attempt = 1;
+      attempt <= FALLBACK_ARTIFACT_READ_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        artifact = await this.evidenceArtifactReader.readArtifact({
+          locator: checkpoint.locator,
+          expectedHtmlHash: checkpoint.htmlHash,
+        });
+        break;
+      } catch (error: unknown) {
+        const canRecheck =
+          error instanceof EvidenceArtifactRetrievalError &&
+          error.code === "ARTIFACT_NOT_AVAILABLE" &&
+          attempt < FALLBACK_ARTIFACT_READ_ATTEMPTS;
+        if (!canRecheck) {
+          throw new GeoFallbackRuntimeError("FALLBACK_RESULT_UNAVAILABLE");
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, FALLBACK_ARTIFACT_READ_RECHECK_DELAY_MS),
+        );
+      }
+    }
+    if (!artifact) {
+      throw new GeoFallbackRuntimeError("FALLBACK_RESULT_UNAVAILABLE");
+    }
+
+    return buildScrapeResultFromHtml({
+      url: payload.url,
+      finalUrl: payload.url,
+      rawHtml: exactUtf8(artifact.bytes),
+      timestamp: new Date(checkpoint.observedAt),
+      attemptCount: 0,
+      durationMs: 0,
+    });
+  }
+
+  private static async finishRecoveredExtractionReadyArtifact(
+    payload: {
+      scrapeJobId: string;
+      url: string;
+      casinoId?: string;
+      taskContext?: "BONUS" | "GAME_LIST";
+    },
+    currentJob: { id: string; data_source_id: string; retry_count: number },
+    checkpoint: Extract<
+      GeoFallbackCheckpoint,
+      { state: "AVAILABLE" | "LOCAL_RECOVERED" }
+    >,
+    result: PlaywrightScrapeResult,
+  ) {
+    const repeatedGeoBlock = classifyGeoBlock({
+      title: result.title || result.metadata.title,
+      content: result.content,
+      httpStatus: result.httpStatus,
+    });
+    const { eligibilityInput, eligibility } = this.eligibilityForResult(
+      payload,
+      result,
+    );
+    if (repeatedGeoBlock.blocked || !eligibility.eligible) {
+      throw !eligibility.eligible
+        ? new SourcePageRejectedError(eligibilityInput, eligibility)
+        : new GeoFallbackRuntimeError("FALLBACK_REJECTED");
+    }
+
+    const previousJob = await this.findPreviousDuplicate(currentJob, {
+      contentHash: result.contentHash,
+      htmlHash: result.htmlHash,
+    });
+    if (previousJob) {
+      const deduplicatedCheckpoint = createGeoFallbackCheckpoint({
+        version: 1,
+        state: "DEDUPLICATED",
+        priorScrapeJobId: previousJob.id,
+      });
+      const completed = await prisma.scrapeJob.updateMany({
+        where: {
+          id: payload.scrapeJobId,
+          retry_count: currentJob.retry_count,
+          geo_fallback_checkpoint: { equals: checkpointJson(checkpoint) },
+        },
+        data: {
+          snapshot_path: null,
+          html_hash: result.htmlHash,
+          content_hash: result.contentHash,
+          canonical_url: result.canonicalUrl || result.finalUrl || payload.url,
+          geo_fallback_checkpoint: checkpointJson(deduplicatedCheckpoint),
+          status: "COMPLETED",
+          completed_at: new Date(),
+        },
+      });
+      if (completed.count !== 1) {
+        throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
+      }
+      return;
+    }
+
+    return this.enqueueExtractionForResult(payload, result, result.timestamp);
   }
 
   /**

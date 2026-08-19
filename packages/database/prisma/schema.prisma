@@ -318,6 +318,7 @@ model ScrapeJob {
   error_log      String?   @db.Text
   snapshot_path  String?
   retry_count    Int       @default(0)
+  geo_fallback_checkpoint Json?
   html_hash      String?
   content_hash   String?
   canonical_url  String?
