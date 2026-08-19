@@ -5,6 +5,10 @@ import type {
   IngestionQueueHandlers,
 } from "../contracts/ingestion-queue.contract";
 import { JobQueueService } from "./job-queue.service";
+import {
+  buildOwnedWorkerNames,
+  getOrchestratorInstanceId,
+} from "../utils/orchestrator-instance";
 import { DiscoveryService } from "./discovery.service";
 import { IngestionService } from "./ingestion.service";
 import { BonusService } from "./bonus.service";
@@ -110,6 +114,12 @@ export interface OrchestratorConfig {
   heartbeatIntervalMs?: number;
   recoveryIntervalMs?: number;
   workerNodeAdapter?: WorkerNodePersistenceAdapter;
+  /**
+   * Instance-scoping prefix for this process's owned WorkerNode identities.
+   * Defaults to the per-process orchestrator instance id; overridable so
+   * operators (and tests) can pin an explicit ownership scope.
+   */
+  instanceId?: string;
 }
 
 export type OrchestratorLifecycleState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING";
@@ -130,6 +140,7 @@ export class OrchestratorService {
   private static recoveryGeneration = 0;
   private static workerNodeAdapter: WorkerNodePersistenceAdapter = defaultWorkerNodePersistence;
   private static ownedWorkerNames: string[] = [];
+  private static instanceId: string | null = null;
   private static heartbeatInFlight = false;
   private static currentHeartbeatPromise: Promise<void> | null = null;
   private static verificationSweepInFlight = false;
@@ -141,6 +152,14 @@ export class OrchestratorService {
 
   public static getLifecycleState(): OrchestratorLifecycleState {
     return this.lifecycleState;
+  }
+
+  /**
+   * The instance scope that owns the currently registered WorkerNode rows,
+   * or null while stopped. Exposed for observability and ownership assertions.
+   */
+  public static getInstanceId(): string | null {
+    return this.instanceId;
   }
 
   // Domain rate limiting state
@@ -176,6 +195,7 @@ export class OrchestratorService {
       heartbeatIntervalMs: 5000,
       recoveryIntervalMs: 30000,
       workerNodeAdapter: defaultWorkerNodePersistence,
+      instanceId: getOrchestratorInstanceId(),
     };
   }
 
@@ -221,6 +241,7 @@ export class OrchestratorService {
 
         console.log("=================================================");
         console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
+        console.log(` -> Instance ID:        ${config.instanceId}`);
         console.log(` -> Worker Concurrency: ${config.workerConcurrency}`);
         console.log(` -> Discovery Interval: ${config.discoveryIntervalMs} ms`);
         console.log(` -> Verification Int.: ${config.verificationIntervalMs} ms`);
@@ -237,10 +258,15 @@ export class OrchestratorService {
         console.log(` -> Recovery Enabled:   ${config.enableRecovery}`);
         console.log("=================================================");
 
-        const ownedWorkerNames = Array.from(
-          { length: config.workerConcurrency },
-          (_, i) => `worker-node-${i + 1}`,
+        // Worker identities are instance-scoped: two overlapping orchestrator
+        // processes must never own the same persisted WorkerNode rows, so a
+        // terminating deployment can only ever mark its own workers DEAD.
+        const instanceId = config.instanceId || getOrchestratorInstanceId();
+        const ownedWorkerNames = buildOwnedWorkerNames(
+          instanceId,
+          config.workerConcurrency,
         );
+        this.instanceId = instanceId;
         this.ownedWorkerNames = ownedWorkerNames;
 
         // 1. Initialize Workers in Database (Fail-Closed)
@@ -326,6 +352,7 @@ export class OrchestratorService {
         await Promise.allSettled(stops);
         this.lifecycleState = "STOPPED";
         this.ownedWorkerNames = [];
+        this.instanceId = null;
         this.workerNodeAdapter = defaultWorkerNodePersistence;
         throw error;
       } finally {
@@ -891,6 +918,7 @@ export class OrchestratorService {
         this.stopPromise = null;
         this.workerNodeAdapter = defaultWorkerNodePersistence;
         this.ownedWorkerNames = [];
+        this.instanceId = null;
         this.recoveryInFlight = false;
         this.currentRecoveryPromise = null;
         this.recoveryTimer = undefined;

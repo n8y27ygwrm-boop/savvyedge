@@ -8,6 +8,15 @@ import {
   OrchestratorService,
   WorkerNodePersistenceAdapter,
 } from "../src/services/orchestrator.service";
+import { buildOwnedWorkerNames } from "../src/utils/orchestrator-instance";
+
+/**
+ * Pinned ownership scope for this suite. Worker identities are instance-scoped
+ * (see utils/orchestrator-instance), so the expected names are derived rather
+ * than hard-coded as the old global `worker-node-N`.
+ */
+const INSTANCE_ID = "test-instance";
+const names = (count: number) => buildOwnedWorkerNames(INSTANCE_ID, count);
 
 describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation (Boundary C1C)", () => {
   let upsertCalls: Array<{
@@ -75,14 +84,11 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     expect(upsertCalls.length).toBe(3);
-    expect(upsertCalls.map((c) => c.workerName)).toEqual([
-      "worker-node-1",
-      "worker-node-2",
-      "worker-node-3",
-    ]);
+    expect(upsertCalls.map((c) => c.workerName)).toEqual(names(3));
   });
 
   // 2. Registration uses ACTIVE status
@@ -93,6 +99,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     for (const call of upsertCalls) {
@@ -108,6 +115,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     for (const call of upsertCalls) {
@@ -124,6 +132,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     const after = Date.now();
 
@@ -150,6 +159,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     expect(executionOrder).toEqual(["upsert", "startWorker"]);
@@ -167,6 +177,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableSchedulers: false,
         enableRecovery: false,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       }),
     ).rejects.toThrow("database connection timeout");
 
@@ -184,6 +195,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableSchedulers: false,
         enableRecovery: false,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       }),
     ).rejects.toThrow("DB error");
 
@@ -198,6 +210,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     const p2 = OrchestratorService.start({
       workerConcurrency: 2,
@@ -205,6 +218,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await Promise.all([p1, p2]);
@@ -222,11 +236,12 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 50,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(60);
       expect(heartbeatCalls.length).toBeGreaterThanOrEqual(1);
-      expect(heartbeatCalls[0].workerNames).toEqual(["worker-node-1", "worker-node-2"]);
+      expect(heartbeatCalls[0].workerNames).toEqual(names(2));
     } finally {
       vi.useRealTimers();
     }
@@ -243,6 +258,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 50,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(60);
@@ -257,7 +273,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
   it("heartbeat persistence adapter does not set status in update data", async () => {
     expect(typeof mockAdapter.heartbeatWorkers).toBe("function");
     const result = await mockAdapter.heartbeatWorkers({
-      workerNames: ["worker-node-1"],
+      workerNames: names(1),
       now: new Date(),
     });
     expect(result).toBe(1);
@@ -274,6 +290,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(25);
@@ -309,6 +326,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       // Advance through multiple intervals while heartbeat is still in-flight
@@ -336,6 +354,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(30);
@@ -361,6 +380,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(30);
@@ -381,6 +401,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await vi.advanceTimersByTimeAsync(25);
@@ -424,6 +445,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 20,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       // Trigger heartbeat
@@ -461,6 +483,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await OrchestratorService.stop();
@@ -475,11 +498,12 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await OrchestratorService.stop();
     expect(markDeadCalls.length).toBe(1);
-    expect(markDeadCalls[0].workerNames).toEqual(["worker-node-1", "worker-node-2"]);
+    expect(markDeadCalls[0].workerNames).toEqual(names(2));
   });
 
   // 20. DEAD write resets active_jobs to 0
@@ -490,11 +514,12 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await OrchestratorService.stop();
     expect(mockAdapter.markWorkersDead).toHaveBeenCalledWith({
-      workerNames: ["worker-node-1"],
+      workerNames: names(1),
     });
   });
 
@@ -506,12 +531,13 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await OrchestratorService.stop();
     for (const call of markDeadCalls) {
       expect(call.workerNames.length).toBeGreaterThan(0);
-      expect(call.workerNames).toEqual(["worker-node-1"]);
+      expect(call.workerNames).toEqual(names(1));
     }
   });
 
@@ -523,6 +549,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     const stop1 = OrchestratorService.stop();
@@ -540,6 +567,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
@@ -552,6 +580,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     expect(upsertCalls.length).toBe(4);
@@ -566,6 +595,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
@@ -575,6 +605,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     expect(upsertCalls[1].activeJobs).toBe(0);
@@ -591,6 +622,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
         enableRecovery: false,
         heartbeatIntervalMs: 50,
         workerNodeAdapter: mockAdapter,
+        instanceId: INSTANCE_ID,
       });
 
       await OrchestratorService.stop();
@@ -614,6 +646,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await expect(OrchestratorService.stop()).rejects.toThrow("PostgreSQL connection terminated");
@@ -633,6 +666,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     await expect(OrchestratorService.stop()).rejects.toThrow("terminal persistence failure");
@@ -648,6 +682,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
 
     for (const call of upsertCalls) {
@@ -665,6 +700,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
@@ -681,6 +717,7 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
@@ -703,11 +740,12 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
     expect(markDeadCalls.length).toBe(1);
-    expect(markDeadCalls[0].workerNames).toEqual(["worker-node-1"]);
+    expect(markDeadCalls[0].workerNames).toEqual(names(1));
 
     await OrchestratorService.start({
       workerConcurrency: 3,
@@ -715,10 +753,11 @@ describe("WorkerNode Registration, Heartbeat, and Graceful Status Reconciliation
       enableSchedulers: false,
       enableRecovery: false,
       workerNodeAdapter: mockAdapter,
+      instanceId: INSTANCE_ID,
     });
     await OrchestratorService.stop();
 
     expect(markDeadCalls.length).toBe(2);
-    expect(markDeadCalls[1].workerNames).toEqual(["worker-node-1", "worker-node-2", "worker-node-3"]);
+    expect(markDeadCalls[1].workerNames).toEqual(names(3));
   });
 });
