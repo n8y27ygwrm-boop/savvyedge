@@ -14,6 +14,37 @@ function resolveDocumentUrl(
   }
 }
 
+/**
+ * Elements whose text is never page content.
+ *
+ * Deliberately excludes `header`, `nav` and `button`: those are semantic
+ * containers that legitimately carry promotion headlines and offer copy on
+ * real operator and affiliate pages, and deleting them globally destroys the
+ * very text extraction depends on. `footer` stays excluded because it carries
+ * only site-wide legal boilerplate.
+ */
+export const NON_CONTENT_SELECTOR =
+  "script, style, iframe, svg, noscript, footer";
+
+/**
+ * Extracts normalized readable text from rendered HTML.
+ *
+ * Exported as a pure function so the cleanup contract can be exercised
+ * directly without launching a browser.
+ */
+export function extractReadableText(html: string): string {
+  const $ = cheerio.load(html);
+  $(NON_CONTENT_SELECTOR).remove();
+  return $("body")
+    .text()
+    .split("\n")
+    // Collapse tabs and repeated intra-line whitespace, but keep single
+    // newlines so distinct text blocks stay separated.
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
 export interface PlaywrightScrapeOptions {
   url: string;
   timeoutMs?: number;
@@ -218,16 +249,8 @@ export class PlaywrightScraper {
           $('meta[property="og:type"]').attr("content") || undefined;
         const ogUrl = $('meta[property="og:url"]').attr("content") || undefined;
 
-        // Strip noise & extract clean readable text
-        $(
-          "script, style, nav, footer, iframe, svg, header, noscript, style, button",
-        ).remove();
-        let cleanedText = $("body").text();
-        cleanedText = cleanedText
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0)
-          .join("\n");
+        // Strip non-content elements & extract normalized readable text
+        const cleanedText = extractReadableText(rawHtml);
 
         // Compute SHA-256 hashes
         const htmlHash = crypto

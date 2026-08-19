@@ -1,4 +1,10 @@
-export type IngestionTaskContext = "BONUS" | "GAME_LIST";
+import {
+  CONTEXT_TERMS,
+  type IngestionTaskContext,
+} from "../constants/ingestion-task-context";
+
+// Re-exported so this module's existing public surface is unchanged.
+export type { IngestionTaskContext };
 
 export type SourcePageRejectionCategory =
   | "ANTI_BOT"
@@ -38,13 +44,6 @@ const GEO_RESTRICTION_PATTERN =
   /\b(?:services? unavailable in your location|not available in your (?:country|location|region)|unavailable in your (?:country|location|region)|restricted in your (?:country|location|region)|geo(?:graphically)?[ -]?blocked|outside (?:of )?your (?:country|location|region))\b/i;
 const ANTI_BOT_PATTERN =
   /(?:\bjust a moment\b|\bchecking your browser\b|\bverify (?:that )?you are human\b|\battention required\b.*\bcloudflare\b|\bcloudflare ray id\b|\bcf-chl-|\benable javascript and cookies to continue\b|\bchecking if the site connection is secure\b)/i;
-
-const CONTEXT_TERMS: Record<IngestionTaskContext, RegExp> = {
-  BONUS:
-    /\b(?:bonus|bonuses|promotion|promotions|promo|offer|welcome|deposit|reward|free spins?)\b/i,
-  GAME_LIST:
-    /\b(?:casino games?|game lobby|slots?|table games?|live casino|jackpots?)\b/i,
-};
 
 const STATIC_REJECTION_REASONS: Record<SourcePageRejectionCategory, string> = {
   ANTI_BOT: "The rendered page is an anti-bot or browser challenge page.",

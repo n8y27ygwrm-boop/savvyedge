@@ -29,6 +29,10 @@ import {
   SourcePageRejectedError,
 } from "./source-page-eligibility";
 import {
+  evaluateExtractionInputSufficiency,
+  ExtractionInputRejectedError,
+} from "./extraction-input-sufficiency";
+import {
   BonusSourceIdentityError,
   isBonusIdentityUniqueViolation,
   isRetryableBonusIdentityTransactionError,
@@ -256,6 +260,30 @@ export class IngestionService {
         canonical_url: canonicalUrl,
       },
     });
+
+    // Extraction-input boundary. The durable artifact and its provenance are
+    // already committed above, so a rejection here keeps the raw HTML available
+    // for diagnosis while guaranteeing that unusable text never reaches an
+    // extraction agent. Throwing hands the job back to the existing crawl queue
+    // retry path; no new queue status or payload is introduced.
+    //
+    // Enforced for BONUS only. GAME_LIST keeps its previous runtime behaviour:
+    // its vocabulary is indistinguishable from casino navigation, and a real
+    // lobby often renders only game titles, so gating it would both fail to
+    // block chrome and reject legitimate lobbies. The policy stays extensible
+    // for GAME_LIST pending an element-aware signal.
+    if (taskContext === "BONUS") {
+      const sufficiency = evaluateExtractionInputSufficiency({
+        content: scrapeResult.content,
+        taskContext,
+      });
+      if (!sufficiency.sufficient) {
+        console.error(
+          `[IngestionService] [Worker] Extraction input rejected for URL: ${safeUrl} (${sufficiency.category})`,
+        );
+        throw new ExtractionInputRejectedError(sufficiency);
+      }
+    }
 
     if (taskContext === "GAME_LIST") {
       if (!casinoId) {
@@ -814,6 +842,12 @@ export class IngestionService {
         code: "SOURCE_PAGE_REJECTED",
         category,
         reason: parsedReason,
+      });
+    } else if (error instanceof ExtractionInputRejectedError) {
+      errorLog = JSON.stringify({
+        code: "EXTRACTION_INPUT_INSUFFICIENT",
+        category: error.category,
+        reason: error.reason,
       });
     } else if (taskContext === "BONUS") {
       errorLog = JSON.stringify({

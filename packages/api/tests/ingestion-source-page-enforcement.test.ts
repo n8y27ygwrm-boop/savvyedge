@@ -7,6 +7,10 @@ import {
   EvidenceArtifactPersistenceError,
   EvidenceArtifactStorageService,
 } from "../src/services/evidence-artifact-storage.service";
+import {
+  ExtractionInputRejectedError,
+  evaluateExtractionInputSufficiency,
+} from "../src/services/extraction-input-sufficiency";
 
 const OBSERVED_AT = new Date("2026-08-11T10:20:30.456Z");
 
@@ -452,6 +456,410 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       EvidenceArtifactStorageService.persistObservation,
     ).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  describe("extraction-input sufficiency boundary", () => {
+    const requestedUrl = "https://casino.example.com/promotions/welcome/";
+    // Global site chrome with no offer content: representative of the rendered
+    // text that reached the extraction agent in production, not a capture of
+    // the exact production payload.
+    //
+    // It carries the generic section labels a casino menu always has
+    // ("Promotions", "Bonuses") and no offer detail, so it is insufficient for
+    // BONUS while remaining ordinary, non-operator-specific navigation.
+    const chromeOnlyContent =
+      "Sports Casino Live Casino Bingo Poker Promotions Bonuses Help " +
+      "About Us Apps Blog Home Racing Sponsors Log in Create account";
+
+    function mockCrawlJob(id: string) {
+      vi.spyOn(prisma.scrapeJob, "updateMany").mockResolvedValue({ count: 1 });
+      vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue({
+        id,
+        data_source_id: `ds-${id}`,
+      } as never);
+      vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue(null);
+      return vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
+    }
+
+    it("persists the durable observation before evaluating sufficiency and retains snapshot path, hashes, and canonical URL", async () => {
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        canonicalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: chromeOnlyContent,
+      });
+      const update = mockCrawlJob("scrape-job-insufficient");
+      const enqueue = vi.spyOn(JobQueueService, "enqueue");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        IngestionService.handleCrawl({
+          scrapeJobId: "scrape-job-insufficient",
+          url: requestedUrl,
+          taskContext: "BONUS",
+        }),
+      ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
+
+      // Durable evidence was written before the boundary ran...
+      expect(
+        EvidenceArtifactStorageService.persistObservation,
+      ).toHaveBeenCalledOnce();
+      // ...and its provenance was committed to the ScrapeJob.
+      expect(update).toHaveBeenCalledOnce();
+      expect(update).toHaveBeenCalledWith({
+        where: { id: "scrape-job-insufficient" },
+        data: {
+          snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
+          html_hash: "test-html-sha256-hash",
+          content_hash: "test-content-sha256-hash",
+          canonical_url: requestedUrl,
+        },
+      });
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it("never enqueues EXTRACT_BONUS for insufficient BONUS input", async () => {
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: chromeOnlyContent,
+      });
+      mockCrawlJob("scrape-job-no-enqueue");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const enqueue = vi.spyOn(JobQueueService, "enqueue");
+
+      await expect(
+        IngestionService.handleCrawl({
+          scrapeJobId: "scrape-job-no-enqueue",
+          url: requestedUrl,
+          casinoId: "casino-id",
+          taskContext: "BONUS",
+        }),
+      ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
+
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it("records a bounded machine-readable failure code with no raw content or URL", async () => {
+      mockScraperResult({
+        requestedUrl:
+          "https://admin:secret-pass@casino.example.com/promotions/welcome/?api_key=secret-key-123",
+        finalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: chromeOnlyContent,
+      });
+      mockCrawlJob("scrape-job-bounded-error");
+      vi.spyOn(JobQueueService, "enqueue");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const updateMany = vi
+        .spyOn(prisma.scrapeJob, "updateMany")
+        .mockResolvedValue({ count: 1 });
+
+      await expect(
+        IngestionService.handleCrawl({
+          scrapeJobId: "scrape-job-bounded-error",
+          url: requestedUrl,
+          taskContext: "BONUS",
+        }),
+      ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
+
+      const failureWrite = updateMany.mock.calls.find(
+        (call) => (call[0] as { data?: { status?: string } }).data?.status === "FAILED",
+      );
+      expect(failureWrite).toBeDefined();
+      const errorLog = (
+        failureWrite![0] as { data: { error_log: string } }
+      ).data.error_log;
+
+      expect(JSON.parse(errorLog)).toEqual({
+        code: "EXTRACTION_INPUT_INSUFFICIENT",
+        category: "INSUFFICIENT_CONTENT",
+        reason: expect.any(String),
+      });
+      expect(errorLog.length).toBeLessThanOrEqual(300);
+      for (const secret of [
+        "secret-pass",
+        "api_key",
+        "secret-key-123",
+        "casino.example.com",
+        "https://",
+        "Create account",
+      ]) {
+        expect(errorLog).not.toContain(secret);
+      }
+    });
+
+    it("commits provenance and then refuses to enqueue EXTRACT_BONUS, in that order", async () => {
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: chromeOnlyContent,
+      });
+      const update = mockCrawlJob("scrape-job-ordering");
+      const enqueue = vi.spyOn(JobQueueService, "enqueue");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        IngestionService.handleCrawl({
+          scrapeJobId: "scrape-job-ordering",
+          url: requestedUrl,
+          taskContext: "BONUS",
+        }),
+      ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
+
+      // Ordering-sensitive: durable persistence and the provenance write both
+      // happened, and the provenance write happened after persistence. If the
+      // boundary ran earlier than specified, neither call would be recorded.
+      const persistOrder =
+        vi.mocked(EvidenceArtifactStorageService.persistObservation).mock
+          .invocationCallOrder[0];
+      const updateOrder = update.mock.invocationCallOrder[0];
+      expect(persistOrder).toBeGreaterThan(0);
+      expect(updateOrder).toBeGreaterThan(persistOrder);
+
+      // The one guarantee that matters at this boundary.
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it("leaves GAME_LIST ungated: sparse input still follows the EXTRACT_GAME_LIST contract", async () => {
+      // Text that the BONUS boundary would reject outright.
+      const sparse = chromeOnlyContent;
+      expect(
+        evaluateExtractionInputSufficiency({
+          content: sparse,
+          taskContext: "BONUS",
+        }).sufficient,
+      ).toBe(false);
+
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        title: "Casino Games",
+        content: sparse,
+      });
+      mockCrawlJob("scrape-job-gamelist-ungated");
+      const enqueue = vi
+        .spyOn(JobQueueService, "enqueue")
+        .mockResolvedValue({ id: "queue-job-id" } as never);
+
+      await IngestionService.handleCrawl({
+        scrapeJobId: "scrape-job-gamelist-ungated",
+        url: requestedUrl,
+        casinoId: "casino-id",
+        taskContext: "GAME_LIST",
+      });
+
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(enqueue).toHaveBeenCalledWith(
+        "ingestion-queue",
+        "EXTRACT_GAME_LIST",
+        {
+          scrapeJobId: "scrape-job-gamelist-ungated",
+          url: requestedUrl,
+          casinoId: "casino-id",
+          scrapedContent: sparse,
+        },
+      );
+    });
+
+    it("leaves the canonical EXTRACT_BONUS payload contract unchanged for sufficient input", async () => {
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: "Get 300 FREE SPINS when you play £30 on slots",
+      });
+      mockCrawlJob("scrape-job-sufficient");
+      const enqueue = vi
+        .spyOn(JobQueueService, "enqueue")
+        .mockResolvedValue({ id: "queue-job-id" } as never);
+
+      await IngestionService.handleCrawl({
+        scrapeJobId: "scrape-job-sufficient",
+        url: requestedUrl,
+        taskContext: "BONUS",
+      });
+
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(enqueue).toHaveBeenCalledWith("ingestion-queue", "EXTRACT_BONUS", {
+        scrapeJobId: "scrape-job-sufficient",
+        url: requestedUrl,
+        casinoId: undefined,
+        scrapedContent: "Get 300 FREE SPINS when you play £30 on slots",
+        scrapedMetadata: { title: "Welcome Bonus" },
+        observedAt: OBSERVED_AT.toISOString(),
+      });
+    });
+
+    it("accepts a terse but real offer, so the boundary does not over-reject", async () => {
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content: "100% deposit match up to $500",
+      });
+      mockCrawlJob("scrape-job-terse");
+      const enqueue = vi
+        .spyOn(JobQueueService, "enqueue")
+        .mockResolvedValue({ id: "queue-job-id" } as never);
+
+      await IngestionService.handleCrawl({
+        scrapeJobId: "scrape-job-terse",
+        url: requestedUrl,
+        taskContext: "BONUS",
+      });
+
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(enqueue.mock.calls[0][1]).toBe("EXTRACT_BONUS");
+    });
+  });
+
+  describe("insufficient BONUS input on the canonical queue retry path", () => {
+    const insufficientError = () =>
+      new ExtractionInputRejectedError({
+        sufficient: false,
+        category: "INSUFFICIENT_CONTENT",
+        reason:
+          "The rendered page text is too sparse or carries no offer-detail evidence for extraction.",
+      });
+
+    function claimCrawlJob(attempts: number, maxAttempts: number) {
+      vi.spyOn(prisma, "$transaction").mockResolvedValueOnce({
+        id: "crawl-insufficient-retry",
+        queue_name: "ingestion-queue",
+        task_type: "CRAWL_URL",
+        payload: JSON.stringify({
+          scrapeJobId: "scrape-job-insufficient-retry",
+          url: "https://casino.example.com/promotions/welcome/",
+          taskContext: "BONUS",
+        }),
+        status: "PROCESSING",
+        priority: "NORMAL",
+        domain: "casino.example.com",
+        worker_id: "worker-insufficient",
+        attempts,
+        max_attempts: maxAttempts,
+        run_at: new Date(),
+        locked_until: new Date(Date.now() + 60_000),
+      } as never);
+    }
+
+    it.each([
+      ["non-final attempt", 1, 3, "PENDING", true],
+      ["final attempt", 3, 3, "FAILED", false],
+    ])(
+      "%s produces queue status %s",
+      async (_label, attempts, maxAttempts, expectedStatus, expectBackoff) => {
+        claimCrawlJob(attempts as number, maxAttempts as number);
+        const queueWrite = vi
+          .spyOn(prisma.jobQueue, "updateMany")
+          .mockResolvedValue({ count: 1 });
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const before = Date.now();
+
+        expect(
+          await JobQueueService.processNextJob(
+            "ingestion-queue",
+            { CRAWL_URL: vi.fn().mockRejectedValue(insufficientError()) },
+            { workerId: "worker-insufficient" },
+          ),
+        ).toBe(true);
+
+        const terminal = queueWrite.mock.calls.at(-1)![0] as {
+          data: { status: string; run_at?: Date; error_log: string };
+        };
+        expect(terminal.data.status).toBe(expectedStatus);
+
+        if (expectBackoff) {
+          // Exponential backoff: 2^attempts seconds.
+          expect(terminal.data.run_at).toBeInstanceOf(Date);
+          expect(terminal.data.run_at!.getTime()).toBeGreaterThanOrEqual(
+            before + Math.pow(2, attempts as number) * 1000 - 50,
+          );
+        } else {
+          expect(terminal.data.run_at).toBeUndefined();
+        }
+
+        // Queue-side error log carries the error *name* only.
+        expect(terminal.data.error_log).toBe(
+          "Job handler execution failed (ExtractionInputRejectedError)",
+        );
+        for (const leak of [
+          "casino.example.com",
+          "https://",
+          "Create account",
+          "secret",
+          "api_key",
+          "sparse",
+        ]) {
+          expect(terminal.data.error_log).not.toContain(leak);
+        }
+      },
+    );
+
+    it("ends the ScrapeJob FAILED with a bounded code while provenance survives", async () => {
+      const requestedUrl = "https://casino.example.com/promotions/welcome/";
+      mockScraperResult({
+        requestedUrl,
+        finalUrl: requestedUrl,
+        canonicalUrl: requestedUrl,
+        title: "Welcome Bonus",
+        content:
+          "Home Sports Casino Live Casino Promotions Bonuses Help About Us " +
+          "Apps Blog Log in Create account",
+      });
+      vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue({
+        id: "scrape-job-terminal",
+        data_source_id: "ds-terminal",
+      } as never);
+      vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue(null);
+      const provenance = vi
+        .spyOn(prisma.scrapeJob, "update")
+        .mockResolvedValue({} as never);
+      const scrapeJobWrite = vi
+        .spyOn(prisma.scrapeJob, "updateMany")
+        .mockResolvedValue({ count: 1 });
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        IngestionService.handleCrawl({
+          scrapeJobId: "scrape-job-terminal",
+          url: requestedUrl,
+          taskContext: "BONUS",
+        }),
+      ).rejects.toThrow(/EXTRACTION_INPUT_REJECTED/);
+
+      // Provenance written before the boundary and never rolled back.
+      expect(provenance).toHaveBeenCalledWith({
+        where: { id: "scrape-job-terminal" },
+        data: {
+          snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
+          html_hash: "test-html-sha256-hash",
+          content_hash: "test-content-sha256-hash",
+          canonical_url: requestedUrl,
+        },
+      });
+
+      const failure = scrapeJobWrite.mock.calls
+        .map((c) => c[0] as { data: { status?: string; error_log?: string } })
+        .find((c) => c.data.status === "FAILED");
+      expect(failure).toBeDefined();
+      expect(JSON.parse(failure!.data.error_log!)).toEqual({
+        code: "EXTRACTION_INPUT_INSUFFICIENT",
+        category: "INSUFFICIENT_CONTENT",
+        reason: expect.any(String),
+      });
+      // The terminal write touches status/error_log/completed_at only, so the
+      // snapshot path, hashes and canonical URL persist for diagnosis.
+      expect(Object.keys(failure!.data).sort()).toEqual([
+        "completed_at",
+        "error_log",
+        "status",
+      ]);
+    });
   });
 
   it("propagates a persistence failure into the canonical queue retry path", async () => {
