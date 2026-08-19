@@ -293,6 +293,11 @@ export class IngestionService {
         httpStatus: scrapeResult.httpStatus,
       });
       if (geoBlock.blocked) {
+        // Bounded positive-classification signal: classifier code plus the
+        // already-sanitized origin. Never page content, HTML or checkpoints.
+        console.log(
+          `[IngestionService] [Worker] Geo-block classified for URL: ${safeUrl} (${geoBlock.code})`,
+        );
         return this.performBonusGeoFallback(payload, currentJob, scrapeResult);
       }
     }

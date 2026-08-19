@@ -33,6 +33,23 @@ const PRIMARY_HTML = `<!doctype html><html><head>
   <title>BetMGM.uk is not available at your location</title>
 </head><body>BetMGM.uk is not available at your location</body></html>`;
 
+/**
+ * Reproduces production ScrapeJob 2c5e2c59-3f50-4711-9593-5dc87389f2a7: two
+ * adjacent block elements with no separating source whitespace, so readable
+ * text extraction emits `locationIt`. The document title is deliberately
+ * neutral and the status is 200, so the concatenated body is the only
+ * unavailability signal and sparse content the only corroboration: this page
+ * reaches the checkpoint path solely through the classifier boundary repair.
+ */
+const CONCATENATED_PRIMARY_HTML = `<!doctype html><html><head><title>BetMGM.uk</title></head><body><h1>BetMGM.uk is not available at your location</h1><p>It seems that we cannot load BetMGM.uk or there's something wrong with your internet proxy.</p></body></html>`;
+
+const CONCATENATED_PRIMARY_CONTENT =
+  "BetMGM.uk is not available at your locationIt seems that we cannot load " +
+  "BetMGM.uk or there's something wrong with your internet proxy.";
+
+const CONCATENATED_PRIMARY_CONTENT_HASH =
+  "b6adb60145a5c95156327eee3fc9af230a29de2289d07797637a62f688c771c6";
+
 const FALLBACK_HTML = `<!doctype html><html><head>
   <title>Welcome Bonus</title>
   <link rel="canonical" href="${URL}">
@@ -109,6 +126,18 @@ function primaryResult(): PlaywrightScrapeResult {
     rawHtml: PRIMARY_HTML,
     timestamp: OBSERVED_AT,
     httpStatus: 451,
+    attemptCount: 1,
+    durationMs: 0,
+  });
+}
+
+function concatenatedPrimaryResult(): PlaywrightScrapeResult {
+  return buildScrapeResultFromHtml({
+    url: URL,
+    finalUrl: URL,
+    rawHtml: CONCATENATED_PRIMARY_HTML,
+    timestamp: OBSERVED_AT,
+    httpStatus: 200,
     attemptCount: 1,
     durationMs: 0,
   });
@@ -341,6 +370,65 @@ describe("BONUS geo fallback state machine and recovery", () => {
     expect(durableAndQueueSurface).not.toContain("test-secret-api-key");
     expect(durableAndQueueSurface).not.toContain("api.scrapingant.com");
     expect(durableAndQueueSurface).not.toContain("x-api-key");
+  });
+
+  it("routes a block-concatenated geo-block primary through the checkpoint path with exactly one paid request", async () => {
+    const primary = concatenatedPrimaryResult();
+    expect(primary.content).toBe(CONCATENATED_PRIMARY_CONTENT);
+    expect(primary.contentHash).toBe(CONCATENATED_PRIMARY_CONTENT_HASH);
+    expect(primary.httpStatus).toBe(200);
+    expect(primary.title).toBe("BetMGM.uk");
+
+    const currentJob = jobWithCheckpoint(null);
+    const updateMany = vi
+      .spyOn(prisma.scrapeJob, "updateMany")
+      .mockResolvedValue({ count: 1 });
+    vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue(
+      currentJob as never,
+    );
+    vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue(null);
+    const scraper = vi
+      .spyOn(internals.scraperAgent, "run")
+      .mockResolvedValue(primary);
+    const paidRequest = vi
+      .spyOn(internals.scrapingAntFallbackService, "scrape")
+      .mockResolvedValue({ rawHtml: FALLBACK_HTML, observedAt: OBSERVED_AT });
+    const networkRequest = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected network request"));
+    const persist = mockDeterministicPersistence();
+    const enqueue = vi
+      .spyOn(JobQueueService, "enqueue")
+      .mockResolvedValue({ id: "queue-job" } as never);
+
+    await IngestionService.handleCrawl({
+      scrapeJobId: JOB_ID,
+      url: URL,
+      taskContext: "BONUS",
+    });
+
+    expect(checkpointStates(updateMany)).toEqual([
+      "PRIMARY_BLOCKED",
+      "REQUEST_CLAIMED",
+      "RESULT_READY",
+      "AVAILABLE",
+    ]);
+    expect(persist.mock.calls[0][0].observationId).toBe(
+      `${JOB_ID}_geo_primary`,
+    );
+    expect(persist.mock.invocationCallOrder[0]).toBeLessThan(
+      paidRequest.mock.invocationCallOrder[0],
+    );
+    expect(paidRequest).toHaveBeenCalledOnce();
+    expect(paidRequest).toHaveBeenCalledWith(URL);
+    expect(scraper).toHaveBeenCalledOnce();
+    expect(networkRequest).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(
+      "ingestion-queue",
+      "EXTRACT_BONUS",
+      expect.objectContaining({ scrapeJobId: JOB_ID, url: URL }),
+      { deduplicate: true },
+    );
   });
 
   it("retains the primary canonical artifact when the provider fails", async () => {
