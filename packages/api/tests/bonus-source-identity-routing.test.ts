@@ -7,6 +7,9 @@ import { JobQueueService } from "../src/services/job-queue.service";
 import { OrchestratorService } from "../src/services/orchestrator.service";
 import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
 
+const TEST_HTML_HASH = "a".repeat(64);
+const TEST_CONTENT_HASH = "b".repeat(64);
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -90,8 +93,8 @@ describe("Bonus source identity result routing", () => {
             "https://casino.example.com/promotions/canonical-welcome",
           snapshot_path:
             "supabase://savvyedge-evidence/v1/initial-observation.html",
-          html_hash: "html-canonical",
-          content_hash: "content-canonical",
+          html_hash: TEST_HTML_HASH,
+          content_hash: TEST_CONTENT_HASH,
         }),
         update: vi.fn().mockResolvedValue({}),
       },
@@ -104,6 +107,9 @@ describe("Bonus source identity result routing", () => {
           .mockImplementation(async ({ data }) => ({
             id: `claim-${data.field}`,
           })),
+      },
+      activeExtractionPointer: {
+        upsert: vi.fn().mockResolvedValue({ id: "active-canonical" }),
       },
     };
     vi.spyOn(prisma.casino, "findUnique").mockResolvedValue(casino as never);
@@ -182,6 +188,21 @@ describe("Bonus source identity result routing", () => {
           "supabase://savvyedge-evidence/v1/initial-observation.html",
       }),
     });
+    expect(transaction.activeExtractionPointer.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          bonus_id_extraction_context: {
+            bonus_id: savedBonus.id,
+            extraction_context: "BONUS",
+          },
+        },
+        create: expect.objectContaining({
+          bonus_id: savedBonus.id,
+          data_source_id: "source-canonical",
+          evidence_id: evidence.id,
+        }),
+      }),
+    );
     expect(result.bonus).toBe(savedBonus);
     expect(result.evidence).toBe(evidence);
   });
@@ -289,8 +310,8 @@ describe("Bonus source identity result routing", () => {
       id: "scrape-current",
       data_source_id: "source-one",
       status: "COMPLETED",
-      html_hash: "same-html",
-      content_hash: "same-content",
+      html_hash: TEST_HTML_HASH,
+      content_hash: TEST_CONTENT_HASH,
       snapshot_path: "/tmp/current.html",
     };
     const persisted = {
@@ -346,8 +367,8 @@ describe("Bonus source identity result routing", () => {
       id: "scrape-current",
       data_source_id: "source-one",
       status: "COMPLETED",
-      html_hash: "same-html",
-      content_hash: "same-content",
+      html_hash: TEST_HTML_HASH,
+      content_hash: TEST_CONTENT_HASH,
       snapshot_path: "/isolated/current.html",
     };
     vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue(
@@ -381,8 +402,8 @@ describe("Bonus source identity result routing", () => {
       id: "scrape-current",
       data_source_id: "source-one",
       status: "COMPLETED",
-      html_hash: "same-html",
-      content_hash: "same-content",
+      html_hash: TEST_HTML_HASH,
+      content_hash: TEST_CONTENT_HASH,
       snapshot_path: "/isolated/current.html",
     };
     vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue(

@@ -13,6 +13,8 @@ import {
 } from "../src/services/extraction-input-sufficiency";
 
 const OBSERVED_AT = new Date("2026-08-11T10:20:30.456Z");
+const TEST_HTML_HASH = "a".repeat(64);
+const TEST_CONTENT_HASH = "b".repeat(64);
 
 interface ScraperFixture {
   requestedUrl: string;
@@ -39,8 +41,8 @@ function mockScraperResult(fixture: ScraperFixture) {
     content: fixture.content,
     rawHtml: `<html><body>${fixture.content}</body></html>`,
     metadata: { title: fixture.title },
-    htmlHash: "test-html-sha256-hash",
-    contentHash: "test-content-sha256-hash",
+    htmlHash: TEST_HTML_HASH,
+    contentHash: TEST_CONTENT_HASH,
     canonicalUrl: fixture.canonicalUrl,
     timestamp: OBSERVED_AT,
   });
@@ -67,7 +69,7 @@ beforeEach(() => {
     "persistObservation",
   ).mockResolvedValue({
     locator: "supabase://savvyedge-evidence/v1/observation.html",
-    htmlHash: "test-html-sha256-hash",
+    htmlHash: TEST_HTML_HASH,
     byteSize: 128,
   });
 });
@@ -113,8 +115,8 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
       data: {
         snapshot_path:
           "supabase://savvyedge-evidence/v1/observation.html",
-        html_hash: "test-html-sha256-hash",
-        content_hash: "test-content-sha256-hash",
+        html_hash: TEST_HTML_HASH,
+        content_hash: TEST_CONTENT_HASH,
         canonical_url: requestedUrl,
       },
     });
@@ -456,7 +458,7 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
     } as never);
     vi.spyOn(prisma.scrapeJob, "findFirst").mockResolvedValue({
       id: "scrape-job-previous",
-      content_hash: "test-content-sha256-hash",
+      content_hash: TEST_CONTENT_HASH,
     } as never);
     vi.spyOn(prisma.scrapeJob, "update").mockResolvedValue({} as never);
     const enqueue = vi.spyOn(JobQueueService, "enqueue");
@@ -533,8 +535,8 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         where: { id: "scrape-job-insufficient", retry_count: 0 },
         data: {
           snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
-          html_hash: "test-html-sha256-hash",
-          content_hash: "test-content-sha256-hash",
+          html_hash: TEST_HTML_HASH,
+          content_hash: TEST_CONTENT_HASH,
           canonical_url: requestedUrl,
         },
       });
@@ -883,8 +885,8 @@ describe("source-page eligibility enforcement (Boundary B2)", () => {
         where: { id: "scrape-job-terminal", retry_count: 0 },
         data: {
           snapshot_path: "supabase://savvyedge-evidence/v1/observation.html",
-          html_hash: "test-html-sha256-hash",
-          content_hash: "test-content-sha256-hash",
+          html_hash: TEST_HTML_HASH,
+          content_hash: TEST_CONTENT_HASH,
           canonical_url: requestedUrl,
         },
       });

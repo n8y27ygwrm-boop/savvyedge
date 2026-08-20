@@ -63,6 +63,7 @@ describe("unified ingestion queue contract", () => {
       "CRAWL_URL",
       "EXTRACT_BONUS",
       "EXTRACT_GAME_LIST",
+      "REPROCESS_SNAPSHOT",
       "VALIDATE_BONUS",
     ]);
     expect(Object.keys(orchestratorHandlers()).sort()).toEqual(

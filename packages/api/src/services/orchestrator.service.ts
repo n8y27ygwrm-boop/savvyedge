@@ -783,6 +783,12 @@ export class OrchestratorService {
         await IngestionService.handleGameListExtraction(payload);
       },
 
+      REPROCESS_SNAPSHOT: async (
+        payload: IngestionJobPayloadMap["REPROCESS_SNAPSHOT"],
+      ) => {
+        await IngestionService.handleSnapshotReprocessing(payload);
+      },
+
       VALIDATE_BONUS: async (payload: { bonusId: string; url: string }) => {
         console.log(`[PlatformOrchestrator] Re-verifying Bonus ${payload.bonusId}...`);
         const result = bonusReverificationOverrides

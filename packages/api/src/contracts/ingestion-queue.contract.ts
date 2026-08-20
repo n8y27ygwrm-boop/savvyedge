@@ -6,6 +6,7 @@ export const INGESTION_JOB_TYPES = [
   "CRAWL_URL",
   "EXTRACT_BONUS",
   "EXTRACT_GAME_LIST",
+  "REPROCESS_SNAPSHOT",
   "VALIDATE_BONUS",
 ] as const;
 
@@ -35,6 +36,19 @@ export interface IngestionJobPayloadMap {
     scrapedContent: string;
   };
   VALIDATE_BONUS: { bonusId: string; url: string };
+  /**
+   * Re-interpret an already persisted authoritative snapshot under the current
+   * extraction contract. Every field is server-derived from the source
+   * execution; the caller supplies only sourceScrapeJobId to the admin route.
+   */
+  REPROCESS_SNAPSHOT: {
+    scrapeJobId: string;
+    sourceScrapeJobId: string;
+    url: string;
+    taskContext: "BONUS";
+    requestedExtractionVersion: string;
+    casinoId?: string;
+  };
 }
 
 export type IngestionQueueHandlers = {
@@ -196,6 +210,34 @@ export function assertIngestionQueueJob(
       }
       if (!isNonEmptyString(payload.scrapedContent)) {
         invalidPayload(taskType, "scrapedContent is required");
+      }
+      return;
+
+    case "REPROCESS_SNAPSHOT":
+      if (!isNonEmptyString(payload.scrapeJobId)) {
+        invalidPayload(taskType, "scrapeJobId is required");
+      }
+      if (!isNonEmptyString(payload.sourceScrapeJobId)) {
+        invalidPayload(taskType, "sourceScrapeJobId is required");
+      }
+      if (payload.sourceScrapeJobId === payload.scrapeJobId) {
+        invalidPayload(taskType, "sourceScrapeJobId must differ from scrapeJobId");
+      }
+      if (!isNonEmptyString(payload.url)) {
+        invalidPayload(taskType, "url is required");
+      }
+      // V1 is BONUS only. GAME_LIST reprocessing is deliberately unsupported.
+      if (payload.taskContext !== "BONUS") {
+        invalidPayload(taskType, "taskContext must be BONUS");
+      }
+      if (!isNonEmptyString(payload.requestedExtractionVersion)) {
+        invalidPayload(taskType, "requestedExtractionVersion is required");
+      }
+      if (
+        payload.casinoId !== undefined &&
+        !isNonEmptyString(payload.casinoId)
+      ) {
+        invalidPayload(taskType, "casinoId must be a non-empty string");
       }
       return;
 

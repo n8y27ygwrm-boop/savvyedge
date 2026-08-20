@@ -19,6 +19,7 @@ import {
   type ReviewTransitionCommand,
 } from "@savvyedge/api/workflow";
 import { prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
+import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api";
 
 async function loadClaimIds(
   request: AdminTransitionRequest,
@@ -36,12 +37,11 @@ async function loadClaimIds(
     ).map((claim) => claim.id);
   }
   if (request.subjectType === "BONUS") {
-    return (
-      await prisma.bonusEvidenceClaim.findMany({
-        where: { bonus_id: request.subjectId },
-        select: { id: true },
-      })
-    ).map((claim) => claim.id);
+    // Governance-critical: only claims belonging to the active extraction may
+    // evidence a new transition. A superseded claim stays queryable but must
+    // never be supplied to an approval. Data sources with no active pointer
+    // keep their pre-contract behaviour.
+    return getGovernanceEligibleBonusClaimIds(request.subjectId);
   }
   if (request.subjectType === "SLOT") {
     return (

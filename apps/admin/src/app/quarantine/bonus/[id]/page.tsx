@@ -7,6 +7,7 @@ import { GlassPanel } from "@/components/ui/GlassPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
 import { ClearQuarantineControls } from "../../components/ClearQuarantineControls";
+import { partitionBonusClaimsByActivity } from "@savvyedge/api";
 
 export interface QuarantineBonusDetailPageProps {
   params: Promise<{ id: string }>;
@@ -96,6 +97,9 @@ export default async function QuarantineBonusDetailPage(props: QuarantineBonusDe
   }
 
   const claimIds = bonus.evidence_claims.map((c) => c.id);
+
+  // Reviewers must never read a superseded claim as current evidence.
+  const { activeClaimIds } = await partitionBonusClaimsByActivity(bonus.id);
 
   function isSafeUrl(urlStr: string): boolean {
     try {
@@ -231,6 +235,17 @@ export default async function QuarantineBonusDetailPage(props: QuarantineBonusDe
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {bonus.evidence_claims.map((claim) => (
                   <div key={claim.id} style={{ padding: 14, borderRadius: 6, background: "rgba(0, 0, 0, 0.3)", border: "1px solid var(--admin-border)" }}>
+                    <div style={{ marginBottom: 6 }}>
+                      {activeClaimIds.has(claim.id) ? (
+                        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.6, color: "#052e16", background: "#4ade80", borderRadius: 4, padding: "2px 8px" }}>
+                          ACTIVE EVIDENCE
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.6, color: "#1c1917", background: "#a8a29e", borderRadius: 4, padding: "2px 8px" }}>
+                          HISTORICAL EVIDENCE
+                        </span>
+                      )}
+                    </div>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                       <span style={{ fontSize: 12, fontWeight: 700, color: "#c084fc", textTransform: "uppercase" }}>{claim.field}</span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(16, 185, 129, 0.15)", color: "#34d399", border: "1px solid rgba(16, 185, 129, 0.3)", fontWeight: 700 }}>

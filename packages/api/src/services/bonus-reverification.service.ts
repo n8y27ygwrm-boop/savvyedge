@@ -20,6 +20,11 @@ import { evaluateSourcePageEligibility } from "./source-page-eligibility";
 import { WorkflowTransitionService } from "./workflow-transition.service";
 import { WorkflowTransitionError } from "./workflow-transition.errors";
 import { BonusService } from "./bonus.service";
+import {
+  EXTRACTION_CONTRACT_VERSION,
+  bonusExtractionKey,
+} from "@savvyedge/ai-agents";
+import { BONUS_EXTRACTION_CONTEXT } from "./ingestion.service";
 import { resolveHeadlineEvidenceObservation } from "./ingestion.service";
 import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
 import {
@@ -437,6 +442,23 @@ export class BonusReverificationService {
         ? scrapeResult.contentHash
         : createHash("sha256").update(observedContent).digest("hex");
 
+    // Observation-scoped extraction identity for this reverification.
+    //
+    // An unchanged reverification is still a new, timestamped observation: it
+    // persisted its own artifact at its own locator, so it earns its own
+    // identity and its own EvidenceRecord. The old record is never reused to
+    // dodge the composite unique index. Computed here, before any transaction,
+    // so it is stable for the whole call.
+    // Fails closed. persistObservation only returns after verifying the bytes
+    // against a real SHA-256, so a malformed value here is an integrity fault,
+    // not a tolerable degradation. A governed write must never deliberately
+    // create a NULL extraction key.
+    const reverificationExtractionKey = bonusExtractionKey({
+      snapshotLocator: persistedArtifact.locator,
+      htmlHash: persistedArtifact.htmlHash,
+      contentHash,
+    });
+
     if (
       !normalizedBonus.headline_value ||
       normalizedBonus.headline_value.trim() === ""
@@ -496,9 +518,38 @@ export class BonusReverificationService {
             snapshot_path: persistedArtifact.locator,
             html_hash: persistedArtifact.htmlHash,
             content_hash: contentHash,
+            extraction_key: reverificationExtractionKey,
             observed_at: observedAt,
             extracted_at: extractedAt,
             created_by_id: actor.id,
+          },
+        });
+
+        // This observation becomes authoritative for governance. The prior
+        // observation becomes historical by pointer derivation only; its
+        // EvidenceRecord and claims are never mutated.
+        await tx.activeExtractionPointer.upsert({
+          where: {
+            bonus_id_extraction_context: {
+              bonus_id: bonus.id,
+              extraction_context: BONUS_EXTRACTION_CONTEXT,
+            },
+          },
+          create: {
+            bonus_id: bonus.id,
+            data_source_id: ds.id,
+            extraction_context: BONUS_EXTRACTION_CONTEXT,
+            evidence_id: evidenceRecord.id,
+            extraction_key: reverificationExtractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: extractedAt,
+          },
+          update: {
+            data_source_id: ds.id,
+            evidence_id: evidenceRecord.id,
+            extraction_key: reverificationExtractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: extractedAt,
           },
         });
 
@@ -584,9 +635,38 @@ export class BonusReverificationService {
             snapshot_path: persistedArtifact.locator,
             html_hash: persistedArtifact.htmlHash,
             content_hash: contentHash,
+            extraction_key: reverificationExtractionKey,
             observed_at: observedAt,
             extracted_at: extractedAt,
             created_by_id: actor.id,
+          },
+        });
+
+        // This observation becomes authoritative for governance. The prior
+        // observation becomes historical by pointer derivation only; its
+        // EvidenceRecord and claims are never mutated.
+        await tx.activeExtractionPointer.upsert({
+          where: {
+            bonus_id_extraction_context: {
+              bonus_id: bonus.id,
+              extraction_context: BONUS_EXTRACTION_CONTEXT,
+            },
+          },
+          create: {
+            bonus_id: bonus.id,
+            data_source_id: ds.id,
+            extraction_context: BONUS_EXTRACTION_CONTEXT,
+            evidence_id: evidenceRecord.id,
+            extraction_key: reverificationExtractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: extractedAt,
+          },
+          update: {
+            data_source_id: ds.id,
+            evidence_id: evidenceRecord.id,
+            extraction_key: reverificationExtractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: extractedAt,
           },
         });
 

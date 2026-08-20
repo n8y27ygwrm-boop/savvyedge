@@ -3,6 +3,8 @@ export * from "./contracts/ingestion-queue.contract";
 export * from "./services/casino.service";
 export * from "./services/bonus.service";
 export * from "./services/ingestion.service";
+export * from "./services/active-evidence.service";
+export * from "./services/snapshot-reprocessing.service";
 export { IngestionEnqueueService } from "./services/ingestion-enqueue.service";
 export * from "./services/job-queue.service";
 export * from "./services/discovery.service";

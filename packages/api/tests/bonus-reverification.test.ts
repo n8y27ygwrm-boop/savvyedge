@@ -20,6 +20,14 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
   const FIXED_NOW_T2 = new Date("2026-08-10T14:00:00.000Z");
   const SOURCE_URL = "https://apexcasino.example.test/welcome-terms";
   const SOURCE_OFFER_KEY = createBonusSourceOfferKey(SOURCE_URL);
+  const TEST_HTML_HASH = "a".repeat(64);
+  const TEST_CONTENT_HASH = "b".repeat(64);
+
+  const activePointerTx = () => ({
+    activeExtractionPointer: {
+      upsert: vi.fn().mockResolvedValue({ id: "active-pointer" }),
+    },
+  });
 
   const baseCasino = {
     id: "casino-rev-1",
@@ -77,7 +85,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
         evidence: {
           id: "ev-1",
           source_url: SOURCE_URL,
-          content_hash: "hash-initial",
+          content_hash: TEST_CONTENT_HASH,
           observed_at: new Date("2026-08-01T00:00:00.000Z"),
         },
       },
@@ -104,7 +112,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
       "persistObservation",
     ).mockResolvedValue({
       locator: "supabase://savvyedge-evidence/v1/d3b-observation.html",
-      htmlHash: "durable-d3b-html-hash",
+      htmlHash: TEST_HTML_HASH,
       byteSize: 256,
     });
 
@@ -123,11 +131,19 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     let updatedBonusData: any = null;
     let createdHistoryData: any = null;
     let createdEvidenceData: any = null;
+    let activePointerInput: any = null;
     const createdClaims: any[] = [];
 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (callback: any) => {
         const mockTx: any = {
+          ...activePointerTx(),
+          activeExtractionPointer: {
+            upsert: vi.fn().mockImplementation(async (input: any) => {
+              activePointerInput = input;
+              return { id: "active-pointer" };
+            }),
+          },
           reviewActor: {
             upsert: vi
               .fn()
@@ -175,8 +191,8 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
         title: "Apex Casino Welcome Bonus Offer",
         content:
           "Get 100% up to £200 on first deposit. 35x wagering applies. Max conversion £1000.",
-        contentHash: "hash-matching-content",
-        htmlHash: "hash-matching-html",
+        contentHash: TEST_CONTENT_HASH,
+        htmlHash: TEST_HTML_HASH,
         timestamp: FIXED_NOW_T1,
       }),
     };
@@ -219,11 +235,24 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     // 2. Fresh EvidenceRecord created with exact snapshot
     expect(createdEvidenceData).toBeDefined();
     expect(createdEvidenceData.source_url).toBe(SOURCE_URL);
-    expect(createdEvidenceData.content_hash).toBe("hash-matching-content");
+    expect(createdEvidenceData.content_hash).toBe(TEST_CONTENT_HASH);
     expect(createdEvidenceData.snapshot_path).toBe(
       "supabase://savvyedge-evidence/v1/d3b-observation.html",
     );
-    expect(createdEvidenceData.html_hash).toBe("durable-d3b-html-hash");
+    expect(createdEvidenceData.html_hash).toBe(TEST_HTML_HASH);
+    expect(activePointerInput).toMatchObject({
+      where: {
+        bonus_id_extraction_context: {
+          bonus_id: initialBonus.id,
+          extraction_context: "BONUS",
+        },
+      },
+      create: {
+        bonus_id: initialBonus.id,
+        data_source_id: "ds-1",
+        evidence_id: "ev-fresh-1",
+      },
+    });
 
     // 3. verified_at BonusHistoryEvent created
     expect(createdHistoryData).toBeDefined();
@@ -278,6 +307,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
           expires_at: null,
         };
         const mockTx: any = {
+          ...activePointerTx(),
           reviewActor: {
             upsert: vi
               .fn()
@@ -457,6 +487,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (callback: any) => {
         const mockTx: any = {
+          ...activePointerTx(),
           reviewActor: {
             upsert: vi
               .fn()
@@ -663,6 +694,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (callback: any) => {
         const mockTx: any = {
+          ...activePointerTx(),
           reviewActor: {
             upsert: vi
               .fn()
@@ -766,6 +798,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (callback: any) => {
         const mockTx: any = {
+          ...activePointerTx(),
           reviewActor: {
             upsert: vi
               .fn()
@@ -957,6 +990,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
 
     vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
       callback({
+        ...activePointerTx(),
         reviewActor: {
           upsert: vi
             .fn()
@@ -1034,6 +1068,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
 
     vi.spyOn(prisma, "$transaction").mockImplementation(async (callback: any) =>
       callback({
+        ...activePointerTx(),
         reviewActor: {
           upsert: vi
             .fn()
@@ -1094,6 +1129,50 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     });
     expect(transitionSpy).not.toHaveBeenCalled();
     expect(repeatedCasData).toEqual({ updated_at: FIXED_NOW_T1 });
+  });
+
+  it("fails closed on a malformed persisted hash before any governed mutation", async () => {
+    const initialBonus = createMockApprovedBonus();
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+    const transaction = vi.spyOn(prisma, "$transaction");
+    const persistObservation = vi.fn().mockResolvedValue({
+      locator: "supabase://savvyedge-evidence/v1/malformed-observation.html",
+      htmlHash: "not-a-sha256",
+      byteSize: 128,
+    });
+
+    await expect(
+      BonusReverificationService.reverifyBonus(initialBonus.id, {
+        scraperAgent: {
+          run: vi.fn().mockResolvedValue({
+            url: SOURCE_URL,
+            finalUrl: SOURCE_URL,
+            title: "Apex Casino Welcome Bonus Offer",
+            content: "Get 100% up to £200. Wagering is 35x.",
+            timestamp: FIXED_NOW_T1,
+          }),
+        },
+        bonusAgent: {
+          run: vi.fn().mockResolvedValue({
+            headline_value: "100% up to £200",
+            type: "WELCOME",
+            wagering_requirement: 35,
+            max_conversion: 1000,
+            valid_from: null,
+            valid_until: null,
+            status: "ACTIVE",
+          }),
+        },
+        artifactStore: { persistObservation },
+        now: FIXED_NOW_T1,
+      }),
+    ).rejects.toMatchObject({
+      name: "ExtractionContractError",
+      code: "INVALID_HTML_HASH",
+    });
+
+    expect(persistObservation).toHaveBeenCalledOnce();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("15. unchanged-path upload failure throws before extraction or governed mutation", async () => {

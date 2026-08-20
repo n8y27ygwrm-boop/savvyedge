@@ -50,6 +50,12 @@ import {
 } from "./evidence-artifact-retrieval.service";
 import { classifyGeoBlock } from "./geo-block-classifier";
 import {
+  EXTRACTION_CONTRACT_VERSION,
+  ExtractionContractError,
+  bonusExtractionKey,
+} from "@savvyedge/ai-agents";
+import { isExtractionKeyUniqueViolation } from "../utils/extraction-identity";
+import {
   createGeoFallbackCheckpoint,
   GeoFallbackCheckpointError,
   parseGeoFallbackCheckpoint,
@@ -93,6 +99,45 @@ type GeoFallbackRuntimeErrorCode =
   | "FALLBACK_ARTIFACT_MISMATCH"
   | "LOCAL_RECOVERY_REJECTED"
   | "LOCAL_RECOVERY_STILL_GEO_BLOCKED";
+
+export type SnapshotReprocessingRuntimeErrorCode =
+  | "EXTRACTION_VERSION_MISMATCH"
+  | "SOURCE_ARTIFACT_ABSENT"
+  | "SOURCE_OBSERVATION_UNRESOLVED"
+  | "ARTIFACT_NOT_AVAILABLE"
+  | "ARTIFACT_INTEGRITY_FAILED"
+  | "CONTENT_HASH_DIVERGED";
+
+/**
+ * Bounded reprocessing failure. Carries a classified code only — never the
+ * snapshot locator, storage URL or any artifact bytes.
+ */
+export class SnapshotReprocessingRuntimeError extends Error {
+  public constructor(
+    public readonly code: SnapshotReprocessingRuntimeErrorCode,
+  ) {
+    super(`Snapshot reprocessing failed (${code})`);
+    this.name = "SnapshotReprocessingRuntimeError";
+  }
+}
+
+type ExtractionRaceReconciliationErrorCode =
+  | "JOB_NOT_FOUND"
+  | "WINNER_NOT_FOUND"
+  | "WINNER_BONUS_UNRESOLVED"
+  | "WINNER_POINTER_NOT_ACTIVE"
+  | "LOSER_NOT_PROCESSING"
+  | "LOSER_STATE_CHANGED";
+
+/** Bounded failure for the separate post-rollback loser reconciliation. */
+class ExtractionRaceReconciliationError extends Error {
+  public constructor(
+    public readonly code: ExtractionRaceReconciliationErrorCode,
+  ) {
+    super(`Extraction race reconciliation failed (${code})`);
+    this.name = "ExtractionRaceReconciliationError";
+  }
+}
 
 class GeoFallbackRuntimeError extends Error {
   public constructor(public readonly code: GeoFallbackRuntimeErrorCode) {
@@ -151,6 +196,41 @@ export function resolveHeadlineEvidenceObservation(
   }
 
   return null;
+}
+
+export const BONUS_EXTRACTION_CONTEXT = "BONUS" as const;
+
+/**
+ * Extraction identity for the artifact this execution verified.
+ *
+ * Newly governed writes must have a persisted artifact and real verified
+ * SHA-256 hashes. Missing or malformed provenance is an integrity fault and
+ * fails closed with a typed error. Existing legacy rows may keep their NULL
+ * keys, but this writer never creates another one.
+ */
+export function resolveBonusExtractionKey(
+  scrapeJob: {
+    snapshot_path?: string | null;
+    html_hash?: string | null;
+    content_hash?: string | null;
+  } | null,
+): string {
+  if (!scrapeJob?.snapshot_path) {
+    // Legacy rows may retain NULL extraction keys, but a newly governed write
+    // must always name the verified artifact it is interpreting.
+    throw new ExtractionContractError("INVALID_SNAPSHOT_LOCATOR");
+  }
+  if (!scrapeJob.html_hash) {
+    throw new ExtractionContractError("INVALID_HTML_HASH");
+  }
+  if (!scrapeJob.content_hash) {
+    throw new ExtractionContractError("INVALID_CONTENT_HASH");
+  }
+  return bonusExtractionKey({
+    snapshotLocator: scrapeJob.snapshot_path,
+    htmlHash: scrapeJob.html_hash,
+    contentHash: scrapeJob.content_hash,
+  });
 }
 
 export function resolveBonusSourceProvenance(
@@ -1362,10 +1442,132 @@ export class IngestionService {
     try {
       return await this.performExtraction(payload);
     } catch (error) {
+      // Another execution already committed the identical extraction for this
+      // data source, artifact and contract version. The Serializable
+      // transaction rolled back in full, so no Bonus, history, evidence, claim,
+      // workflow or pointer write from this attempt survives. Completing the
+      // loser benignly is correct; failing it would misreport a duplicate as an
+      // error and burn the retry budget.
+      if (isExtractionKeyUniqueViolation(error)) {
+        if (payload.scrapeJobId) {
+          await this.reconcileDeduplicatedExtraction(payload.scrapeJobId);
+        }
+        console.log(
+          `[IngestionService] Extraction already committed for this artifact and contract version; completing duplicate benignly`,
+        );
+        return;
+      }
       if (payload.scrapeJobId) {
         await this.markScrapeJobFailed(payload.scrapeJobId, error, "BONUS");
       }
       throw error;
+    }
+  }
+
+  /**
+   * Terminal write for the loser of an extraction-identity race.
+   *
+   * Runs only after the governed transaction has rolled back, so it can never
+   * coexist with partial domain writes.
+   */
+  private static async reconcileDeduplicatedExtraction(scrapeJobId: string) {
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await prisma.$transaction(
+          async (tx) => {
+            const losingJob = await tx.scrapeJob.findUnique({
+              where: { id: scrapeJobId },
+              select: {
+                id: true,
+                status: true,
+                data_source_id: true,
+                snapshot_path: true,
+                html_hash: true,
+                content_hash: true,
+              },
+            });
+            if (!losingJob) {
+              throw new ExtractionRaceReconciliationError("JOB_NOT_FOUND");
+            }
+
+            const extractionKey = resolveBonusExtractionKey(losingJob);
+            const winningEvidence = await tx.evidenceRecord.findUnique({
+              where: {
+                data_source_id_extraction_key: {
+                  data_source_id: losingJob.data_source_id,
+                  extraction_key: extractionKey,
+                },
+              },
+              select: {
+                id: true,
+                bonus_claims: { select: { bonus_id: true } },
+              },
+            });
+            if (!winningEvidence) {
+              throw new ExtractionRaceReconciliationError("WINNER_NOT_FOUND");
+            }
+
+            const winningBonusIds = [
+              ...new Set(
+                winningEvidence.bonus_claims.map((claim) => claim.bonus_id),
+              ),
+            ];
+            if (winningBonusIds.length === 0) {
+              throw new ExtractionRaceReconciliationError(
+                "WINNER_BONUS_UNRESOLVED",
+              );
+            }
+
+            const activePointers = await tx.activeExtractionPointer.count({
+              where: {
+                bonus_id: { in: winningBonusIds },
+                extraction_context: BONUS_EXTRACTION_CONTEXT,
+                evidence_id: winningEvidence.id,
+              },
+            });
+            if (activePointers !== winningBonusIds.length) {
+              throw new ExtractionRaceReconciliationError(
+                "WINNER_POINTER_NOT_ACTIVE",
+              );
+            }
+
+            if (losingJob.status === "COMPLETED") return;
+            if (losingJob.status !== "PROCESSING") {
+              throw new ExtractionRaceReconciliationError(
+                "LOSER_NOT_PROCESSING",
+              );
+            }
+
+            const completed = await tx.scrapeJob.updateMany({
+              where: { id: losingJob.id, status: "PROCESSING" },
+              data: {
+                status: "COMPLETED",
+                completed_at: new Date(),
+                error_log: null,
+              },
+            });
+            if (completed.count !== 1) {
+              throw new ExtractionRaceReconciliationError(
+                "LOSER_STATE_CHANGED",
+              );
+            }
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            maxWait: 5_000,
+            timeout: 10_000,
+          },
+        );
+        return;
+      } catch (error) {
+        const retryable =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2034";
+        if (retryable && attempt < maxAttempts) continue;
+        throw error;
+      }
     }
   }
 
@@ -1502,6 +1704,13 @@ export class IngestionService {
 
       // e. Create Single Shared EvidenceRecord
       const now = new Date();
+
+      // Observation-scoped extraction identity. Derived from the artifact this
+      // execution actually verified, so a later real observation of identical
+      // content is a distinct extraction, while re-reading the same stored
+      // artifact under the same contract version collides benignly.
+      const extractionKey = resolveBonusExtractionKey(scrapeJob);
+
       const evidenceRecord = await tx.evidenceRecord.create({
         data: {
           data_source_id: dataSourceId,
@@ -1511,6 +1720,7 @@ export class IngestionService {
           snapshot_path: scrapeJob?.snapshot_path || null,
           html_hash: scrapeJob?.html_hash || null,
           content_hash: scrapeJob?.content_hash || null,
+          extraction_key: extractionKey,
           observed_at: sourceObservedAt,
           extracted_at: now,
           created_by_id: actor.id,
@@ -1701,6 +1911,36 @@ export class IngestionService {
         });
       }
 
+      // h2. Move the active-extraction pointer. Same Serializable transaction as
+      // the evidence, its claims, the Bonus/history writes and ScrapeJob
+      // completion, so a rollback cannot leave the pointer advanced. Historical
+      // EvidenceRecord and claim rows are never touched — they simply stop
+      // being referenced.
+      await tx.activeExtractionPointer.upsert({
+        where: {
+          bonus_id_extraction_context: {
+            bonus_id: savedBonus.id,
+            extraction_context: BONUS_EXTRACTION_CONTEXT,
+          },
+        },
+        create: {
+          bonus_id: savedBonus.id,
+          data_source_id: dataSourceId,
+          extraction_context: BONUS_EXTRACTION_CONTEXT,
+          evidence_id: evidenceRecord.id,
+          extraction_key: extractionKey,
+          contract_version: EXTRACTION_CONTRACT_VERSION,
+          activated_at: now,
+        },
+        update: {
+          data_source_id: dataSourceId,
+          evidence_id: evidenceRecord.id,
+          extraction_key: extractionKey,
+          contract_version: EXTRACTION_CONTRACT_VERSION,
+          activated_at: now,
+        },
+      });
+
       // i. Mark ScrapeJob Completed
       if (scrapeJobId) {
         await tx.scrapeJob.update({
@@ -1717,6 +1957,133 @@ export class IngestionService {
 
     console.log(`[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${casino.id}, Bonus ID: ${bonus.id}`);
     return { casino, bonus, evidence };
+  }
+
+  /**
+   * REPROCESS_SNAPSHOT — re-interpret a stored authoritative snapshot under the
+   * current extraction contract.
+   *
+   * Reads only through EvidenceArtifactRetrievalService. Never calls
+   * ScraperAgent, PlaywrightScraper, ScrapingAntFallbackService or any target
+   * fetch: the artifact already exists, so there is nothing to discover.
+   *
+   * Completing this queue task means the artifact was verified and BONUS
+   * extraction was enqueued. The ScrapeJob stays PROCESSING until the governed
+   * extraction transaction commits.
+   */
+  public static async handleSnapshotReprocessing(payload: {
+    scrapeJobId: string;
+    sourceScrapeJobId: string;
+    url: string;
+    taskContext: "BONUS";
+    requestedExtractionVersion: string;
+    casinoId?: string;
+  }) {
+    const safeUrl = sanitizeUrlForLogging(payload.url);
+
+    // A deterministic version mismatch is never retried: the queued request was
+    // built against a different deployment and re-running cannot change that.
+    if (payload.requestedExtractionVersion !== EXTRACTION_CONTRACT_VERSION) {
+      await this.markScrapeJobFailed(
+        payload.scrapeJobId,
+        new SnapshotReprocessingRuntimeError("EXTRACTION_VERSION_MISMATCH"),
+        "BONUS",
+      );
+      throw new SnapshotReprocessingRuntimeError("EXTRACTION_VERSION_MISMATCH");
+    }
+
+    try {
+      const sourceJob = await prisma.scrapeJob.findUnique({
+        where: { id: payload.sourceScrapeJobId },
+      });
+      if (
+        !sourceJob ||
+        !sourceJob.snapshot_path ||
+        !sourceJob.html_hash ||
+        !sourceJob.content_hash
+      ) {
+        throw new SnapshotReprocessingRuntimeError("SOURCE_ARTIFACT_ABSENT");
+      }
+
+      const sourceEvidence = await prisma.evidenceRecord.findFirst({
+        where: { scrape_job_id: sourceJob.id },
+        select: { observed_at: true },
+        orderBy: { extracted_at: "desc" },
+      });
+      if (!sourceEvidence) {
+        throw new SnapshotReprocessingRuntimeError(
+          "SOURCE_OBSERVATION_UNRESOLVED",
+        );
+      }
+
+      // Storage read only. Integrity is enforced inside readArtifact, which
+      // recomputes sha256 over the retrieved bytes and cross-checks the hash
+      // embedded in the locator.
+      let artifact: Awaited<
+        ReturnType<EvidenceArtifactRetrievalService["readArtifact"]>
+      >;
+      try {
+        artifact = await this.evidenceArtifactReader.readArtifact({
+          locator: sourceJob.snapshot_path,
+          expectedHtmlHash: sourceJob.html_hash,
+        });
+      } catch (error: unknown) {
+        throw new SnapshotReprocessingRuntimeError(
+          error instanceof EvidenceArtifactRetrievalError &&
+            error.code === "ARTIFACT_NOT_AVAILABLE"
+            ? "ARTIFACT_NOT_AVAILABLE"
+            : "ARTIFACT_INTEGRITY_FAILED",
+        );
+      }
+
+      const rebuilt = buildScrapeResultFromHtml({
+        url: payload.url,
+        finalUrl: payload.url,
+        rawHtml: exactUtf8(artifact.bytes),
+        timestamp: sourceEvidence.observed_at,
+        attemptCount: 0,
+        durationMs: 0,
+      });
+
+      // The readable text must reproduce the source observation exactly,
+      // otherwise this is not the same observation.
+      if (rebuilt.contentHash !== sourceJob.content_hash) {
+        throw new SnapshotReprocessingRuntimeError("CONTENT_HASH_DIVERGED");
+      }
+
+      // Record the verified artifact on the reprocessing execution. Written
+      // only now, so a null hash means "not yet verified" rather than "copied
+      // on faith from the source row".
+      await prisma.scrapeJob.update({
+        where: { id: payload.scrapeJobId },
+        data: {
+          snapshot_path: sourceJob.snapshot_path,
+          html_hash: artifact.htmlHash,
+          content_hash: rebuilt.contentHash,
+          canonical_url: sourceJob.canonical_url,
+        },
+      });
+
+      console.log(
+        `[IngestionService] [Reprocess] Verified stored artifact for ${safeUrl} (${EXTRACTION_CONTRACT_VERSION}); enqueueing BONUS extraction`,
+      );
+
+      // Existing BONUS extraction path. observedAt is the source observation,
+      // never the reprocessing time.
+      return await this.enqueueExtractionForResult(
+        {
+          scrapeJobId: payload.scrapeJobId,
+          url: payload.url,
+          casinoId: payload.casinoId,
+          taskContext: "BONUS",
+        },
+        rebuilt,
+        sourceEvidence.observed_at,
+      );
+    } catch (error) {
+      await this.markScrapeJobFailed(payload.scrapeJobId, error, "BONUS");
+      throw error;
+    }
   }
 
   /**
@@ -1954,6 +2321,8 @@ export class IngestionService {
       CRAWL_URL: (payload: any) => this.handleCrawl(payload),
       EXTRACT_BONUS: (payload: any) => this.handleExtraction(payload),
       EXTRACT_GAME_LIST: (payload: any) => this.handleGameListExtraction(payload),
+      REPROCESS_SNAPSHOT: (payload: any) =>
+        this.handleSnapshotReprocessing(payload),
     };
   }
 

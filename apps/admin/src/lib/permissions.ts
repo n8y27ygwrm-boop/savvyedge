@@ -10,6 +10,7 @@ export const ADMIN_ACTIONS = [
   "CLEAR_QUARANTINE",
   "PUBLISH",
   "UNPUBLISH",
+  "REPROCESS_SNAPSHOT",
   "MANAGE_ADMIN_USERS",
 ] as const;
 
@@ -38,6 +39,9 @@ const ROLE_PERMISSIONS: Record<AdminRole, ReadonlySet<AdminAction>> = {
     "VIEW_AUDIT",
     "PUBLISH",
     "UNPUBLISH",
+    // Reprocessing can return an APPROVED bonus to review, so it sits at the
+    // same tier as publishing rather than at reviewer level.
+    "REPROCESS_SNAPSHOT",
   ]),
   ADMIN: new Set<AdminAction>([
     "VIEW_REVIEW_QUEUE",
@@ -49,6 +53,7 @@ const ROLE_PERMISSIONS: Record<AdminRole, ReadonlySet<AdminAction>> = {
     "CLEAR_QUARANTINE",
     "PUBLISH",
     "UNPUBLISH",
+    "REPROCESS_SNAPSHOT",
     "MANAGE_ADMIN_USERS",
   ]),
 };

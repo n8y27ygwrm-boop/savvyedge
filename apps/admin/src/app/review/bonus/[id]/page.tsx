@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
 import { EvidenceArtifactViewer } from "@/components/evidence/EvidenceArtifactViewer";
 import { ReviewActionControls } from "../../components/ReviewActionControls";
+import { partitionBonusClaimsByActivity } from "@savvyedge/api";
 
 export interface BonusDetailPageProps {
   params: Promise<{ id: string }>;
@@ -52,6 +53,9 @@ export default async function BonusReviewDetailPage(
   }
 
   const claimIds = bonus.evidence_claims.map((c) => c.id);
+
+  // Reviewers must never read a superseded claim as current evidence.
+  const { activeClaimIds } = await partitionBonusClaimsByActivity(bonus.id);
   const isPublicationCandidate =
     bonus.review_status === "APPROVED" &&
     bonus.publication_status === "UNPUBLISHED";
@@ -293,6 +297,35 @@ export default async function BonusReviewDetailPage(
                       border: "1px solid var(--admin-border)",
                     }}
                   >
+                    {activeClaimIds.has(claim.id) ? (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: 0.6,
+                          color: "#052e16",
+                          background: "#4ade80",
+                          borderRadius: 4,
+                          padding: "2px 8px",
+                        }}
+                      >
+                        ACTIVE EVIDENCE
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: 0.6,
+                          color: "#1c1917",
+                          background: "#a8a29e",
+                          borderRadius: 4,
+                          padding: "2px 8px",
+                        }}
+                      >
+                        HISTORICAL EVIDENCE
+                      </span>
+                    )}
                     <div
                       style={{
                         display: "flex",
