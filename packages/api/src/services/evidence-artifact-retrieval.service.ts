@@ -4,7 +4,7 @@ import * as path from "path";
 import {
   resolveSnapshotRoot,
   verifyPathConfinement,
-} from "@savvyedge/ai-agents";
+} from "@savvyedge/ai-agents/snapshot-storage";
 import {
   computeEvidenceArtifactHash,
   MAX_EVIDENCE_ARTIFACT_SIZE_BYTES,

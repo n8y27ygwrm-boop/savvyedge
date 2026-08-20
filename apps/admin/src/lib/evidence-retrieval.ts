@@ -3,7 +3,7 @@ import {
   EvidenceArtifactRetrievalService,
   type EvidenceArtifactReader,
   type EvidenceArtifactLocatorType,
-} from "@savvyedge/api";
+} from "@savvyedge/api/evidence-artifact-retrieval";
 import { prisma } from "@savvyedge/database";
 
 const EVIDENCE_ID_PATTERN =

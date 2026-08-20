@@ -1,5 +1,5 @@
 import { prisma } from "@savvyedge/database";
-import { PublicationGateService } from "@savvyedge/api";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 import SlotsClient from "./SlotsClient";
 
 export const metadata = {

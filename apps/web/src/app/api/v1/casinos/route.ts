@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { CasinoService, PublicationGateService, verifyApiAuthorization } from "@savvyedge/api";
+import { CasinoService } from "@savvyedge/api/casino-service";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
+import { verifyApiAuthorization } from "@savvyedge/api/auth";
 import { CreateCasinoInputSchema } from "@savvyedge/types";
 import { prisma } from "@savvyedge/database";
 

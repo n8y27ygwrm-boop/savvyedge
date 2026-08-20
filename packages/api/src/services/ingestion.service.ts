@@ -1,4 +1,5 @@
 import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
+import { BONUS_EXTRACTION_CONTEXT } from "../constants/extraction-context";
 import crypto from "crypto";
 import {
   prisma,
@@ -74,6 +75,7 @@ import {
 // Re-exported so the existing public surface of this module is unchanged.
 export { sanitizeUrlForLogging } from "./ingestion-enqueue.service";
 export type { IngestBonusInput } from "./ingestion-enqueue.service";
+export { BONUS_EXTRACTION_CONTEXT } from "../constants/extraction-context";
 
 export const MAX_GEO_FALLBACK_ATTEMPTS = 1;
 const FALLBACK_ARTIFACT_READ_ATTEMPTS = 2;
@@ -197,8 +199,6 @@ export function resolveHeadlineEvidenceObservation(
 
   return null;
 }
-
-export const BONUS_EXTRACTION_CONTEXT = "BONUS" as const;
 
 /**
  * Extraction identity for the artifact this execution verified.

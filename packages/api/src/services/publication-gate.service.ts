@@ -1,5 +1,4 @@
 import { Prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
-import { BonusService } from "./bonus.service";
 import {
   BonusFreshnessPolicy,
   DEFAULT_BONUS_FRESHNESS_POLICY,

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { CasinoService, PublicationGateService } from "@savvyedge/api";
+import { CasinoService } from "@savvyedge/api/casino-service";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 
 export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {

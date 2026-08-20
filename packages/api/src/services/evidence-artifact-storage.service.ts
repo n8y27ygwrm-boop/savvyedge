@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { extractSafeHostForSnapshot } from "@savvyedge/ai-agents";
+import { extractSafeHostForSnapshot } from "@savvyedge/ai-agents/snapshot-storage";
 import { FilesystemEvidenceArtifactStore } from "./filesystem-evidence-artifact-store";
 import { SupabaseEvidenceArtifactStore } from "./supabase-evidence-artifact-store";
 

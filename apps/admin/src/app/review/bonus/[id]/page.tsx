@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
 import { EvidenceArtifactViewer } from "@/components/evidence/EvidenceArtifactViewer";
 import { ReviewActionControls } from "../../components/ReviewActionControls";
-import { partitionBonusClaimsByActivity } from "@savvyedge/api";
+import { partitionBonusClaimsByActivity } from "@savvyedge/api/active-evidence";
 
 export interface BonusDetailPageProps {
   params: Promise<{ id: string }>;

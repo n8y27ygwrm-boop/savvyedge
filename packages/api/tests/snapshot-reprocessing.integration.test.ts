@@ -8,7 +8,7 @@ import {
   Prisma,
   prisma,
 } from "@savvyedge/database";
-import { bonusExtractionKey } from "@savvyedge/ai-agents";
+import { bonusExtractionKey } from "@savvyedge/ai-agents/extraction-contract";
 import { IngestionService } from "../src/services/ingestion.service";
 import { isExtractionKeyUniqueViolation } from "../src/utils/extraction-identity";
 

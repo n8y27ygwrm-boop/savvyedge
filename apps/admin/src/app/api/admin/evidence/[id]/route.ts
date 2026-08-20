@@ -1,7 +1,7 @@
 import {
   EvidenceArtifactRetrievalError,
   type EvidenceArtifactRetrievalErrorCode,
-} from "@savvyedge/api";
+} from "@savvyedge/api/evidence-artifact-retrieval";
 import { verifyAdminSession } from "../../../../../lib/auth";
 import { canPerformAdminAction } from "../../../../../lib/permissions";
 import {

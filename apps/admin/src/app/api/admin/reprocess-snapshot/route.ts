@@ -7,7 +7,7 @@ import { canPerformAdminAction } from "../../../../lib/permissions";
 import {
   SnapshotReprocessingError,
   requestSnapshotReprocessing,
-} from "@savvyedge/api";
+} from "@savvyedge/api/snapshot-reprocessing";
 
 /**
  * Queue a versioned reprocessing run for one stored authoritative snapshot.

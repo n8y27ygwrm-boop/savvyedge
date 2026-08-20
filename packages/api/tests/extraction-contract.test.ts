@@ -5,8 +5,8 @@ import {
   ExtractionContractError,
   artifactIdentity,
   bonusExtractionKey,
-  normalizeBonusExtraction,
-} from "@savvyedge/ai-agents";
+} from "@savvyedge/ai-agents/extraction-contract";
+import { normalizeBonusExtraction } from "@savvyedge/ai-agents";
 import type { CreateBonusInput } from "@savvyedge/types";
 
 const LOCATOR_A =

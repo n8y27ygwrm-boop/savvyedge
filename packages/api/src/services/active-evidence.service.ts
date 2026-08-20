@@ -1,5 +1,5 @@
 import { prisma } from "@savvyedge/database";
-import { BONUS_EXTRACTION_CONTEXT } from "./ingestion.service";
+import { BONUS_EXTRACTION_CONTEXT } from "../constants/extraction-context";
 
 /**
  * Active-versus-historical evidence resolution.

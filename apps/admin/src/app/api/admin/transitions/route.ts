@@ -19,7 +19,7 @@ import {
   type ReviewTransitionCommand,
 } from "@savvyedge/api/workflow";
 import { prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
-import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api";
+import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api/active-evidence";
 
 async function loadClaimIds(
   request: AdminTransitionRequest,

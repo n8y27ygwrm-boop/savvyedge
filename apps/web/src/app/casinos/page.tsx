@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
-import { PublicationGateService } from "@savvyedge/api";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 
 export const metadata = {
   title: "Casino Directory | SavvyEdge",

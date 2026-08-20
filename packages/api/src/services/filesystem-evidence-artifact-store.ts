@@ -5,7 +5,7 @@ import {
   SnapshotStorage,
   resolveSnapshotRoot,
   verifyPathConfinement,
-} from "@savvyedge/ai-agents";
+} from "@savvyedge/ai-agents/snapshot-storage";
 import {
   buildEvidenceArtifactObjectKey,
   computeEvidenceArtifactHash,

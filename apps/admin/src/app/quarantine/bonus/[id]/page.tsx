@@ -7,7 +7,7 @@ import { GlassPanel } from "@/components/ui/GlassPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EntityTypeBadge } from "@/components/ui/EntityTypeBadge";
 import { ClearQuarantineControls } from "../../components/ClearQuarantineControls";
-import { partitionBonusClaimsByActivity } from "@savvyedge/api";
+import { partitionBonusClaimsByActivity } from "@savvyedge/api/active-evidence";
 
 export interface QuarantineBonusDetailPageProps {
   params: Promise<{ id: string }>;

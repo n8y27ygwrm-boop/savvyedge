@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { isKnownTrackingParam } from "@savvyedge/ai-agents";
+import { isKnownTrackingParam } from "@savvyedge/ai-agents/url-normalizer";
 import { Prisma } from "@savvyedge/database";
 
 const BONUS_SOURCE_KEY_VERSION = "bonus-url-v1";

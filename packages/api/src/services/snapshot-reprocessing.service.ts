@@ -2,7 +2,7 @@ import { prisma } from "@savvyedge/database";
 import {
   EXTRACTION_CONTRACT_VERSION,
   bonusExtractionKey,
-} from "@savvyedge/ai-agents";
+} from "@savvyedge/ai-agents/extraction-contract";
 import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import { JobQueueService } from "./job-queue.service";
 import { sanitizeUrlForLogging } from "./ingestion-enqueue.service";

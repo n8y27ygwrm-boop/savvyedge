@@ -4,7 +4,7 @@ import {
   BonusLifecycleStatusSchema,
   CreateBonusInput,
 } from "@savvyedge/types";
-import { AIEngine } from "@savvyedge/ai-agents";
+import { AIEngine } from "@savvyedge/ai-agents/ai-engine";
 import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
 
 export const HOUSE_EDGE_ASSUMPTION = 0.03;

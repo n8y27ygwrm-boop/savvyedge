@@ -16,6 +16,34 @@
     "./ingestion-entrypoint": {
       "types": "./dist/ingestion-entrypoint.d.ts",
       "default": "./dist/ingestion-entrypoint.js"
+    },
+    "./active-evidence": {
+      "types": "./dist/active-evidence.d.ts",
+      "default": "./dist/active-evidence.js"
+    },
+    "./snapshot-reprocessing": {
+      "types": "./dist/snapshot-reprocessing.d.ts",
+      "default": "./dist/snapshot-reprocessing.js"
+    },
+    "./publication-gate": {
+      "types": "./dist/publication-gate.d.ts",
+      "default": "./dist/publication-gate.js"
+    },
+    "./bonus-service": {
+      "types": "./dist/bonus-service.d.ts",
+      "default": "./dist/bonus-service.js"
+    },
+    "./casino-service": {
+      "types": "./dist/casino-service.d.ts",
+      "default": "./dist/casino-service.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "default": "./dist/auth.js"
+    },
+    "./evidence-artifact-retrieval": {
+      "types": "./dist/evidence-artifact-retrieval.d.ts",
+      "default": "./dist/evidence-artifact-retrieval.js"
     }
   },
   "scripts": {
@@ -30,7 +58,6 @@
     "verify:ukgc": "tsx scripts/verify-ukgc-license.ts",
     "verify:d2": "tsx scripts/verify-d2-vertical-slice.ts",
     "test": "vitest run tests --maxWorkers=1"
-
   },
   "dependencies": {
     "@supabase/supabase-js": "2.89.0",

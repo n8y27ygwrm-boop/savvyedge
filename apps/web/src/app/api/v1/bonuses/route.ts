@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
-import { BonusService, PublicationGateService, verifyApiAuthorization } from "@savvyedge/api";
+import { BonusService } from "@savvyedge/api/bonus-service";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
+import { verifyApiAuthorization } from "@savvyedge/api/auth";
 import { CreateBonusInputSchema } from "@savvyedge/types";
 import { prisma } from "@savvyedge/database";
 

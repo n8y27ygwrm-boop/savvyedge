@@ -1,6 +1,6 @@
 import { Prisma, PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
 import { CreateCasinoInput } from "@savvyedge/types";
-import { AIEngine } from "@savvyedge/ai-agents";
+import { AIEngine } from "@savvyedge/ai-agents/ai-engine";
 
 export class CasinoService {
   static async getCasinos({ page = 1, limit = 50 }: { page?: number; limit?: number }) {

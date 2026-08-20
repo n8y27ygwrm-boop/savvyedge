@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@savvyedge/database";
-import { PublicationGateService } from "@savvyedge/api";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 import CompareClient from "./CompareClient";
 
 export const metadata = {

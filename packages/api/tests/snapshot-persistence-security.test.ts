@@ -12,7 +12,7 @@ import {
   resolveSnapshotRoot,
   SnapshotStorage,
   verifyPathConfinement,
-} from "@savvyedge/ai-agents";
+} from "@savvyedge/ai-agents/snapshot-storage";
 
 describe("Snapshot Persistence Security Hardening (Boundary B3)", () => {
   let tempSnapshotRoot: string;

@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ExtractionContractError,
   buildScrapeResultFromHtml,
-  bonusExtractionKey,
 } from "@savvyedge/ai-agents";
+import {
+  ExtractionContractError,
+  bonusExtractionKey,
+} from "@savvyedge/ai-agents/extraction-contract";
 import { Prisma, prisma } from "@savvyedge/database";
 import { EvidenceArtifactRetrievalError } from "../src/services/evidence-artifact-retrieval.service";
 import {
@@ -16,8 +18,8 @@ import {
 } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { BonusService } from "../src/services/bonus.service";
-import { planSnapshotReprocessing } from "../src/services/snapshot-reprocessing.service";
-import { getGovernanceEligibleBonusClaimIds } from "../src/services/active-evidence.service";
+import { planSnapshotReprocessing } from "@savvyedge/api/snapshot-reprocessing";
+import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api/active-evidence";
 import {
   EXTRACTION_IDENTITY_CONSTRAINT,
   isExtractionKeyUniqueViolation,

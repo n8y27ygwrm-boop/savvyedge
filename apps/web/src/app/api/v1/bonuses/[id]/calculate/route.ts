@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { BonusService, PublicationGateService } from "@savvyedge/api";
+import { BonusService } from "@savvyedge/api/bonus-service";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 import { prisma } from "@savvyedge/database";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {

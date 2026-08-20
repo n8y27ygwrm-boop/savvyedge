@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@savvyedge/database";
-import { PublicationGateService } from "@savvyedge/api";
+import { PublicationGateService } from "@savvyedge/api/publication-gate";
 
 export async function GET(request: Request) {
   try {
