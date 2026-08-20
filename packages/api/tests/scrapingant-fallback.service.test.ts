@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_EVIDENCE_ARTIFACT_SIZE_BYTES } from "../src/services/evidence-artifact-storage.service";
 import {
+  SCRAPINGANT_ABORT_MARGIN_MS,
+  SCRAPINGANT_MAX_PROVIDER_ATTEMPTS,
   SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES,
   SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
+  SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS,
+  SCRAPINGANT_RETRY_MIN_REMAINING_MS,
+  SCRAPINGANT_RETRYABLE_STATUS,
   ScrapingAntFallbackError,
   ScrapingAntFallbackService,
 } from "../src/services/scrapingant-fallback.service";
@@ -103,6 +108,74 @@ function pooledViewBody(options: {
     },
   });
   return { stream, state, view };
+}
+
+/**
+ * Serves the given responses in order, then makes any further call fail loudly:
+ * exceeding the attempt ceiling must never be silently absorbed.
+ */
+function sequencedFetch(...responses: Response[]) {
+  const impl = vi.fn<typeof fetch>();
+  for (const response of responses) impl.mockResolvedValueOnce(response);
+  impl.mockImplementation(() => {
+    throw new Error("provider called more times than the attempt ceiling");
+  });
+  return impl;
+}
+
+/** The rotation-critical query contract, asserted per attempt. */
+function assertRotationQuery(call: unknown) {
+  expect(call).toBeInstanceOf(URL);
+  const url = call as URL;
+  expect(`${url.origin}${url.pathname}`).toBe(
+    "https://api.scrapingant.com/v2/general",
+  );
+  expect(url.searchParams.get("proxy_country")).toBe("GB");
+  expect(url.searchParams.get("proxy_type")).toBe("residential");
+  expect(url.searchParams.get("browser")).toBe("true");
+  expect(url.searchParams.get("url")).toBe(TARGET_URL);
+  expect(url.searchParams.getAll("block_resource")).toEqual([
+    "image",
+    "media",
+    "font",
+  ]);
+}
+
+/**
+ * Everything about an attempt's query except its per-attempt provider timeout.
+ * The credential is dropped so a mismatch can never print it.
+ */
+function rotationSignature(call: unknown): string {
+  const url = call as URL;
+  const params = new URLSearchParams(url.searchParams);
+  params.delete("x-api-key");
+  params.delete("timeout");
+  const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
+  return `${url.origin}${url.pathname}?${new URLSearchParams(sorted).toString()}`;
+}
+
+function providerTimeoutOf(call: unknown): number {
+  return Number((call as URL).searchParams.get("timeout"));
+}
+
+/**
+ * Replaces the monotonic clock with one the test advances explicitly, so
+ * remaining-budget behaviour is exact instead of racing real elapsed time.
+ */
+function controllableClock() {
+  const state = { now: 0 };
+  vi.spyOn(performance, "now").mockImplementation(() => state.now);
+  return state;
+}
+
+/** A 423 that advances the monotonic clock as the provider answers. */
+function lockedAfter(clock: { now: number }, elapsedMs: number) {
+  return async () => {
+    clock.now = elapsedMs;
+    return new Response("proxy locked", {
+      status: SCRAPINGANT_RETRYABLE_STATUS,
+    });
+  };
 }
 
 /** The exact single-line shape the ingestion diagnostic log interpolates. */
@@ -564,6 +637,259 @@ describe("ScrapingAnt v2 fallback adapter", () => {
         TARGET_URL,
       ),
     ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("derives the retry floor from the provider minimum plus the abort margin", () => {
+    expect(SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS).toBe(5);
+    expect(SCRAPINGANT_ABORT_MARGIN_MS).toBe(5_000);
+    expect(SCRAPINGANT_RETRY_MIN_REMAINING_MS).toBe(
+      SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS * 1_000 +
+        SCRAPINGANT_ABORT_MARGIN_MS,
+    );
+    // Pinned explicitly: the boundary tests below are written relative to this
+    // constant, so only a literal keeps them from moving with a regression.
+    expect(SCRAPINGANT_RETRY_MIN_REMAINING_MS).toBe(10_000);
+    expect(SCRAPINGANT_MAX_PROVIDER_ATTEMPTS).toBe(2);
+    expect(SCRAPINGANT_RETRYABLE_STATUS).toBe(423);
+  });
+
+  it("retries exactly once on 423 and succeeds on the fresh IP", async () => {
+    const fetchImpl = sequencedFetch(
+      new Response("proxy locked", { status: SCRAPINGANT_RETRYABLE_STATUS }),
+      new Response("<html><body>100% deposit match</body></html>", {
+        status: 200,
+      }),
+    );
+
+    const result = await adapter(fetchImpl).scrape(TARGET_URL);
+
+    expect(result.rawHtml).toContain("deposit match");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Both attempts carry the identical rotation query, which is what makes
+    // ScrapingAnt hand out a different residential IP.
+    assertRotationQuery(fetchImpl.mock.calls[0][0]);
+    assertRotationQuery(fetchImpl.mock.calls[1][0]);
+    expect(rotationSignature(fetchImpl.mock.calls[1][0])).toBe(
+      rotationSignature(fetchImpl.mock.calls[0][0]),
+    );
+  });
+
+  it("stops at the attempt ceiling when the retry is also 423", async () => {
+    const fetchImpl = sequencedFetch(
+      new Response("proxy locked", { status: SCRAPINGANT_RETRYABLE_STATUS }),
+      new Response('{"detail":"IP is still locked"}', {
+        status: SCRAPINGANT_RETRYABLE_STATUS,
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await adapter(fetchImpl).scrape(TARGET_URL);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ScrapingAntFallbackError);
+    // On this path PROVIDER_FAILED follows the attempt ceiling; it may also
+    // follow a retry skipped for insufficient remaining budget.
+    expect(caught).toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: SCRAPINGANT_RETRYABLE_STATUS,
+      providerDetail: "IP is still locked",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(SCRAPINGANT_MAX_PROVIDER_ATTEMPTS);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(errorSurface(caught)).not.toContain(API_KEY);
+  });
+
+  it.each([400, 403, 404, 422, 429, 500, 502, 503])(
+    "never retries HTTP %s",
+    async (status) => {
+      const fetchImpl = sequencedFetch(
+        new Response("provider said no", { status }),
+      );
+
+      let caught: unknown;
+      try {
+        await adapter(fetchImpl).scrape(TARGET_URL);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toMatchObject({ httpStatus: status });
+      expect(caught).toMatchObject({
+        code: status < 500 ? "PROVIDER_4XX" : "PROVIDER_5XX",
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("never retries a timeout or a native network failure", async () => {
+    const timeoutFetch = vi.fn<typeof fetch>().mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new Error("native timeout")),
+          );
+        }),
+    );
+    await expect(adapter(timeoutFetch, 5).scrape(TARGET_URL)).rejects.toEqual(
+      expect.objectContaining({ code: "TIMEOUT" }),
+    );
+    expect(timeoutFetch).toHaveBeenCalledOnce();
+
+    const networkFetch = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("fetch failed"));
+    await expect(adapter(networkFetch).scrape(TARGET_URL)).rejects.toEqual(
+      expect.objectContaining({ code: "NETWORK_ERROR" }),
+    );
+    expect(networkFetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not issue the retry when the shared envelope is nearly gone", async () => {
+    const fetchImpl = sequencedFetch(
+      new Response("proxy locked", { status: SCRAPINGANT_RETRYABLE_STATUS }),
+      new Response("<html><body>never reached</body></html>", { status: 200 }),
+    );
+
+    // A total envelope below the retry floor: the second request could not
+    // finish, so it is never sent.
+    await expect(
+      adapter(fetchImpl, 1_000).scrape(TARGET_URL),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: SCRAPINGANT_RETRYABLE_STATUS,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("asks the provider only for the time the retry still has", async () => {
+    const clock = controllableClock();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(lockedAfter(clock, 40_000))
+      .mockImplementationOnce(
+        async () =>
+          new Response("<html><body>fresh IP</body></html>", {
+            status: 200,
+          }),
+      );
+
+    const result = await adapter(fetchImpl).scrape(TARGET_URL);
+
+    expect(result.rawHtml).toContain("fresh IP");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // First attempt owns the full 65s envelope: 60s provider + 5s margin.
+    expect(providerTimeoutOf(fetchImpl.mock.calls[0][0])).toBe(60);
+    // 25s remain, so the retry asks for 20s and keeps the same 5s margin.
+    expect(providerTimeoutOf(fetchImpl.mock.calls[1][0])).toBe(
+      (25_000 - SCRAPINGANT_ABORT_MARGIN_MS) / 1_000,
+    );
+    // Everything that drives IP rotation is byte-identical across attempts.
+    expect(rotationSignature(fetchImpl.mock.calls[1][0])).toBe(
+      rotationSignature(fetchImpl.mock.calls[0][0]),
+    );
+    assertRotationQuery(fetchImpl.mock.calls[1][0]);
+  });
+
+  it("clamps the retry timeout to the provider minimum at the floor", async () => {
+    const clock = controllableClock();
+    // Leave exactly the retry floor: provider minimum plus the abort margin.
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        lockedAfter(clock, 65_000 - SCRAPINGANT_RETRY_MIN_REMAINING_MS),
+      )
+      .mockImplementationOnce(
+        async () =>
+          new Response("<html><body>fresh IP</body></html>", {
+            status: 200,
+          }),
+      );
+
+    const result = await adapter(fetchImpl).scrape(TARGET_URL);
+
+    expect(result.rawHtml).toContain("fresh IP");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(providerTimeoutOf(fetchImpl.mock.calls[1][0])).toBe(
+      SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS,
+    );
+  });
+
+  it("refuses the retry one millisecond below the floor", async () => {
+    const clock = controllableClock();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        lockedAfter(clock, 65_000 - SCRAPINGANT_RETRY_MIN_REMAINING_MS + 1),
+      )
+      .mockImplementationOnce(
+        async () =>
+          new Response("<html><body>never reached</body></html>", {
+            status: 200,
+          }),
+      );
+
+    await expect(adapter(fetchImpl).scrape(TARGET_URL)).rejects.toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: SCRAPINGANT_RETRYABLE_STATUS,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("ignores wall-clock jumps when measuring the shared envelope", async () => {
+    const clock = controllableClock();
+    // A wall clock that leaps an hour backwards would make a Date.now()-based
+    // deadline look almost untouched; the monotonic envelope must not move.
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(realNow - 3_600_000);
+
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        lockedAfter(clock, 65_000 - SCRAPINGANT_RETRY_MIN_REMAINING_MS + 1),
+      )
+      .mockImplementationOnce(
+        async () =>
+          new Response("<html><body>never reached</body></html>", {
+            status: 200,
+          }),
+      );
+
+    await expect(adapter(fetchImpl).scrape(TARGET_URL)).rejects.toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: SCRAPINGANT_RETRYABLE_STATUS,
+    });
+    // The envelope is exhausted on the monotonic clock, so no retry is issued
+    // no matter what the wall clock claims.
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("keeps bounded, sanitized detail on a retried 423 body", async () => {
+    const fetchImpl = sequencedFetch(
+      new Response("proxy locked", { status: SCRAPINGANT_RETRYABLE_STATUS }),
+      new Response(`locked for ${TARGET_URL} key=${API_KEY}`, {
+        status: SCRAPINGANT_RETRYABLE_STATUS,
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await adapter(fetchImpl).scrape(TARGET_URL);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: SCRAPINGANT_RETRYABLE_STATUS,
+    });
+    // The reflected credential still collapses the whole detail.
+    expect((caught as ScrapingAntFallbackError).providerDetail).toBeUndefined();
+    expect(errorSurface(caught)).not.toContain(API_KEY);
+    expect(errorSurface(caught)).not.toContain(TARGET_URL);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("fails statically when configuration is absent", async () => {

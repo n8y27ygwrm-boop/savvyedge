@@ -6,6 +6,34 @@ export const SCRAPINGANT_ABORT_MARGIN_MS = 5_000;
 export const SCRAPINGANT_ABORT_TIMEOUT_MS =
   SCRAPINGANT_PROVIDER_TIMEOUT_SECONDS * 1_000 + SCRAPINGANT_ABORT_MARGIN_MS;
 
+/**
+ * HTTP 423 from ScrapingAnt reports an unsuccessful request: the assigned proxy
+ * IP was detected or locked out by the target, not that the page is
+ * unavailable. ScrapingAnt bills successful responses, so a 423 is not a
+ * charged response. A new provider request triggers ScrapingAnt's per-request
+ * proxy rotation while the same GB/residential/browser settings are preserved
+ * (only the provider timeout may differ), which is why 423 alone is retryable.
+ */
+export const SCRAPINGANT_RETRYABLE_STATUS = 423;
+
+/**
+ * Absolute ceiling on provider requests issued within one scrape() call.
+ * Bounds outbound request volume, independent of which responses are billed.
+ */
+export const SCRAPINGANT_MAX_PROVIDER_ATTEMPTS = 2;
+
+/** Floor for the provider-side `timeout` query parameter, in seconds. */
+export const SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS = 5;
+
+/**
+ * A retry is only issued when the shared envelope can still accommodate the
+ * provider minimum plus the abort margin. Below this the second request would
+ * be aborted before the provider could answer, so it is not sent at all.
+ */
+export const SCRAPINGANT_RETRY_MIN_REMAINING_MS =
+  SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS * 1_000 +
+  SCRAPINGANT_ABORT_MARGIN_MS;
+
 export const SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS = 500;
 
 /**
@@ -39,6 +67,10 @@ export interface ScrapingAntFallbackResult {
   rawHtml: string;
   observedAt: Date;
 }
+
+type ProviderAttemptOutcome =
+  | { kind: "SUCCESS"; result: ScrapingAntFallbackResult }
+  | { kind: "LOCKED"; error: ScrapingAntFallbackError };
 
 export interface ScrapingAntFallbackServiceOptions {
   env?: NodeJS.ProcessEnv;
@@ -107,6 +139,22 @@ function sanitizedProviderDetail(
 
   if (!safe) return undefined;
   return safe.slice(0, SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS);
+}
+
+/**
+ * Provider-side budget for one attempt: whatever remains of the shared envelope
+ * minus the abort margin, clamped into the provider's accepted range. A retry
+ * therefore asks the provider for the time it can actually wait, instead of
+ * re-requesting the full 60s it no longer has.
+ */
+function providerTimeoutSecondsFor(remainingMs: number): number {
+  const usableSeconds = Math.floor(
+    (remainingMs - SCRAPINGANT_ABORT_MARGIN_MS) / 1_000,
+  );
+  return Math.min(
+    SCRAPINGANT_PROVIDER_TIMEOUT_SECONDS,
+    Math.max(SCRAPINGANT_PROVIDER_MIN_TIMEOUT_SECONDS, usableSeconds),
+  );
 }
 
 function validatedTargetUrl(rawUrl: string): string {
@@ -292,22 +340,6 @@ export class ScrapingAntFallbackService {
     }
     const validatedUrl = validatedTargetUrl(targetUrl);
 
-    // This URL is deliberately scoped to the adapter. It is secret-bearing
-    // because v2 requires x-api-key as a query parameter. Never return it,
-    // attach it to an Error, or pass it to logs, persistence or queue code.
-    const requestUrl = new URL(SCRAPINGANT_V2_ENDPOINT);
-    const query = new URLSearchParams();
-    query.set("x-api-key", apiKey);
-    query.set("url", validatedUrl);
-    query.set("browser", "true");
-    query.set("proxy_country", "GB");
-    query.set("proxy_type", "residential");
-    query.set("timeout", String(SCRAPINGANT_PROVIDER_TIMEOUT_SECONDS));
-    for (const resource of ["image", "media", "font"]) {
-      query.append("block_resource", resource);
-    }
-    requestUrl.search = query.toString();
-
     // Everything a provider error body must never be able to echo back to us.
     // Both target forms are carried because the caller's spelling and the
     // normalized spelling can differ.
@@ -316,8 +348,106 @@ export class ScrapingAntFallbackService {
       targetUrls: [validatedUrl, targetUrl],
     } as const;
 
+    // One envelope for the whole call, not one per attempt, measured on the
+    // monotonic clock: a retry must not extend the adapter's existing
+    // wall-clock envelope, which the job lease and its renewal interval are
+    // sized against, and a system clock adjustment must not be able to move it.
+    const startedAt = performance.now();
+
+    let lockedFailure: ScrapingAntFallbackError | undefined;
+
+    for (
+      let attempt = 1;
+      attempt <= SCRAPINGANT_MAX_PROVIDER_ATTEMPTS;
+      attempt += 1
+    ) {
+      // The first attempt owns the full envelope by definition, so it is not
+      // subject to clock-read jitter and keeps the established query contract.
+      const remainingMs =
+        attempt === 1
+          ? this.abortTimeoutMs
+          : Math.max(0, this.abortTimeoutMs - (performance.now() - startedAt));
+
+      if (attempt > 1 && remainingMs < SCRAPINGANT_RETRY_MIN_REMAINING_MS) {
+        break;
+      }
+
+      const outcome = await this.executeProviderAttempt({
+        validatedUrl,
+        apiKey,
+        detailSecrets,
+        remainingMs,
+      });
+
+      if (outcome.kind === "SUCCESS") {
+        return outcome.result;
+      }
+
+      // Only a locked proxy reaches here; every other failure already threw.
+      lockedFailure = outcome.error;
+    }
+
+    // The caller sees the latest locked failure after the bounded retry
+    // opportunity is exhausted or skipped for insufficient remaining budget.
+    throw lockedFailure ?? providerError("INVALID_RESPONSE");
+  }
+
+  /**
+   * Builds the outbound v2 request for one attempt.
+   *
+   * The returned URL is secret-bearing because v2 requires x-api-key as a query
+   * parameter. It is deliberately scoped to the adapter: never return it,
+   * attach it to an Error, or pass it to logs, persistence or queue code.
+   *
+   * Only the provider `timeout` varies per attempt. The rotation-critical
+   * settings — browser, proxy_country, proxy_type and resource blocking —
+   * remain constant across attempts, while the new provider request receives a
+   * rotated proxy IP.
+   */
+  private buildRequestUrl(input: {
+    validatedUrl: string;
+    apiKey: string;
+    providerTimeoutSeconds: number;
+  }): URL {
+    const requestUrl = new URL(SCRAPINGANT_V2_ENDPOINT);
+    const query = new URLSearchParams();
+    query.set("x-api-key", input.apiKey);
+    query.set("url", input.validatedUrl);
+    query.set("browser", "true");
+    query.set("proxy_country", "GB");
+    query.set("proxy_type", "residential");
+    query.set("timeout", String(input.providerTimeoutSeconds));
+    for (const resource of ["image", "media", "font"]) {
+      query.append("block_resource", resource);
+    }
+    requestUrl.search = query.toString();
+    return requestUrl;
+  }
+
+  /**
+   * One provider request, fully classified.
+   *
+   * Returns a LOCKED outcome instead of throwing only for
+   * SCRAPINGANT_RETRYABLE_STATUS, which is what makes a bounded retry possible.
+   * Every other failure — configuration, timeout, network, other 4xx, 5xx,
+   * oversized or invalid body — throws exactly as before and is never retried.
+   */
+  private async executeProviderAttempt(input: {
+    validatedUrl: string;
+    apiKey: string;
+    detailSecrets: { apiKey: string; targetUrls: readonly string[] };
+    remainingMs: number;
+  }): Promise<ProviderAttemptOutcome> {
+    const { validatedUrl, apiKey, detailSecrets, remainingMs } = input;
+
+    const requestUrl = this.buildRequestUrl({
+      validatedUrl,
+      apiKey,
+      providerTimeoutSeconds: providerTimeoutSecondsFor(remainingMs),
+    });
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.abortTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), remainingMs);
 
     try {
       let response: Response;
@@ -333,7 +463,7 @@ export class ScrapingAntFallbackService {
       }
 
       if (response.status >= 400 && response.status < 500) {
-        throw new ScrapingAntFallbackError(
+        const error = new ScrapingAntFallbackError(
           "PROVIDER_4XX",
           response.status,
           sanitizedProviderDetail(
@@ -341,6 +471,10 @@ export class ScrapingAntFallbackService {
             detailSecrets,
           ),
         );
+        if (response.status === SCRAPINGANT_RETRYABLE_STATUS) {
+          return { kind: "LOCKED", error };
+        }
+        throw error;
       }
       if (response.status >= 500) {
         throw new ScrapingAntFallbackError(
@@ -360,7 +494,7 @@ export class ScrapingAntFallbackService {
       if (rawHtml.includes(apiKey)) {
         throw providerError("INVALID_RESPONSE");
       }
-      return { rawHtml, observedAt: new Date() };
+      return { kind: "SUCCESS", result: { rawHtml, observedAt: new Date() } };
     } finally {
       clearTimeout(timeout);
     }
