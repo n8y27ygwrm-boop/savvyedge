@@ -193,4 +193,90 @@ describe("free-spins bonus semantics", () => {
       wagering: null,
     });
   });
+
+  describe("a wagering multiplier requires explicit multiplier syntax", () => {
+    // Production incident: ScrapeJob afb542e0-56cc-44c3-bf20-27b2b251651d
+    // persisted wagering_requirement = 20 from "wager £20 or more", a
+    // qualifying spend. The authoritative snapshot contains no multiplier.
+    const AUTHORITATIVE_PHRASE =
+      "Opt in, wager £20+ on eligible games Mon 00:01 - Thurs 23:59 " +
+      "for 10 Free Spins worth 10p each";
+
+    it("reads the incident phrase as a qualifying spend, never a multiplier", () => {
+      const semantics = analyzeBonusSourceSemantics(AUTHORITATIVE_PHRASE);
+
+      // "£" is this parser's GBP token.
+      expect(semantics.qualifyingPlaySpend).toMatchObject({
+        amount: 20,
+        currency: "£",
+      });
+      expect(semantics.wagering).toBeNull();
+    });
+
+    it.each([null, 5, 20])(
+      "discards an unsupported model multiplier (%s) for the incident phrase",
+      (modelValue) => {
+        const result = normalizeBonusExtraction(
+          AUTHORITATIVE_PHRASE,
+          extracted({ wagering_requirement: modelValue }),
+        );
+
+        expect(result.bonus.wagering_requirement).toBeNull();
+        // ingestion.service.ts guards claim creation with
+        // `wagering_requirement !== null && !== undefined`, so a null value
+        // creates no BonusEvidenceClaim(WAGERING_REQUIREMENT) at all.
+        expect(result.bonus.wagering_requirement === null).toBe(true);
+      },
+    );
+
+    it.each([
+      ["10x", "wager winnings 10x"],
+      ["10 x", "wager winnings 10 x"],
+      ["10 times", "wager winnings 10 times"],
+    ])("accepts explicit %s syntax", (_label, source) => {
+      expect(analyzeBonusSourceSemantics(source).wagering).toMatchObject({
+        multiplier: 10,
+      });
+    });
+
+    it("keeps the supported free-spin-winnings scope intact", () => {
+      expect(
+        analyzeBonusSourceSemantics(
+          "Wager winnings from Free Spins 10 times to receive Cash",
+        ).wagering,
+      ).toMatchObject({ multiplier: 10, scope: "FREE_SPIN_WINNINGS" });
+    });
+
+    it.each([
+      "wager £20",
+      "wager $20",
+      "wager €20",
+      "wager GBP 20",
+      "wager 20 GBP",
+      "wager 20",
+      "play £20",
+      "spend £20",
+      "stake £20",
+      "wagering requirement 35",
+      "Wager £20 or more during the promotional period on eligible casino games",
+    ])("rejects %s as a multiplier", (source) => {
+      expect(analyzeBonusSourceSemantics(source).wagering).toBeNull();
+    });
+
+    it("discards an unsupported model multiplier outside free-spins offers", () => {
+      const source = "Deposit £100 and get a 100% match up to £200";
+      const result = normalizeBonusExtraction(
+        source,
+        extracted({
+          type: "WELCOME",
+          headline_value: "100% up to £200",
+          wagering_requirement: 35,
+        }),
+      );
+
+      expect(result.semantics.freeSpinCount).toBeNull();
+      expect(result.semantics.wagering).toBeNull();
+      expect(result.bonus.wagering_requirement).toBeNull();
+    });
+  });
 });

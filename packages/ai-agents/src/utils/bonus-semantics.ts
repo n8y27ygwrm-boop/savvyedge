@@ -109,14 +109,36 @@ function findBestFreeSpinsSegment(segments: string[]): string | null {
   return candidates[0]?.segment || null;
 }
 
+/**
+ * Explicit multiplier syntax, and nothing else.
+ *
+ * A wagering multiplier is dimensionless, so the source must actually spell it
+ * as a multiple: `10x`, `10 x` or `10 times`. Any bare number near the word
+ * "wager" is a different quantity — most often a qualifying spend such as
+ * "wager £20 or more" — and reading it as a multiple silently converts a
+ * spending condition into a playthrough obligation the source never states.
+ */
+const EXPLICIT_MULTIPLIER_PATTERNS = [
+  /\b(\d+(?:\.\d+)?)\s*x\b/i,
+  /\b(\d+(?:\.\d+)?)\s+times?\b/i,
+] as const;
+
+function matchExplicitMultiplier(segment: string): RegExpMatchArray | null {
+  for (const pattern of EXPLICIT_MULTIPLIER_PATTERNS) {
+    const match = segment.match(pattern);
+    if (match) return match;
+  }
+  return null;
+}
+
 function findWagering(segments: string[]): SourceWageringTerm | null {
   for (const segment of segments) {
     if (!/\b(?:wager|wagering|playthrough)\b/i.test(segment)) continue;
 
-    const multiplierMatch =
-      segment.match(/\b(\d+(?:\.\d+)?)\s*x\b/i) ||
-      segment.match(/\b(\d+(?:\.\d+)?)\s+times?\b/i) ||
-      segment.match(/\bwager(?:ing)?[^\d]{0,30}(\d+(?:\.\d+)?)\b/i);
+    // No currency-shaped exception list: the requirement is positive evidence
+    // of multiplier syntax, so "wager £20", "wager GBP 20", "wager 20 GBP" and
+    // "wager 20" are all rejected by the same rule.
+    const multiplierMatch = matchExplicitMultiplier(segment);
     if (!multiplierMatch) continue;
 
     let scope: WageringScope = "UNSCOPED";
@@ -185,10 +207,12 @@ export function analyzeBonusSourceSemantics(
     freeSpinValue: freeSpinValueMatch
       ? parseMoneyMatch(freeSpinValueMatch)
       : null,
+    // "wager" belongs here too: a currency amount after it is a qualifying
+    // spend, never a multiplier. findWagering no longer competes for it.
     qualifyingPlaySpend: findMoney(
       segments,
       new RegExp(
-        `\\b(?:play|spend|stake)\\s+(?:at\\s+least\\s+)?${MONEY_PATTERN}`,
+        `\\b(?:play|spend|stake|wager)\\s+(?:at\\s+least\\s+)?${MONEY_PATTERN}`,
         "i",
       ),
     ),
@@ -219,15 +243,24 @@ export function normalizeBonusExtraction(
   extracted: CreateBonusInput,
 ): { bonus: CreateBonusInput; semantics: BonusSourceSemantics } {
   const semantics = analyzeBonusSourceSemantics(rawText);
+
+  // The persisted multiplier is always source-grounded. When the source shows
+  // no explicit multiplier syntax the model's value is discarded rather than
+  // trusted, so an unsupported number can never reach the database on any path.
+  const sourceGroundedWagering = semantics.wagering?.multiplier ?? null;
+
   if (!semantics.freeSpinCount || !semantics.headlineSourceText) {
-    return { bonus: extracted, semantics };
+    return {
+      bonus: { ...extracted, wagering_requirement: sourceGroundedWagering },
+      semantics,
+    };
   }
 
   const isCombined = semantics.isCombinedMonetaryAndFreeSpins;
   const wagering =
     semantics.wagering?.scope === "FREE_SPIN_WINNINGS" && isCombined
       ? null
-      : (semantics.wagering?.multiplier ?? null);
+      : sourceGroundedWagering;
 
   return {
     bonus: {
