@@ -816,6 +816,12 @@ export class IngestionService {
         error instanceof ScrapingAntFallbackError
           ? error
           : new ScrapingAntFallbackError("INVALID_RESPONSE");
+      // Diagnosis only. Job id, bounded classifier code, provider HTTP status
+      // and bounded provider body detail. Never the target URL, the API key or
+      // anything derived from the secret-bearing provider request URL.
+      console.error(
+        `[IngestionService] [GeoFallback] Provider failure for job ${payload.scrapeJobId}: code=${boundedError.code} httpStatus=${boundedError.httpStatus ?? "n/a"} detail=${boundedError.providerDetail ?? "n/a"}`,
+      );
       const failedCheckpoint = createGeoFallbackCheckpoint({
         version: 1,
         state: "PROVIDER_FAILED",

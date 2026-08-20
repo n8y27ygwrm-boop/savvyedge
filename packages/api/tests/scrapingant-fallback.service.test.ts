@@ -1,18 +1,135 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_EVIDENCE_ARTIFACT_SIZE_BYTES } from "../src/services/evidence-artifact-storage.service";
 import {
+  SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES,
+  SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
   ScrapingAntFallbackError,
   ScrapingAntFallbackService,
 } from "../src/services/scrapingant-fallback.service";
 
 const API_KEY = "test-secret-api-key-never-persist";
+/** Percent-encodes to something different from itself, unlike API_KEY. */
+const ENCODABLE_API_KEY = "sk live/secret+key=value";
 const TARGET_URL = "https://casino.example.com/promotions/welcome";
+const ENCODED_TARGET_URL = encodeURIComponent(TARGET_URL);
+const PROVIDER_REQUEST_URL =
+  "https://api.scrapingant.com/v2/general?url=https%3A%2F%2Fcasino.example.com";
 
-function adapter(fetchImpl: typeof fetch, abortTimeoutMs = 65_000) {
+function adapter(
+  fetchImpl: typeof fetch,
+  abortTimeoutMs = 65_000,
+  apiKey = API_KEY,
+) {
   return new ScrapingAntFallbackService({
-    env: { SCRAPINGANT_API_KEY: API_KEY },
+    env: { SCRAPINGANT_API_KEY: apiKey },
     fetchImpl,
     abortTimeoutMs,
+  });
+}
+
+/** Runs one scrape against a stubbed response and returns the thrown error. */
+async function scrapeError(
+  response: Response,
+  apiKey = API_KEY,
+): Promise<ScrapingAntFallbackError> {
+  try {
+    await adapter(
+      vi.fn<typeof fetch>().mockResolvedValue(response),
+      65_000,
+      apiKey,
+    ).scrape(TARGET_URL);
+  } catch (error) {
+    return error as ScrapingAntFallbackError;
+  }
+  throw new Error("expected the adapter to reject");
+}
+
+/**
+ * A body far larger than the read budget that reports how much of itself was
+ * actually pulled and whether the reader was cancelled.
+ */
+function instrumentedBody(chunkSize: number, chunkCount: number) {
+  const state = { pulled: 0, cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (state.pulled >= chunkCount) {
+        controller.close();
+        return;
+      }
+      state.pulled += 1;
+      controller.enqueue(new TextEncoder().encode("A".repeat(chunkSize)));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { stream, state, totalBytes: chunkSize * chunkCount };
+}
+
+/**
+ * A body delivered as a single chunk that is a *view* onto a much larger
+ * ArrayBuffer, the shape a pooled provider allocator produces. The surrounding
+ * buffer is filled with a distinct byte so any over-read is visible.
+ *
+ * `closeAfterChunk: false` parks instead of closing, which is what makes
+ * `cancel()` observable — a stream that has already ended swallows the cancel
+ * as a no-op.
+ */
+function pooledViewBody(options: {
+  bufferBytes: number;
+  viewBytes: number;
+  content: string;
+  filler: string;
+  closeAfterChunk: boolean;
+}) {
+  const backing = new ArrayBuffer(options.bufferBytes);
+  const whole = new Uint8Array(backing);
+  whole.fill(options.filler.charCodeAt(0));
+  const view = new Uint8Array(backing, 0, options.viewBytes);
+  view.fill(options.content.charCodeAt(0));
+
+  const state = { pulled: 0, cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.pulled += 1;
+      if (state.pulled === 1) {
+        controller.enqueue(view);
+        return;
+      }
+      if (options.closeAfterChunk) controller.close();
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { stream, state, view };
+}
+
+/** The exact single-line shape the ingestion diagnostic log interpolates. */
+function diagnosticLogLine(error: ScrapingAntFallbackError): string {
+  return `[IngestionService] [GeoFallback] Provider failure for job job-1: code=${error.code} httpStatus=${error.httpStatus ?? "n/a"} detail=${error.providerDetail ?? "n/a"}`;
+}
+
+/**
+ * Full inspectable surface of a thrown adapter error, including the
+ * non-enumerable Error fields that JSON.stringify alone would omit.
+ */
+function errorSurface(error: unknown): string {
+  const typed = error as Error & {
+    code?: string;
+    httpStatus?: number;
+    providerDetail?: string;
+    cause?: unknown;
+  };
+  return JSON.stringify({
+    own: error,
+    name: typed?.name,
+    message: typed?.message,
+    stack: typed?.stack,
+    code: typed?.code,
+    httpStatus: typed?.httpStatus,
+    providerDetail: typed?.providerDetail,
+    cause: typed?.cause,
   });
 }
 
@@ -139,22 +256,291 @@ describe("ScrapingAnt v2 fallback adapter", () => {
 
   it.each([
     [401, "PROVIDER_4XX"],
+    [403, "PROVIDER_4XX"],
     [429, "PROVIDER_4XX"],
     [500, "PROVIDER_5XX"],
     [503, "PROVIDER_5XX"],
   ])(
-    "maps HTTP %s without exposing the provider body",
+    "maps HTTP %s with its status and without exposing the provider body",
     async (status, code) => {
       const response = new Response(`provider secret body ${API_KEY}`, {
         status,
       });
-      await expect(
-        adapter(vi.fn<typeof fetch>().mockResolvedValue(response)).scrape(
+      let caught: unknown;
+      try {
+        await adapter(vi.fn<typeof fetch>().mockResolvedValue(response)).scrape(
           TARGET_URL,
-        ),
-      ).rejects.toEqual(expect.objectContaining({ code }));
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toEqual(
+        expect.objectContaining({ code, httpStatus: status }),
+      );
+      // The credential can only reach the detail via a reflecting body, which
+      // the adapter refuses rather than propagates.
+      expect(
+        (caught as ScrapingAntFallbackError).providerDetail,
+      ).toBeUndefined();
+      expect(errorSurface(caught)).not.toContain(API_KEY);
     },
   );
+
+  it("captures a bounded provider detail from a JSON error body", async () => {
+    const response = new Response(
+      JSON.stringify({ detail: "Not enough API credits to fulfil request" }),
+      { status: 403 },
+    );
+    let caught: unknown;
+    try {
+      await adapter(vi.fn<typeof fetch>().mockResolvedValue(response)).scrape(
+        TARGET_URL,
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ScrapingAntFallbackError);
+    expect(caught).toMatchObject({
+      code: "PROVIDER_4XX",
+      httpStatus: 403,
+      providerDetail: "Not enough API credits to fulfil request",
+    });
+    expect(errorSurface(caught)).not.toContain(API_KEY);
+    expect(errorSurface(caught)).not.toContain("api.scrapingant.com");
+  });
+
+  it.each([
+    ["plain text", new Response("Forbidden", { status: 403 }), "Forbidden"],
+    ["empty", new Response("", { status: 403 }), undefined],
+    [
+      "JSON without a detail field",
+      new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }),
+      '{"error":"forbidden"}',
+    ],
+    [
+      "malformed JSON",
+      new Response('{"detail": "truncated', { status: 403 }),
+      '{"detail": "truncated',
+    ],
+  ])(
+    "does not throw from detail capture for a %s body",
+    async (_label, response, expected) => {
+      let caught: unknown;
+      try {
+        await adapter(vi.fn<typeof fetch>().mockResolvedValue(response)).scrape(
+          TARGET_URL,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(ScrapingAntFallbackError);
+      expect(caught).toMatchObject({ code: "PROVIDER_4XX", httpStatus: 403 });
+      expect((caught as ScrapingAntFallbackError).providerDetail).toBe(
+        expected,
+      );
+      expect(errorSurface(caught)).not.toContain(API_KEY);
+    },
+  );
+
+  it("bounds an oversized provider detail to 500 characters", async () => {
+    const error = await scrapeError(
+      new Response("x".repeat(5_000), { status: 500 }),
+    );
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 500 });
+    expect(error.providerDetail).toHaveLength(
+      SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
+    );
+  });
+
+  it("stops and cancels a large streaming body at the read budget", async () => {
+    const { stream, state, totalBytes } = instrumentedBody(512, 200);
+    expect(totalBytes).toBeGreaterThan(SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES);
+    // No Content-Length: the bound must come from the streaming read itself.
+    const response = new Response(stream, { status: 502 });
+    expect(response.headers.get("content-length")).toBeNull();
+
+    const error = await scrapeError(response);
+
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 502 });
+    expect(error.providerDetail).toBe(
+      "A".repeat(SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS),
+    );
+    expect(state.cancelled).toBe(true);
+    // The complete body is never consumed: only enough chunks to fill the
+    // byte budget are pulled, plus at most the stream's own read-ahead.
+    expect(state.pulled).toBeLessThan(200);
+    const budgetChunks = Math.ceil(SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES / 512);
+    expect(state.pulled).toBeLessThanOrEqual(budgetChunks + 1);
+  });
+
+  it("bounds one oversized chunk to 500 characters and cancels the reader", async () => {
+    const { stream, state, view } = pooledViewBody({
+      bufferBytes: 1_048_576,
+      viewBytes: 100_000,
+      content: "A",
+      filler: "Z",
+      closeAfterChunk: false,
+    });
+    expect(view.byteLength).toBeGreaterThan(
+      SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES,
+    );
+
+    const error = await scrapeError(new Response(stream, { status: 502 }));
+
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 502 });
+    expect(error.providerDetail).toBe(
+      "A".repeat(SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS),
+    );
+    // One chunk filled the budget. The only further pull is the stream's own
+    // read-ahead; the reader itself never asked for more and then cancelled.
+    expect(state.pulled).toBeLessThanOrEqual(2);
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("reads only a small view, never its much larger backing buffer", async () => {
+    // 32 diagnostic bytes handed out as a view onto 1 MiB of pooled memory.
+    const { stream, view } = pooledViewBody({
+      bufferBytes: 1_048_576,
+      viewBytes: 32,
+      content: "A",
+      filler: "Z",
+      closeAfterChunk: true,
+    });
+    expect(view.buffer.byteLength).toBe(1_048_576);
+
+    const error = await scrapeError(new Response(stream, { status: 500 }));
+
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 500 });
+    // Exactly the view's own bytes: none of the surrounding 1 MiB is read,
+    // and the diagnostic stays far inside the bound.
+    expect(error.providerDetail).toBe("A".repeat(32));
+    expect(error.providerDetail).not.toContain("Z");
+    expect((error.providerDetail as string).length).toBeLessThanOrEqual(
+      SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
+    );
+  });
+
+  it("stops decoding at the byte budget, before a later JSON field", async () => {
+    // `detail` sits past the byte budget. Only a reader that truly stops at the
+    // budget fails to parse the prefix as JSON and falls back to raw text; a
+    // reader that buffered the whole body would surface the field instead.
+    const padding = "P".repeat(SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES);
+    const body = JSON.stringify({ padding, detail: "LATE-DETAIL-FIELD" });
+    expect(body.length).toBeGreaterThan(SCRAPINGANT_PROVIDER_DETAIL_MAX_BYTES);
+
+    const error = await scrapeError(new Response(body, { status: 500 }));
+
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 500 });
+    expect(error.providerDetail).not.toContain("LATE-DETAIL-FIELD");
+    expect(error.providerDetail).toHaveLength(
+      SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
+    );
+    expect(error.providerDetail?.startsWith('{"padding":"PPP')).toBe(true);
+  });
+
+  it("keeps the provider classification when the body cannot be read", async () => {
+    const response = new Response("provider explanation", { status: 503 });
+    // Lock the stream so the adapter's own getReader() throws.
+    const lock = response.body?.getReader();
+    expect(lock).toBeDefined();
+    expect(response.bodyUsed || response.body?.locked).toBe(true);
+
+    const error = await scrapeError(response);
+
+    expect(error).toBeInstanceOf(ScrapingAntFallbackError);
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 503 });
+    expect(error.providerDetail).toBeUndefined();
+    expect(error.message).toBe("ScrapingAnt fallback failed (PROVIDER_5XX)");
+  });
+
+  it("drops a detail that reflects the raw or URL-encoded credential", async () => {
+    const raw = await scrapeError(
+      new Response(`upstream rejected key ${API_KEY}`, { status: 403 }),
+    );
+    expect(raw).toMatchObject({ code: "PROVIDER_4XX", httpStatus: 403 });
+    expect(raw.providerDetail).toBeUndefined();
+    expect(errorSurface(raw)).not.toContain(API_KEY);
+
+    const encodedKey = encodeURIComponent(ENCODABLE_API_KEY);
+    expect(encodedKey).not.toBe(ENCODABLE_API_KEY);
+    const encoded = await scrapeError(
+      new Response(`query was x_api=${encodedKey}`, { status: 403 }),
+      ENCODABLE_API_KEY,
+    );
+    expect(encoded.providerDetail).toBeUndefined();
+    expect(errorSurface(encoded)).not.toContain(encodedKey);
+    expect(errorSurface(encoded)).not.toContain(ENCODABLE_API_KEY);
+  });
+
+  it("drops a detail that names the x-api-key parameter at all", async () => {
+    const error = await scrapeError(
+      new Response('{"detail":"missing x-api-key parameter"}', { status: 401 }),
+    );
+    expect(error).toMatchObject({ code: "PROVIDER_4XX", httpStatus: 401 });
+    expect(error.providerDetail).toBeUndefined();
+    expect(errorSurface(error).toLowerCase()).not.toContain("x-api-key");
+  });
+
+  it("redacts the target URL, its encoded form, and reflected provider URLs", async () => {
+    const error = await scrapeError(
+      new Response(
+        `Could not load ${TARGET_URL} (url=${ENCODED_TARGET_URL}) via ${PROVIDER_REQUEST_URL}`,
+        { status: 422 },
+      ),
+    );
+
+    expect(error).toMatchObject({ code: "PROVIDER_4XX", httpStatus: 422 });
+    const surface = errorSurface(error);
+    for (const secret of [
+      TARGET_URL,
+      ENCODED_TARGET_URL,
+      "casino.example.com",
+      "api.scrapingant.com",
+      PROVIDER_REQUEST_URL,
+    ]) {
+      expect(surface).not.toContain(secret);
+    }
+    expect(error.providerDetail).toBe(
+      "Could not load [redacted-url] (url=[redacted-url]) via [redacted-url]",
+    );
+  });
+
+  it("redacts any absolute URL left in an otherwise safe detail", async () => {
+    const error = await scrapeError(
+      new Response('{"detail":"see http://status.example.net/incidents/42"}', {
+        status: 503,
+      }),
+    );
+    expect(error).toMatchObject({ code: "PROVIDER_5XX", httpStatus: 503 });
+    expect(error.providerDetail).toBe("see [redacted-url]");
+    expect(errorSurface(error)).not.toContain("status.example.net");
+  });
+
+  it("collapses CR, LF, NUL and control characters into one log line", async () => {
+    const error = await scrapeError(
+      new Response(
+        "line one\r\n[IngestionService] forged second line\u0000\u0007\ttail",
+        { status: 500 },
+      ),
+    );
+
+    const detail = error.providerDetail as string;
+    expect(detail).toBe("line one [IngestionService] forged second line tail");
+    expect(detail).not.toMatch(/[\r\n\u0000-\u001F\u007F-\u009F]/);
+    expect(diagnosticLogLine(error).split(/\r?\n/)).toHaveLength(1);
+  });
+
+  it("bounds the detail after sanitization, not before", async () => {
+    const noisy = `${TARGET_URL}\n`.repeat(400);
+    const error = await scrapeError(new Response(noisy, { status: 500 }));
+    const detail = error.providerDetail as string;
+    expect(detail.length).toBeLessThanOrEqual(
+      SCRAPINGANT_PROVIDER_DETAIL_MAX_CHARS,
+    );
+    expect(detail).not.toContain(TARGET_URL);
+    expect(detail).not.toMatch(/[\r\n]/);
+    expect(detail.startsWith("[redacted-url]")).toBe(true);
+  });
 
   it.each([
     new Response("", { status: 200 }),
