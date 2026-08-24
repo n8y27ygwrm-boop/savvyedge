@@ -19,11 +19,22 @@ import {
   type ReviewTransitionCommand,
 } from "@savvyedge/api/workflow";
 import { prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
-import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api/active-evidence";
+import { getGovernanceEligibleBonusClaimIdsForTransition } from "@savvyedge/api/active-evidence";
 
 async function loadClaimIds(
   request: AdminTransitionRequest,
 ): Promise<string[]> {
+  // Governance-critical: the BONUS active-extraction boundary is resolved
+  // BEFORE any client-supplied set is consulted. Only claims belonging to the
+  // active extraction may evidence a new transition, so the browser does not
+  // get to define the evidence set of an APPROVED or PUBLISHED audit event.
+  // A superseded claim stays queryable but must never be supplied to an
+  // approval. Data sources with no active pointer keep their pre-contract
+  // behaviour.
+  if (request.subjectType === "BONUS") {
+    return getGovernanceEligibleBonusClaimIdsForTransition(request.subjectId);
+  }
+
   if (request.claimIds && request.claimIds.length > 0) {
     return request.claimIds;
   }
@@ -35,13 +46,6 @@ async function loadClaimIds(
         select: { id: true },
       })
     ).map((claim) => claim.id);
-  }
-  if (request.subjectType === "BONUS") {
-    // Governance-critical: only claims belonging to the active extraction may
-    // evidence a new transition. A superseded claim stays queryable but must
-    // never be supplied to an approval. Data sources with no active pointer
-    // keep their pre-contract behaviour.
-    return getGovernanceEligibleBonusClaimIds(request.subjectId);
   }
   if (request.subjectType === "SLOT") {
     return (
@@ -57,6 +61,23 @@ async function loadClaimIds(
       select: { id: true },
     })
   ).map((claim) => claim.id);
+}
+
+// CLEAR_QUARANTINE keeps its documented "attach only what was asked for"
+// default, so the supplied set is narrowed against the same server-derived
+// active-extraction boundary rather than replaced by it. The browser may
+// still send fewer claims; it can never send an ineligible one.
+async function loadQuarantineClearanceClaimIds(
+  request: AdminTransitionRequest,
+): Promise<string[]> {
+  const supplied = request.claimIds ?? [];
+  if (request.subjectType === "BONUS") {
+    return getGovernanceEligibleBonusClaimIdsForTransition(
+      request.subjectId,
+      supplied,
+    );
+  }
+  return supplied;
 }
 
 function transitionReview(
@@ -200,7 +221,7 @@ export async function POST(request: Request) {
         toStatus: ReviewStatus.AWAITING_REVIEW,
         clearQuarantine: true,
         internalReason: parsed.internalReason,
-        claimIds: parsed.claimIds ?? [],
+        claimIds: await loadQuarantineClearanceClaimIds(parsed),
       });
     } else if (parsed.action === "PUBLISH") {
       result = await transitionPublication(workflowService, parsed, {

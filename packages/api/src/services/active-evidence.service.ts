@@ -107,3 +107,35 @@ export async function partitionBonusClaimsByActivity(
     hasActivePointer: pointer !== null,
   };
 }
+
+/**
+ * The claim ids a governance transition is permitted to attach to a bonus.
+ *
+ * The server is authoritative here. The eligible set is always derived from
+ * the active extraction pointer and never taken from the request body, so a
+ * browser cannot define the evidence set of an APPROVED or PUBLISHED audit
+ * event. Historical, superseded, inactive-extraction and foreign-subject ids
+ * are dropped rather than trusted: the eligible set is queried by `bonus_id`
+ * and filtered by the active `evidence_id`, so an id from another subject is
+ * never a member of it.
+ *
+ * `suppliedClaimIds` may only narrow the derived set, never widen it. Callers
+ * that pass `undefined` get the full eligible set; callers that must preserve
+ * an explicit "attach nothing unless asked" default pass their own list.
+ *
+ * Bonuses with no active pointer keep their documented pre-contract
+ * behaviour, because getGovernanceEligibleBonusClaimIds returns every claim
+ * for them.
+ */
+export async function getGovernanceEligibleBonusClaimIdsForTransition(
+  bonusId: string,
+  suppliedClaimIds?: readonly string[],
+  db: typeof prisma = prisma,
+): Promise<string[]> {
+  const eligible = await getGovernanceEligibleBonusClaimIds(bonusId, db);
+  if (suppliedClaimIds === undefined) {
+    return eligible;
+  }
+  const supplied = new Set(suppliedClaimIds);
+  return eligible.filter((claimId) => supplied.has(claimId));
+}

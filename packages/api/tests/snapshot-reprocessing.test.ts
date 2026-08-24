@@ -10,7 +10,15 @@ import {
   ExtractionContractError,
   bonusExtractionKey,
 } from "@savvyedge/ai-agents/extraction-contract";
-import { Prisma, prisma } from "@savvyedge/database";
+import {
+  AdminRole,
+  AdminUserStatus,
+  Prisma,
+  prisma,
+} from "@savvyedge/database";
+import { WorkflowTransitionService } from "@savvyedge/api/workflow";
+import { POST as transitionRoute } from "../../../apps/admin/src/app/api/admin/transitions/route";
+import { hashSessionToken } from "../../../apps/admin/src/lib/auth";
 import { EvidenceArtifactRetrievalError } from "../src/services/evidence-artifact-retrieval.service";
 import {
   IngestionService,
@@ -931,5 +939,221 @@ describe("reviewer evidence labelling", () => {
     );
     expect(source).toContain("getGovernanceEligibleBonusClaimIds");
     expect(source).not.toContain("bonusEvidenceClaim.findMany");
+
+    // Every BONUS path that attaches evidence must go through the server-side
+    // resolver, never through the raw request body.
+    expect(source).toContain("getGovernanceEligibleBonusClaimIdsForTransition");
+    expect(source).not.toContain("claimIds: parsed.claimIds ?? []");
+
+    // The BONUS branch must be resolved before the client short-circuit,
+    // otherwise a supplied set silently bypasses the boundary again.
+    expect(source.indexOf('request.subjectType === "BONUS"')).toBeLessThan(
+      source.indexOf("if (request.claimIds && request.claimIds.length > 0)"),
+    );
+  });
+});
+
+describe("governed bonus evidence boundary for admin transitions", () => {
+  // Mirrors the production incident: the active extraction carries only the
+  // two current claims, while historical evidence correctly retains the older
+  // ones, including the retracted WAGERING_REQUIREMENT = 20.
+  const BONUS_ID = "50000000-0000-4000-8000-000000000010";
+  const ACTIVE_EVIDENCE_ID = "60000000-0000-4000-8000-000000000001";
+  const HISTORICAL_EVIDENCE_ID = "60000000-0000-4000-8000-000000000002";
+
+  const ACTIVE_CLAIMS = [
+    // TYPE = FREE_SPINS
+    { id: "70000000-0000-4000-8000-000000000001", evidence_id: ACTIVE_EVIDENCE_ID },
+    // HEADLINE_VALUE = 10 Free Spins
+    { id: "70000000-0000-4000-8000-000000000002", evidence_id: ACTIVE_EVIDENCE_ID },
+  ];
+  const HISTORICAL_CLAIMS = [
+    // WAGERING_REQUIREMENT = 20, superseded by the reprocessed extraction.
+    { id: "70000000-0000-4000-8000-000000000003", evidence_id: HISTORICAL_EVIDENCE_ID },
+    { id: "70000000-0000-4000-8000-000000000004", evidence_id: HISTORICAL_EVIDENCE_ID },
+    { id: "70000000-0000-4000-8000-000000000005", evidence_id: HISTORICAL_EVIDENCE_ID },
+  ];
+  const ALL_CLAIMS = [...ACTIVE_CLAIMS, ...HISTORICAL_CLAIMS];
+
+  const ACTIVE_CLAIM_IDS = ACTIVE_CLAIMS.map((claim) => claim.id);
+  const HISTORICAL_CLAIM_IDS = HISTORICAL_CLAIMS.map((claim) => claim.id);
+  // A claim belonging to a different bonus entirely.
+  const FOREIGN_CLAIM_ID = "70000000-0000-4000-8000-0000000000ff";
+
+  const SESSION_TOKEN = "boundary-regression-session-token";
+
+  function stubBoundaryReads(options: { hasActivePointer?: boolean } = {}) {
+    const { hasActivePointer = true } = options;
+
+    // The eligible set is queried by bonus_id, so a foreign-subject claim id
+    // is never a member of it regardless of what the browser supplies.
+    vi.spyOn(prisma.bonusEvidenceClaim, "findMany").mockImplementation(
+      (async ({ where }: { where: { bonus_id: string } }) =>
+        where.bonus_id === BONUS_ID ? ALL_CLAIMS : []) as never,
+    );
+    vi.spyOn(prisma.activeExtractionPointer, "findUnique").mockResolvedValue(
+      (hasActivePointer
+        ? { evidence_id: ACTIVE_EVIDENCE_ID }
+        : null) as never,
+    );
+    vi.spyOn(prisma.adminSession, "findUnique").mockResolvedValue({
+      id: "80000000-0000-4000-8000-000000000001",
+      token_hash: hashSessionToken(SESSION_TOKEN),
+      expires_at: new Date(Date.now() + 60 * 60 * 1000),
+      revoked_at: null,
+      user: {
+        id: "90000000-0000-4000-8000-000000000001",
+        email: "admin@savvyedge.com",
+        display_name: "Boundary Admin",
+        role: AdminRole.ADMIN,
+        status: AdminUserStatus.ACTIVE,
+        actor_id: "a0000000-0000-4000-8000-000000000001",
+        actor: { stable_key: "admin-user:boundary" },
+      },
+    } as never);
+  }
+
+  function transitionRequest(action: string, claimIds: string[]) {
+    return new Request("http://localhost/api/admin/transitions", {
+      method: "POST",
+      headers: { Cookie: `savvy_admin_session=${SESSION_TOKEN}` },
+      body: JSON.stringify({
+        subjectType: "BONUS",
+        subjectId: BONUS_ID,
+        action,
+        expectedVersion: 1,
+        claimIds,
+      }),
+    });
+  }
+
+  /** The claim ids the route actually hands to the workflow transition. */
+  async function linkedClaimIdsFor(
+    action: "APPROVE" | "PUBLISH",
+    suppliedClaimIds: string[],
+  ): Promise<string[]> {
+    const method =
+      action === "APPROVE" ? "transitionBonusReview" : "transitionBonusPublication";
+    const spy = vi
+      .spyOn(WorkflowTransitionService.prototype, method)
+      .mockResolvedValue({ ok: true } as never);
+
+    const response = await transitionRoute(transitionRequest(action, suppliedClaimIds));
+    expect(response.status).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    return [...(spy.mock.calls[0][0].claimIds ?? [])];
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(["APPROVE", "PUBLISH"] as const)(
+    "%s cannot link historical claims the browser supplies alongside active ones",
+    async (action) => {
+      stubBoundaryReads();
+
+      // Exactly the payload the real admin UI sends today: every claim the
+      // review page rendered, active and historical together.
+      const linked = await linkedClaimIdsFor(action, [
+        ...ACTIVE_CLAIM_IDS,
+        ...HISTORICAL_CLAIM_IDS,
+      ]);
+
+      expect(linked.sort()).toEqual([...ACTIVE_CLAIM_IDS].sort());
+      for (const historicalId of HISTORICAL_CLAIM_IDS) {
+        expect(linked).not.toContain(historicalId);
+      }
+      // The five-claim link that reached production must be impossible.
+      expect(linked).toHaveLength(2);
+    },
+  );
+
+  it.each(["APPROVE", "PUBLISH"] as const)(
+    "%s keeps active extraction claims attachable",
+    async (action) => {
+      stubBoundaryReads();
+
+      expect((await linkedClaimIdsFor(action, ACTIVE_CLAIM_IDS)).sort()).toEqual(
+        [...ACTIVE_CLAIM_IDS].sort(),
+      );
+    },
+  );
+
+  it("cannot link a foreign-subject claim id supplied by the browser", async () => {
+    stubBoundaryReads();
+
+    const linked = await linkedClaimIdsFor("APPROVE", [
+      ...ACTIVE_CLAIM_IDS,
+      FOREIGN_CLAIM_ID,
+    ]);
+
+    expect(linked).not.toContain(FOREIGN_CLAIM_ID);
+    expect(linked.sort()).toEqual([...ACTIVE_CLAIM_IDS].sort());
+  });
+
+  it("cannot link only-ineligible claims even when they are the entire payload", async () => {
+    stubBoundaryReads();
+
+    // Fails closed downstream rather than linking superseded evidence.
+    const linked = await linkedClaimIdsFor("APPROVE", HISTORICAL_CLAIM_IDS);
+
+    expect(linked.sort()).toEqual([...ACTIVE_CLAIM_IDS].sort());
+    for (const historicalId of HISTORICAL_CLAIM_IDS) {
+      expect(linked).not.toContain(historicalId);
+    }
+  });
+
+  it("preserves legacy behaviour for bonuses with no active extraction pointer", async () => {
+    stubBoundaryReads({ hasActivePointer: false });
+
+    const linked = await linkedClaimIdsFor("APPROVE", ACTIVE_CLAIM_IDS);
+
+    // Pre-contract bonuses keep every claim governance eligible.
+    expect(linked.sort()).toEqual(ALL_CLAIMS.map((c) => c.id).sort());
+  });
+
+  it("leaves historical claims queryable, merely unlinked", async () => {
+    stubBoundaryReads();
+
+    const eligible = await getGovernanceEligibleBonusClaimIds(BONUS_ID);
+    expect(eligible.sort()).toEqual([...ACTIVE_CLAIM_IDS].sort());
+
+    // The historical rows are still readable; nothing was rewritten or deleted.
+    const rows = await prisma.bonusEvidenceClaim.findMany({
+      where: { bonus_id: BONUS_ID },
+      select: { id: true, evidence_id: true },
+    });
+    expect(rows.map((row: { id: string }) => row.id).sort()).toEqual(
+      ALL_CLAIMS.map((c) => c.id).sort(),
+    );
+  });
+
+  it("narrows CLEAR_QUARANTINE evidence to the active extraction as well", async () => {
+    stubBoundaryReads();
+
+    const spy = vi
+      .spyOn(WorkflowTransitionService.prototype, "transitionBonusReview")
+      .mockResolvedValue({ ok: true } as never);
+
+    const response = await transitionRoute(
+      new Request("http://localhost/api/admin/transitions", {
+        method: "POST",
+        headers: { Cookie: `savvy_admin_session=${SESSION_TOKEN}` },
+        body: JSON.stringify({
+          subjectType: "BONUS",
+          subjectId: BONUS_ID,
+          action: "CLEAR_QUARANTINE",
+          expectedVersion: 1,
+          claimIds: [...ACTIVE_CLAIM_IDS, ...HISTORICAL_CLAIM_IDS],
+          internalReason: "Quarantine cleared after snapshot reprocessing.",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const linked = [...(spy.mock.calls[0][0].claimIds ?? [])];
+    expect(linked.sort()).toEqual([...ACTIVE_CLAIM_IDS].sort());
   });
 });
