@@ -1,4 +1,4 @@
-import { OrchestratorService, JobQueueService } from "../src/index";
+import { INGESTION_QUEUE_NAME, OrchestratorService, JobQueueService } from "../src/index";
 import { prisma } from "@savvyedge/database";
 import { execSync } from "child_process";
 
@@ -26,6 +26,9 @@ async function verifyOrchestrator() {
   console.log("\n--- Step 2: Starting Platform Orchestrator with Multi-Worker Concurrency ---");
   await OrchestratorService.start({
     workerConcurrency: 4,
+    enableWorkers: true,
+    enableSchedulers: true,
+    enableRecovery: true,
     discoveryIntervalMs: 5000,
     maxConcurrentPerDomain: 2,
     minDomainDelayMs: 500,
@@ -82,7 +85,7 @@ async function verifyOrchestrator() {
     },
   });
 
-  const recoveredCount = await JobQueueService.recoverStaleJobs();
+  const recoveredCount = await JobQueueService.recoverStaleJobs(INGESTION_QUEUE_NAME);
   const updatedStaleJob = await prisma.jobQueue.findUnique({ where: { id: staleJob.id } });
   if (updatedStaleJob?.status === "PENDING") {
     console.log(` [PASS] Crash Recovery: Successfully reset ${recoveredCount} stale job(s) to PENDING status.`);

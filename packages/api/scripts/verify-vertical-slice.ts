@@ -28,7 +28,7 @@ async function verifyVerticalSlice() {
     let processedAny = true;
     let iterations = 0;
     while (processedAny && iterations < 10) {
-      processedAny = await JobQueueService.processNextJob("ingestion-queue", handlers);
+      processedAny = await JobQueueService.processNextJob(INGESTION_QUEUE_NAME, handlers);
       iterations++;
     }
     console.log(` -> JobQueue execution drained. Processed ${iterations - 1} steps.`);
