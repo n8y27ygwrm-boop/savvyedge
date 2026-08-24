@@ -38,3 +38,6 @@ pnpm-debug.log*
 *.db
 *.db-journal
 packages/api/storage/snapshots/
+.vercel
+.env*
+!.env.example
