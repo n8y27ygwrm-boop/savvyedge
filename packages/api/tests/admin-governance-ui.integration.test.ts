@@ -17,8 +17,14 @@ import {
   isValidSessionToken,
   getOrCreateAdminActor,
 } from "../../../apps/admin/src/lib/auth";
+import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
-describe("Admin Governance UI & Service Integration Tests", () => {
+// Destructive suite: skips without the explicit opt-in, throws on an unsafe target.
+const describeWithIsolatedDatabase = requireIsolatedTestDatabase()
+  ? describe
+  : describe.skip;
+
+describeWithIsolatedDatabase("Admin Governance UI & Service Integration Tests", () => {
   let adminActor: { id: string };
   let workflowService: WorkflowTransitionService;
   let dataSourceId: string;

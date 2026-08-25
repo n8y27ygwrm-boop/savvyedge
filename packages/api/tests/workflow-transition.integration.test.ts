@@ -12,11 +12,16 @@ import {
   WorkflowTransitionService,
   type ReviewTransitionCommand,
 } from "../src/services/workflow-transition.service";
+import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
 declare const process: { env: Record<string, string | undefined> };
 
 const databaseUrl = process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL;
-const describeWithDatabase = databaseUrl ? describe : describe.skip;
+// Destructive suite (TRUNCATE ... CASCADE): the opt-in alone is not enough, the
+// guard proves DATABASE_URL and DIRECT_URL resolve to the same isolated target.
+const describeWithDatabase = requireIsolatedTestDatabase()
+  ? describe
+  : describe.skip;
 
 const ids = {
   human: "10000000-0000-4000-8000-000000000001",

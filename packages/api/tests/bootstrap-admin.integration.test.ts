@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, AdminRole, AdminUserStatus } from "@savvyedge/database";
 import { executeAdminBootstrap } from "../../../apps/admin/scripts/bootstrap-admin";
+import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
-const databaseUrl = process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL || process.env.DATABASE_URL;
+// Destructive suite: never fall back to DATABASE_URL as permission to run.
+const describeWithIsolatedDatabase = requireIsolatedTestDatabase()
+  ? describe
+  : describe.skip;
 
-describe.runIf(Boolean(databaseUrl))("Admin Bootstrap Hardening Integration Tests (Real DB)", () => {
+describeWithIsolatedDatabase("Admin Bootstrap Hardening Integration Tests (Real DB)", () => {
   const testEmail = "test-bootstrap-admin@savvyedge.com";
 
   beforeEach(async () => {

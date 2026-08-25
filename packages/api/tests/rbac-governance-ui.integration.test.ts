@@ -18,8 +18,14 @@ import { POST as loginRoute } from "../../../apps/admin/src/app/api/auth/login/r
 import { POST as transitionRoute } from "../../../apps/admin/src/app/api/admin/transitions/route";
 import { POST as createUserRoute, GET as getUsersRoute } from "../../../apps/admin/src/app/api/admin/users/route";
 import { PATCH as updateUserRoute } from "../../../apps/admin/src/app/api/admin/users/[id]/route";
+import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
-describe("Multi-user Admin Auth & RBAC Integration Tests (Real DB)", () => {
+// Destructive suite: skips without the explicit opt-in, throws on an unsafe target.
+const describeWithIsolatedDatabase = requireIsolatedTestDatabase()
+  ? describe
+  : describe.skip;
+
+describeWithIsolatedDatabase("Multi-user Admin Auth & RBAC Integration Tests (Real DB)", () => {
   beforeEach(async () => {
     await prisma.workflowEventClaim.deleteMany();
     await prisma.workflowAuditEvent.deleteMany();

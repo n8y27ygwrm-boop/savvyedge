@@ -29,8 +29,14 @@ import {
   parseAdminTransitionRequest,
   TransitionRequestValidationError,
 } from "../../../apps/admin/src/lib/transition-request";
+import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
-describe("Quarantine Governance UI & Service Integration Tests (Real DB)", () => {
+// Destructive suite: skips without the explicit opt-in, throws on an unsafe target.
+const describeWithIsolatedDatabase = requireIsolatedTestDatabase()
+  ? describe
+  : describe.skip;
+
+describeWithIsolatedDatabase("Quarantine Governance UI & Service Integration Tests (Real DB)", () => {
   let adminActor: { id: string };
   let workflowService: WorkflowTransitionService;
   let dataSourceId: string;
