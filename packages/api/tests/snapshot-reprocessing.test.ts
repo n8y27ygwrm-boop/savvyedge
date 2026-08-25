@@ -27,7 +27,10 @@ import {
 import { JobQueueService } from "../src/services/job-queue.service";
 import { BonusService } from "../src/services/bonus.service";
 import { planSnapshotReprocessing } from "@savvyedge/api/snapshot-reprocessing";
-import { getGovernanceEligibleBonusClaimIds } from "@savvyedge/api/active-evidence";
+import {
+  getGovernanceEligibleBonusClaimIds,
+  partitionBonusClaimsByActivity,
+} from "@savvyedge/api/active-evidence";
 import {
   EXTRACTION_IDENTITY_CONSTRAINT,
   isExtractionKeyUniqueViolation,
@@ -950,6 +953,103 @@ describe("reviewer evidence labelling", () => {
     expect(source.indexOf('request.subjectType === "BONUS"')).toBeLessThan(
       source.indexOf("if (request.claimIds && request.claimIds.length > 0)"),
     );
+  });
+});
+
+describe("bonus governance UI transition payloads", () => {
+  // Defence in depth: the admin transitions route stays authoritative, but the
+  // BONUS pages must stop handing superseded claim ids to the controls at all.
+  const BONUS_PAGES = [
+    ["review", "apps/admin/src/app/review/bonus/[id]/page.tsx"],
+    ["quarantine", "apps/admin/src/app/quarantine/bonus/[id]/page.tsx"],
+  ] as const;
+
+  // Formatting-tolerant: only the shape of the derivation is contractual.
+  const DERIVES_FROM_ACTIVE_SET =
+    /const transitionClaimIds = bonus\.evidence_claims\s*\.filter\(\(claim\) => activeClaimIds\.has\(claim\.id\)\)\s*\.map\(\(claim\) => claim\.id\)/;
+
+  function readPageSource(relative: string): string {
+    return fs
+      .readFileSync(path.join(repoRoot, relative), "utf8")
+      .replace(/\s+/g, " ");
+  }
+
+  it.each(BONUS_PAGES)(
+    "the bonus %s page narrows the transition payload to active claims",
+    (_label, relative) => {
+      const source = readPageSource(relative);
+
+      expect(source).toMatch(DERIVES_FROM_ACTIVE_SET);
+      expect(source).toContain("claimIds={transitionClaimIds}");
+      expect(source).not.toContain("claimIds={claimIds}");
+    },
+  );
+
+  it.each(BONUS_PAGES)(
+    "the bonus %s page still displays every claim, active and historical",
+    (_label, relative) => {
+      const source = readPageSource(relative);
+
+      // Display iterates the full claim list, never the narrowed payload.
+      expect(source).toContain("bonus.evidence_claims.map((claim) => (");
+      expect(source).toContain("ACTIVE EVIDENCE");
+      expect(source).toContain("HISTORICAL EVIDENCE");
+    },
+  );
+
+  describe("derivation semantics against the real activity partition", () => {
+    const BONUS_ID = "50000000-0000-4000-8000-000000000020";
+    const ACTIVE_EVIDENCE_ID = "60000000-0000-4000-8000-000000000011";
+    const HISTORICAL_EVIDENCE_ID = "60000000-0000-4000-8000-000000000012";
+
+    // Ordered as the pages render them (created_at desc), with superseded rows
+    // interleaved so an order-preserving filter is distinguishable.
+    const DISPLAYED_CLAIMS = [
+      { id: "70000000-0000-4000-8000-000000000011", evidence_id: ACTIVE_EVIDENCE_ID },
+      { id: "70000000-0000-4000-8000-000000000012", evidence_id: HISTORICAL_EVIDENCE_ID },
+      { id: "70000000-0000-4000-8000-000000000013", evidence_id: HISTORICAL_EVIDENCE_ID },
+      { id: "70000000-0000-4000-8000-000000000014", evidence_id: ACTIVE_EVIDENCE_ID },
+    ];
+    const ACTIVE_IDS = [
+      "70000000-0000-4000-8000-000000000011",
+      "70000000-0000-4000-8000-000000000014",
+    ];
+
+    function stubClaimReads(hasActivePointer: boolean) {
+      vi.spyOn(prisma.bonusEvidenceClaim, "findMany").mockImplementation(
+        (async ({ where }: { where: { bonus_id: string } }) =>
+          where.bonus_id === BONUS_ID ? DISPLAYED_CLAIMS : []) as never,
+      );
+      vi.spyOn(prisma.activeExtractionPointer, "findUnique").mockResolvedValue(
+        (hasActivePointer
+          ? { id: "pointer-1", evidence_id: ACTIVE_EVIDENCE_ID }
+          : null) as never,
+      );
+    }
+
+    /** The expression both BONUS pages evaluate, asserted on above. */
+    async function transitionClaimIdsFor(hasActivePointer: boolean) {
+      stubClaimReads(hasActivePointer);
+      const { activeClaimIds } = await partitionBonusClaimsByActivity(BONUS_ID);
+      return DISPLAYED_CLAIMS.filter((claim) =>
+        activeClaimIds.has(claim.id),
+      ).map((claim) => claim.id);
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("yields only active claims, in display order", async () => {
+      expect(await transitionClaimIdsFor(true)).toEqual(ACTIVE_IDS);
+    });
+
+    it("preserves legacy behaviour for bonuses with no active extraction pointer", async () => {
+      // Pre-contract bonuses keep every displayed claim in the payload.
+      expect(await transitionClaimIdsFor(false)).toEqual(
+        DISPLAYED_CLAIMS.map((claim) => claim.id),
+      );
+    });
   });
 });
 

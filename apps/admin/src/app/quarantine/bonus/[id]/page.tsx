@@ -96,10 +96,15 @@ export default async function QuarantineBonusDetailPage(props: QuarantineBonusDe
     notFound();
   }
 
-  const claimIds = bonus.evidence_claims.map((c) => c.id);
-
   // Reviewers must never read a superseded claim as current evidence.
   const { activeClaimIds } = await partitionBonusClaimsByActivity(bonus.id);
+
+  // Every claim stays rendered and labelled below; only the active ones are
+  // offered to a governance transition. The server route remains authoritative
+  // — this is defence in depth, so the browser never even holds a superseded id.
+  const transitionClaimIds = bonus.evidence_claims
+    .filter((claim) => activeClaimIds.has(claim.id))
+    .map((claim) => claim.id);
 
   function isSafeUrl(urlStr: string): boolean {
     try {
@@ -282,7 +287,7 @@ export default async function QuarantineBonusDetailPage(props: QuarantineBonusDe
             subjectId={bonus.id}
             quarantineReason={bonus.quarantine_reason}
             expectedVersion={bonus.governance_version}
-            claimIds={claimIds}
+            claimIds={transitionClaimIds}
           />
         </div>
       </div>
