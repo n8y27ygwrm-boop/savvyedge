@@ -11,24 +11,31 @@ import {
 import { bonusExtractionKey } from "@savvyedge/ai-agents/extraction-contract";
 import { IngestionService } from "../src/services/ingestion.service";
 import { isExtractionKeyUniqueViolation } from "../src/utils/extraction-identity";
+import {
+  ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+  requireConfiguredIsolatedTestDatabase,
+} from "./helpers/isolated-test-database-guard";
 
-const disposableDatabaseUrl =
-  process.env.SNAPSHOT_REPROCESSING_TEST_DATABASE_URL;
-const realDbEnabled = Boolean(disposableDatabaseUrl);
+/**
+ * Destructive suite: it writes through the shared Prisma singleton and deletes
+ * the rows it created. `SNAPSHOT_REPROCESSING_TEST_DATABASE_URL` is the explicit
+ * opt-in, and its presence alone is never permission — the centralized guard
+ * proves at module scope that it, `DATABASE_URL`, and `DIRECT_URL` all resolve
+ * to the same isolated loopback test database. Without the opt-in the suite
+ * skips without issuing a single query; with an unsafe or incomplete explicit
+ * configuration it throws here, before any test callback runs.
+ */
+const guardDecision = requireConfiguredIsolatedTestDatabase({
+  optInVariable: "SNAPSHOT_REPROCESSING_TEST_DATABASE_URL",
+  targets: ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+});
+const describeWithDatabase =
+  guardDecision.status === "enabled" ? describe : describe.skip;
 
-describe.runIf(realDbEnabled)(
+describeWithDatabase(
   "snapshot reprocessing PostgreSQL release gate",
   () => {
     it("enforces identity, pointer, rollback, concurrency, and loser lifecycle", async () => {
-      if (
-        !disposableDatabaseUrl ||
-        process.env.DATABASE_URL !== disposableDatabaseUrl
-      ) {
-        throw new Error(
-          "SNAPSHOT_REPROCESSING_TEST_DATABASE_URL must equal DATABASE_URL",
-        );
-      }
-
       const dataSourceId = randomUUID();
       const actorId = randomUUID();
       const casinoId = randomUUID();

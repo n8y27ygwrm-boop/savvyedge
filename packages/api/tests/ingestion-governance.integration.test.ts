@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import {
-  PrismaClient,
   ActorKind,
   ReviewStatus,
   PublicationStatus,
@@ -9,23 +8,53 @@ import {
   CasinoEvidenceField,
   BonusEvidenceField,
   WorkflowEventType,
+  prisma as db,
 } from "@savvyedge/database";
 import { IngestionService } from "../src/services/ingestion.service";
 import { CasinoService } from "../src/services/casino.service";
 import { BonusService } from "../src/services/bonus.service";
+import {
+  ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE,
+  ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+  requireConfiguredIsolatedTestDatabase,
+} from "./helpers/isolated-test-database-guard";
 
-const testDbUrl =
-  process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL ||
-  "postgresql://localhost:5432/savvyedge_test";
+/**
+ * Destructive suite: `beforeEach` empties whole governance tables. There is no
+ * fallback URL — without the explicit opt-in the suite skips without issuing a
+ * single query, and an explicit-but-unsafe configuration throws here, at module
+ * scope, before any hook or test callback exists.
+ *
+ * `IngestionService`, `CasinoService`, and `BonusService` write through the
+ * shared Prisma singleton, so cleanup and assertions use that same singleton:
+ * there is no second client that could target a different database. The guard
+ * proves `DATABASE_URL`/`DIRECT_URL` (what the singleton connects through)
+ * resolve to the same isolated target as the opt-in, and `beforeAll` confirms
+ * the live connection identity before anything is deleted.
+ */
+const guardDecision = requireConfiguredIsolatedTestDatabase({
+  optInVariable: ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE,
+  targets: ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+});
+const describeWithDatabase =
+  guardDecision.status === "enabled" ? describe : describe.skip;
+const approvedDatabaseName =
+  guardDecision.status === "enabled" ? guardDecision.databaseName : "";
 
-describe("Ingestion Governance Integration Tests (Real DB)", () => {
-  let db: PrismaClient;
-
+describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
   beforeAll(async () => {
-    db = new PrismaClient({
-      datasources: { db: { url: testDbUrl } },
-    });
     await db.$connect();
+
+    const [{ current_database: connectedDatabase }] = await db.$queryRawUnsafe<
+      Array<{ current_database: string }>
+    >("SELECT current_database() as current_database");
+    if (
+      connectedDatabase?.toLowerCase() !== approvedDatabaseName.toLowerCase()
+    ) {
+      throw new Error(
+        "Refusing to run destructive ingestion governance tests: the shared Prisma client is connected to a database other than the approved isolated test database.",
+      );
+    }
   });
 
   beforeEach(async () => {
@@ -44,9 +73,7 @@ describe("Ingestion Governance Integration Tests (Real DB)", () => {
   });
 
   afterAll(async () => {
-    if (db) {
-      await db.$disconnect();
-    }
+    await db.$disconnect();
   });
 
   it("creates governed Casino and Bonus with EvidenceRecord, claims, and AWAITING_REVIEW status", async () => {

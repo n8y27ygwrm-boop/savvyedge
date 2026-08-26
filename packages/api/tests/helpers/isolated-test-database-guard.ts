@@ -15,6 +15,13 @@
  *     same effective PostgreSQL target. Anything else is a hard failure, never a
  *     silent skip.
  *
+ * Suites that opt in through a different variable, or that connect through a
+ * different set of targets, use the configurable form
+ * ({@link evaluateConfigurableIsolatedTestDatabase} /
+ * {@link requireConfiguredIsolatedTestDatabase}) with the same parsing and
+ * comparison semantics. A suite connecting through exactly one explicit URL
+ * declares no extra targets and still gets strict validation of that URL.
+ *
  * Effective-target comparison contract (deliberately strict — two URLs are
  * equivalent only when a PostgreSQL client cannot distinguish them):
  *   - An omitted port is normalized to `5432`, so `localhost` ≡ `localhost:5432`.
@@ -49,6 +56,44 @@ export type IsolatedTestDatabaseDecision =
   | { status: "enabled"; hostname: string; databaseName: string }
   | { status: "disabled"; reason: string }
   | { status: "unsafe"; reason: string };
+
+/** The variables the Prisma runtime actually connects through. */
+export const ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES = [
+  "DATABASE_URL",
+  "DIRECT_URL",
+] as const;
+
+/**
+ * One connection target a suite must prove. `url` pins a literal value; when it
+ * is omitted the value is read from the environment under `name`.
+ */
+export interface IsolatedTestDatabaseTarget {
+  name: string;
+  url?: string;
+}
+
+export interface ConfigurableIsolatedTestDatabaseOptions {
+  /** The explicit permission variable for this suite. */
+  optInVariable: string;
+  /** Literal opt-in value; omitted means "read `optInVariable` from `env`". */
+  optInUrl?: string;
+  /** Every other variable/URL the suite actually connects through. */
+  targets?: ReadonlyArray<string | IsolatedTestDatabaseTarget>;
+  /** Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
+}
+
+export type ConfigurableIsolatedTestDatabaseDecision =
+  | {
+      status: "enabled";
+      optInVariable: string;
+      /** The validated opt-in URL; the only URL the suite may connect through. */
+      url: string;
+      hostname: string;
+      databaseName: string;
+    }
+  | { status: "disabled"; optInVariable: string; reason: string }
+  | { status: "unsafe"; optInVariable: string; reason: string };
 
 interface EffectivePostgresTarget {
   protocol: string;
@@ -255,32 +300,58 @@ function targetsMatch(
 }
 
 /**
- * Decides whether destructive real-database work is permitted, without
- * connecting to anything.
+ * Core evaluation shared by every destructive suite, without connecting to
+ * anything.
+ *
+ * `optInVariable` names the explicit permission variable for this suite, and
+ * `targets` names the variables (or literal URLs) the suite actually connects
+ * through. The opt-in URL is the reference target: every declared target must
+ * resolve to the same effective PostgreSQL target, and each URL is validated
+ * with the same strict parsing rules documented at the top of this module.
+ *
+ * A suite that connects through exactly one explicit URL simply declares no
+ * extra targets; the opt-in URL is still validated strictly.
+ *
+ * Reasons deliberately name variables and rejected components only — never a
+ * password and never a whole connection string.
  */
-export function evaluateIsolatedTestDatabase(
-  urls: IsolatedTestDatabaseUrls,
-): IsolatedTestDatabaseDecision {
-  const assertedUrl = normalizeRawUrl(urls.PHASE2_WORKFLOW_TEST_DATABASE_URL);
+export function evaluateConfigurableIsolatedTestDatabase(
+  options: ConfigurableIsolatedTestDatabaseOptions,
+): ConfigurableIsolatedTestDatabaseDecision {
+  const { optInVariable } = options;
+  const env = options.env ?? process.env;
+  const assertedUrl = normalizeRawUrl(
+    options.optInUrl !== undefined ? options.optInUrl : env[optInVariable],
+  );
+
   if (!assertedUrl) {
     return {
       status: "disabled",
-      reason: `${ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE} is not set, so destructive real-database suites stay skipped`,
+      optInVariable,
+      reason: `${optInVariable} is not set, so destructive real-database suites stay skipped`,
     };
   }
 
-  const databaseUrl = normalizeRawUrl(urls.DATABASE_URL);
-  const directUrl = normalizeRawUrl(urls.DIRECT_URL);
-  const missing = [
-    ["DATABASE_URL", databaseUrl],
-    ["DIRECT_URL", directUrl],
-  ]
-    .filter(([, value]) => !value)
-    .map(([name]) => name);
+  const resolvedTargets: Array<[string, string]> = [];
+  const missing: string[] = [];
+  for (const declared of options.targets ?? []) {
+    const target: IsolatedTestDatabaseTarget =
+      typeof declared === "string" ? { name: declared } : declared;
+    const rawUrl = normalizeRawUrl(
+      target.url !== undefined ? target.url : env[target.name],
+    );
+    if (!rawUrl) {
+      missing.push(target.name);
+      continue;
+    }
+    resolvedTargets.push([target.name, rawUrl]);
+  }
+
   if (missing.length > 0) {
     return {
       status: "unsafe",
-      reason: `${ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE} is set but ${missing.join(
+      optInVariable,
+      reason: `${optInVariable} is set but ${missing.join(
         " and ",
       )} ${missing.length === 1 ? "is" : "are"} missing, so the active Prisma target cannot be proven`,
     };
@@ -288,14 +359,14 @@ export function evaluateIsolatedTestDatabase(
 
   const parsedTargets: Array<[string, EffectivePostgresTarget]> = [];
   for (const [name, rawUrl] of [
-    [ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE, assertedUrl],
-    ["DATABASE_URL", databaseUrl],
-    ["DIRECT_URL", directUrl],
-  ] as const) {
+    [optInVariable, assertedUrl] as [string, string],
+    ...resolvedTargets,
+  ]) {
     const result = parseEffectiveTarget(rawUrl);
     if (!result.ok) {
       return {
         status: "unsafe",
+        optInVariable,
         reason: `${name} is not an isolated local test database: ${result.reason}`,
       };
     }
@@ -307,21 +378,56 @@ export function evaluateIsolatedTestDatabase(
     if (!targetsMatch(assertedTarget, target)) {
       return {
         status: "unsafe",
-        reason: `${name} resolves to a different effective database target than ${ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE}`,
+        optInVariable,
+        reason: `${name} resolves to a different effective database target than ${optInVariable}`,
       };
     }
   }
 
   return {
     status: "enabled",
+    optInVariable,
+    url: assertedUrl,
     hostname: assertedTarget.hostname,
     databaseName: assertedTarget.databaseName,
   };
 }
 
 /**
+ * Decides whether destructive real-database work is permitted, without
+ * connecting to anything.
+ */
+export function evaluateIsolatedTestDatabase(
+  urls: IsolatedTestDatabaseUrls,
+): IsolatedTestDatabaseDecision {
+  const decision = evaluateConfigurableIsolatedTestDatabase({
+    optInVariable: ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE,
+    optInUrl: urls.PHASE2_WORKFLOW_TEST_DATABASE_URL,
+    targets: ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES.map((name) => ({
+      name,
+      url: urls[name],
+    })),
+    // The legacy entry point compares only the URLs it was handed, so no
+    // ambient variable can stand in for a missing one.
+    env: {},
+  });
+
+  if (decision.status === "enabled") {
+    return {
+      status: "enabled",
+      hostname: decision.hostname,
+      databaseName: decision.databaseName,
+    };
+  }
+  if (decision.status === "disabled") {
+    return { status: "disabled", reason: decision.reason };
+  }
+  return { status: "unsafe", reason: decision.reason };
+}
+
+/**
  * Boolean form of {@link evaluateIsolatedTestDatabase}: true only when every
- * required URL proves the same isolated loopback test target.
+ * required URL proves the same isolated target.
  */
 export function isApprovedIsolatedTestDatabase(
   urls: IsolatedTestDatabaseUrls,
@@ -356,4 +462,25 @@ export function requireIsolatedTestDatabase(
     throw new UnsafeTestDatabaseError(decision.reason);
   }
   return decision.status === "enabled";
+}
+
+/**
+ * Configurable guard entry point, for suites whose opt-in variable or
+ * connection targets differ from the `PHASE2_WORKFLOW_TEST_DATABASE_URL`
+ * contract.
+ *
+ * Returns a `disabled` decision when the explicit opt-in is absent or blank
+ * (skip silently, zero queries), a validated `enabled` decision carrying the
+ * exact URL the suite must connect through, and throws
+ * {@link UnsafeTestDatabaseError} whenever the opt-in is present but any
+ * declared target is missing, malformed, hosted, unsafe, or mismatched.
+ */
+export function requireConfiguredIsolatedTestDatabase(
+  options: ConfigurableIsolatedTestDatabaseOptions,
+): ConfigurableIsolatedTestDatabaseDecision {
+  const decision = evaluateConfigurableIsolatedTestDatabase(options);
+  if (decision.status === "unsafe") {
+    throw new UnsafeTestDatabaseError(decision.reason);
+  }
+  return decision;
 }

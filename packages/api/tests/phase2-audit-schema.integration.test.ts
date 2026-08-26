@@ -3,8 +3,23 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@savvyedge/database";
+import { requireConfiguredIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
 
-const databaseUrl = process.env.PHASE2_TEST_DATABASE_URL;
+/**
+ * `PHASE2_TEST_DATABASE_URL` is this suite's explicit opt-in *and* the only URL
+ * it connects through, for both Prisma and `psql`. Presence alone is not
+ * permission: the centralized guard validates it strictly (loopback host,
+ * bounded `test` marker, no target-overriding parameters) at module scope, so an
+ * explicitly configured but unsafe URL throws before any Prisma client is
+ * constructed or any `psql` process is spawned. Without the opt-in only the
+ * real-database describes are skipped; the migration source policy below has no
+ * database dependency and stays enabled.
+ */
+const phase2Database = requireConfiguredIsolatedTestDatabase({
+  optInVariable: "PHASE2_TEST_DATABASE_URL",
+});
+const databaseUrl =
+  phase2Database.status === "enabled" ? phase2Database.url : undefined;
 const upgradeScenario = process.env.PHASE2_UPGRADE_TEST_SCENARIO as
   | "ordinary"
   | "superseded"

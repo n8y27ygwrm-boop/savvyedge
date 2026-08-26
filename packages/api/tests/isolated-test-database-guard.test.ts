@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateConfigurableIsolatedTestDatabase,
   evaluateIsolatedTestDatabase,
   isApprovedIsolatedTestDatabase,
+  requireConfiguredIsolatedTestDatabase,
   requireIsolatedTestDatabase,
   UnsafeTestDatabaseError,
   type IsolatedTestDatabaseUrls,
@@ -374,5 +376,356 @@ describe("Isolated destructive-test database guard", () => {
         expect(isApprovedBonusIdentityTestDatabase(urls({ [name]: undefined }))).toBe(false);
       },
     );
+  });
+});
+
+
+/**
+ * The configurable form backs the suites whose opt-in variable and connection
+ * targets differ from the `PHASE2_WORKFLOW_TEST_DATABASE_URL` contract. Every
+ * URL below is synthetic: nothing here resolves to a real database.
+ */
+describe("Configurable destructive-test database guard", () => {
+  const OPT_IN = "SNAPSHOT_REPROCESSING_TEST_DATABASE_URL";
+  const RUNTIME_TARGETS = ["DATABASE_URL", "DIRECT_URL"] as const;
+  const SECRET = "guard_password";
+
+  const env = (
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> => ({
+    [OPT_IN]: SAFE_URL,
+    DATABASE_URL: SAFE_URL,
+    DIRECT_URL: SAFE_URL,
+    ...overrides,
+  });
+
+  describe("explicit opt-in", () => {
+    it.each([
+      ["absent", undefined],
+      ["blank", "   "],
+    ])("stays disabled when its chosen opt-in is %s", (_label, optInValue) => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env({ [OPT_IN]: optInValue }),
+      });
+
+      expect(decision.status).toBe("disabled");
+      expect(decision.optInVariable).toBe(OPT_IN);
+      expect(decision.status === "disabled" && decision.reason).toContain(
+        OPT_IN,
+      );
+    });
+
+    it("reads a different opt-in variable than the default contract", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: {
+          PHASE2_WORKFLOW_TEST_DATABASE_URL: SAFE_URL,
+          PHASE2_TEST_DATABASE_URL: undefined,
+        },
+      });
+
+      expect(decision.status).toBe("disabled");
+    });
+  });
+
+  describe("safe configurations", () => {
+    it("validates a single explicit URL without requiring unrelated variables", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: { PHASE2_TEST_DATABASE_URL: SAFE_URL },
+      });
+
+      expect(decision).toEqual({
+        status: "enabled",
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        url: SAFE_URL,
+        hostname: "localhost",
+        databaseName: "savvyedge_test",
+      });
+    });
+
+    it("enables a suite whose declared targets all match the opt-in", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env(),
+      });
+
+      expect(decision.status).toBe("enabled");
+      expect(decision.status === "enabled" && decision.url).toBe(SAFE_URL);
+      expect(decision.status === "enabled" && decision.databaseName).toBe(
+        "savvyedge_test",
+      );
+    });
+
+    it("returns the trimmed opt-in URL as the only URL a suite may use", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env({ [OPT_IN]: `  ${SAFE_URL}  ` }),
+      });
+
+      expect(decision.status === "enabled" && decision.url).toBe(SAFE_URL);
+    });
+
+    it("applies the documented normalizations to declared targets", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env({
+          DIRECT_URL:
+            "postgresql://guard_user:guard_password@localhost/savvyedge_test?sslmode=disable&schema=public",
+        }),
+      });
+
+      expect(decision.status).toBe("enabled");
+    });
+  });
+
+  describe("explicit but unsafe configurations", () => {
+    it.each(RUNTIME_TARGETS)(
+      "fails loudly rather than skipping when %s is missing after opt-in",
+      (name) => {
+        const decision = evaluateConfigurableIsolatedTestDatabase({
+          optInVariable: OPT_IN,
+          targets: RUNTIME_TARGETS,
+          env: env({ [name]: undefined }),
+        });
+
+        expect(decision.status).toBe("unsafe");
+        expect(decision.status === "unsafe" && decision.reason).toContain(name);
+      },
+    );
+
+    it("rejects a declared target that resolves elsewhere", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env({
+          DATABASE_URL:
+            "postgresql://guard_user:guard_password@localhost:5432/other_test?schema=public&sslmode=disable",
+        }),
+      });
+
+      expect(decision.status).toBe("unsafe");
+      expect(decision.status === "unsafe" && decision.reason).toMatch(
+        /DATABASE_URL resolves to a different effective database target/,
+      );
+    });
+
+    it.each([
+      [
+        "Neon",
+        "postgresql://guard_user:guard_password@ep-fake-branch-123456.eu-central-1.aws.neon.tech:5432/savvyedge_test?sslmode=require",
+      ],
+      [
+        "Supabase",
+        "postgresql://guard_user:guard_password@db.fakeprojectref.supabase.co:5432/savvyedge_test?sslmode=require",
+      ],
+    ])("rejects a hosted %s opt-in even with no other targets", (_l, hosted) => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: { PHASE2_TEST_DATABASE_URL: hosted },
+      });
+
+      expect(decision.status).toBe("unsafe");
+      expect(decision.status === "unsafe" && decision.reason).toContain(
+        "not loopback",
+      );
+    });
+
+    it.each([
+      ["malformed URL", "not-a-url"],
+      ["unsupported protocol", "mysql://guard_user@localhost:5432/savvy_test"],
+      [
+        "missing database name",
+        "postgresql://guard_user:guard_password@localhost:5432/?schema=public",
+      ],
+      [
+        "malformed percent-encoding",
+        "postgresql://guard_user:guard_password@localhost:5432/savvyedge%zz_test",
+      ],
+    ])("rejects a %s in a single-target suite", (_label, badUrl) => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: { PHASE2_TEST_DATABASE_URL: badUrl },
+      });
+
+      expect(decision.status).toBe("unsafe");
+    });
+
+    it.each([
+      "host=db.internal.example.com",
+      "hostaddr=10.0.0.7",
+      "port=6543",
+      "dbname=savvyedge",
+      "user=postgres",
+      "password=elsewhere",
+      "service=production",
+      "socket=/var/run/postgresql",
+    ])("rejects a '%s' target-override parameter", (parameter) => {
+      const overriding = `postgresql://guard_user:guard_password@localhost:5432/savvyedge_test?schema=public&${parameter}`;
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: { PHASE2_TEST_DATABASE_URL: overriding },
+      });
+
+      expect(decision.status).toBe("unsafe");
+      expect(decision.status === "unsafe" && decision.reason).toContain(
+        "override the connection target",
+      );
+    });
+
+    it.each([
+      ["bounded production token", "savvyedge_test_production"],
+      ["bounded prod token", "prod_test"],
+      ["bounded staging token", "savvyedge_staging_test"],
+      ["no bounded test marker", "savvyedge_latest"],
+      ["default postgres database", "postgres"],
+    ])("rejects a database named with a %s", (_label, databaseName) => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_TEST_DATABASE_URL",
+        env: {
+          PHASE2_TEST_DATABASE_URL: `postgresql://guard_user:guard_password@localhost:5432/${databaseName}?schema=public`,
+        },
+      });
+
+      expect(decision.status).toBe("unsafe");
+    });
+
+    it("never exposes a password or a whole connection string in its reason", () => {
+      const unsafeUrls = [
+        "postgresql://guard_user:guard_password@db.fakeprojectref.supabase.co:5432/savvyedge_test?sslmode=require",
+        "postgresql://guard_user:guard_password@localhost:5432/savvyedge_production?schema=public",
+        "postgresql://guard_user:guard_password@localhost:5432/savvyedge_test?schema=public&host=db.internal.example.com",
+        "mysql://guard_user:guard_password@localhost:5432/savvyedge_test",
+      ];
+
+      for (const unsafeUrl of unsafeUrls) {
+        const decision = evaluateConfigurableIsolatedTestDatabase({
+          optInVariable: OPT_IN,
+          targets: RUNTIME_TARGETS,
+          env: env({
+            [OPT_IN]: unsafeUrl,
+            DATABASE_URL: unsafeUrl,
+            DIRECT_URL: unsafeUrl,
+          }),
+        });
+
+        expect(decision.status).toBe("unsafe");
+        const reason = decision.status === "unsafe" ? decision.reason : "";
+        expect(reason).not.toContain(SECRET);
+        expect(reason).not.toContain(unsafeUrl);
+        expect(reason).not.toMatch(/postgres(ql)?:\/\//);
+      }
+    });
+
+    it("keeps mismatch reasons free of credentials", () => {
+      const decision = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env({
+          DIRECT_URL:
+            "postgresql://other_user:other_secret@localhost:5432/savvyedge_test?schema=public&sslmode=disable",
+        }),
+      });
+
+      const reason = decision.status === "unsafe" ? decision.reason : "";
+      expect(decision.status).toBe("unsafe");
+      expect(reason).not.toContain(SECRET);
+      expect(reason).not.toContain("other_secret");
+      expect(reason).not.toMatch(/postgres(ql)?:\/\//);
+    });
+  });
+
+  describe("requireConfiguredIsolatedTestDatabase", () => {
+    it("returns a disabled decision without the explicit opt-in", () => {
+      expect(
+        requireConfiguredIsolatedTestDatabase({
+          optInVariable: OPT_IN,
+          targets: RUNTIME_TARGETS,
+          env: env({ [OPT_IN]: undefined }),
+        }).status,
+      ).toBe("disabled");
+    });
+
+    it("returns the validated decision for a proven isolated target", () => {
+      const decision = requireConfiguredIsolatedTestDatabase({
+        optInVariable: OPT_IN,
+        targets: RUNTIME_TARGETS,
+        env: env(),
+      });
+
+      expect(decision.status).toBe("enabled");
+      expect(decision.status === "enabled" && decision.url).toBe(SAFE_URL);
+    });
+
+    it.each([
+      [
+        "hosted opt-in",
+        {
+          [OPT_IN]:
+            "postgresql://guard_user:guard_password@db.fakeprojectref.supabase.co:5432/savvyedge_test?sslmode=require",
+        },
+      ],
+      ["missing runtime target", { DIRECT_URL: undefined }],
+      [
+        "mismatched runtime target",
+        {
+          DATABASE_URL:
+            "postgresql://guard_user:guard_password@localhost:5433/savvyedge_test?schema=public&sslmode=disable",
+        },
+      ],
+    ])("throws instead of skipping on a %s", (_label, overrides) => {
+      expect(() =>
+        requireConfiguredIsolatedTestDatabase({
+          optInVariable: OPT_IN,
+          targets: RUNTIME_TARGETS,
+          env: env(overrides),
+        }),
+      ).toThrow(UnsafeTestDatabaseError);
+    });
+  });
+
+  describe("legacy contract compatibility", () => {
+    it("matches the default entry point for the same inputs", () => {
+      const configurable = evaluateConfigurableIsolatedTestDatabase({
+        optInVariable: "PHASE2_WORKFLOW_TEST_DATABASE_URL",
+        targets: RUNTIME_TARGETS,
+        env: {
+          PHASE2_WORKFLOW_TEST_DATABASE_URL: SAFE_URL,
+          DATABASE_URL: SAFE_URL,
+          DIRECT_URL: SAFE_URL,
+        },
+      });
+
+      expect(evaluateIsolatedTestDatabase(urls())).toEqual({
+        status: "enabled",
+        hostname: configurable.status === "enabled" && configurable.hostname,
+        databaseName:
+          configurable.status === "enabled" && configurable.databaseName,
+      });
+    });
+
+    it("ignores ambient variables for the legacy URL-object entry point", () => {
+      const previous = process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL;
+      process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL = SAFE_URL;
+      try {
+        expect(
+          evaluateIsolatedTestDatabase({
+            DATABASE_URL: SAFE_URL,
+            DIRECT_URL: SAFE_URL,
+          }).status,
+        ).toBe("disabled");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL;
+        } else {
+          process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL = previous;
+        }
+      }
+    });
   });
 });

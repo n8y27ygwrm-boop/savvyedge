@@ -1,82 +1,37 @@
 /**
  * C3C is opt-in real PostgreSQL integration coverage.
- * Run only with PHASE2_WORKFLOW_TEST_DATABASE_URL pointing to an isolated localhost database whose name contains "test".
- * Never use a dev/staging/production database.
+ * Run only with PHASE2_WORKFLOW_TEST_DATABASE_URL, DATABASE_URL, and DIRECT_URL
+ * all pointing at the same isolated loopback database whose name carries a
+ * bounded "test" marker. Never use a dev/staging/production database.
  */
 
 import crypto from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE,
+  ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+  requireConfiguredIsolatedTestDatabase,
+} from "./helpers/isolated-test-database-guard";
 
-const rawTestDatabaseUrl = process.env.PHASE2_WORKFLOW_TEST_DATABASE_URL;
+/**
+ * The centralized guard is the only validator: it proves at module scope that
+ * the opt-in, `DATABASE_URL`, and `DIRECT_URL` all resolve to the same isolated
+ * loopback test database. Because the runtime target is already proven to equal
+ * the opt-in, this suite never reassigns `process.env.DATABASE_URL` — the shared
+ * client is imported as-is, and the expected database name comes from the
+ * validated decision rather than from a second, weaker parser.
+ */
+const guardDecision = requireConfiguredIsolatedTestDatabase({
+  optInVariable: ISOLATED_TEST_DATABASE_OPT_IN_VARIABLE,
+  targets: ISOLATED_TEST_DATABASE_RUNTIME_TARGET_VARIABLES,
+});
 
-interface ValidatedDbConfig {
-  safe: boolean;
-  databaseUrl?: string;
-  expectedDatabaseName?: string;
-  error?: string;
-}
-
-function validateTestDatabaseUrl(
-  rawUrl: string | undefined,
-): ValidatedDbConfig {
-  if (!rawUrl || rawUrl.trim() === "") {
-    return { safe: false }; // Missing: cleanly skip
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl.trim());
-  } catch {
-    return {
-      safe: false,
-      error: "C3C test database configuration is unsafe: malformed URL",
-    };
-  }
-
-  const protocol = parsed.protocol.toLowerCase();
-  if (protocol !== "postgres:" && protocol !== "postgresql:") {
-    return {
-      safe: false,
-      error:
-        "C3C test database configuration is unsafe: non-PostgreSQL protocol",
-    };
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  const allowedHosts = new Set(["127.0.0.1", "localhost", "::1"]);
-  if (!allowedHosts.has(hostname)) {
-    return {
-      safe: false,
-      error:
-        "C3C test database configuration is unsafe: hostname must be localhost",
-    };
-  }
-
-  const databaseName = parsed.pathname.replace(/^\//, "").toLowerCase();
-  if (!databaseName.includes("test")) {
-    return {
-      safe: false,
-      error:
-        "C3C test database configuration is unsafe: database name must contain 'test'",
-    };
-  }
-
-  return {
-    safe: true,
-    databaseUrl: rawUrl.trim(),
-    expectedDatabaseName: databaseName,
-  };
-}
-
-const dbConfig = validateTestDatabaseUrl(rawTestDatabaseUrl);
-
-if (rawTestDatabaseUrl && !dbConfig.safe && dbConfig.error) {
-  throw new Error(dbConfig.error);
-}
-
-const describeDatabaseIntegration = dbConfig.safe
-  ? describe.sequential
-  : describe.skip;
+const describeDatabaseIntegration =
+  guardDecision.status === "enabled" ? describe.sequential : describe.skip;
+const expectedDatabaseName =
+  guardDecision.status === "enabled"
+    ? guardDecision.databaseName.toLowerCase()
+    : "";
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -100,10 +55,8 @@ describeDatabaseIntegration(
     const createdJobIds = new Set<string>();
 
     beforeAll(async () => {
-      // Rebind DATABASE_URL to dedicated test database before initializing runtime client
-      process.env.DATABASE_URL = dbConfig.databaseUrl!;
-
-      // Dynamically import database client and service modules after binding
+      // Dynamic imports keep Prisma initialization inside the guarded suite, so
+      // a skipped run never constructs a client.
       const dbModule = await import("@savvyedge/database");
       prisma = dbModule.prisma;
 
@@ -115,7 +68,7 @@ describeDatabaseIntegration(
         Array<{ current_database: string }>
       >("SELECT current_database() as current_database");
       const connectedDb = result[0]?.current_database?.toLowerCase();
-      if (!connectedDb || connectedDb !== dbConfig.expectedDatabaseName) {
+      if (!connectedDb || connectedDb !== expectedDatabaseName) {
         throw new Error(
           "C3C test database verification failed: connected database identity mismatch",
         );
