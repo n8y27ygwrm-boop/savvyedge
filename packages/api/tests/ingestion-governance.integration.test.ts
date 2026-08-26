@@ -78,7 +78,8 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
 
   it("creates governed Casino and Bonus with EvidenceRecord, claims, and AWAITING_REVIEW status", async () => {
     const url = "https://example-casino-ingest.com/promo";
-    const scrapedContent = "100% Match Bonus up to $500. 30x wagering requirement. Max cashout $1000.";
+    const scrapedContent =
+      "100% Match Bonus up to $500. 30x wagering requirement. Max cashout $1000.";
 
     await IngestionService.handleExtraction({
       url,
@@ -112,9 +113,7 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
     });
     expect(evidence).not.toBeNull();
     expect(evidence!.evidence_type).toBe(EvidenceType.OPERATOR_PAGE);
-    expect(evidence!.observed_at).toEqual(
-      new Date("2026-08-11T10:20:30.456Z"),
-    );
+    expect(evidence!.observed_at).toEqual(new Date("2026-08-11T10:20:30.456Z"));
 
     const casinoClaims = await db.casinoEvidenceClaim.findMany({
       where: { casino_id: casino!.id },
@@ -130,20 +129,28 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
       where: { casino_id: casino!.id },
     });
     expect(casinoAuditEvents.length).toBe(1);
-    expect(casinoAuditEvents[0].event_type).toBe(WorkflowEventType.REVIEW_REQUESTED);
+    expect(casinoAuditEvents[0].event_type).toBe(
+      WorkflowEventType.REVIEW_REQUESTED,
+    );
     expect(casinoAuditEvents[0].from_review_status).toBe(ReviewStatus.NEW);
-    expect(casinoAuditEvents[0].to_review_status).toBe(ReviewStatus.AWAITING_REVIEW);
+    expect(casinoAuditEvents[0].to_review_status).toBe(
+      ReviewStatus.AWAITING_REVIEW,
+    );
 
     const bonusAuditEvents = await db.workflowAuditEvent.findMany({
       where: { bonus_id: bonus!.id },
     });
     expect(bonusAuditEvents.length).toBe(1);
-    expect(bonusAuditEvents[0].event_type).toBe(WorkflowEventType.REVIEW_REQUESTED);
+    expect(bonusAuditEvents[0].event_type).toBe(
+      WorkflowEventType.REVIEW_REQUESTED,
+    );
     expect(bonusAuditEvents[0].from_review_status).toBe(ReviewStatus.NEW);
-    expect(bonusAuditEvents[0].to_review_status).toBe(ReviewStatus.AWAITING_REVIEW);
+    expect(bonusAuditEvents[0].to_review_status).toBe(
+      ReviewStatus.AWAITING_REVIEW,
+    );
   });
 
-  it("P0: preserves approved/published values and transitions review_status to AWAITING_REVIEW (MATERIAL_CHANGE_DETECTED) on re-ingestion with changed fields", async () => {
+  it("P0: preserves approved values and atomically unpublishes while transitioning to AWAITING_REVIEW on material re-ingestion", async () => {
     const url = "https://approved-casino-reingest.com/promo";
 
     // 1. Create Casino and Bonus in APPROVED & PUBLISHED state
@@ -179,7 +186,8 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
     });
 
     // 2. Simulate re-ingestion with new evidence: headline_value = "€300", wagering_requirement = 50
-    const newScrapedContent = "Special Offer: 100% up to €300 with 50x wagering requirement.";
+    const newScrapedContent =
+      "Special Offer: 100% up to €300 with 50x wagering requirement.";
 
     await IngestionService.handleExtraction({
       url,
@@ -198,8 +206,10 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
     expect(reingestedBonus!.headline_value).toBe("€500");
     expect(reingestedBonus!.wagering_requirement).toBe(35);
 
-    // b. publication_status STAYS PUBLISHED
-    expect(reingestedBonus!.publication_status).toBe(PublicationStatus.PUBLISHED);
+    // b. publication_status is atomically demoted with review status
+    expect(reingestedBonus!.publication_status).toBe(
+      PublicationStatus.UNPUBLISHED,
+    );
 
     // c. review_status IS NOW AWAITING_REVIEW
     expect(reingestedBonus!.review_status).toBe(ReviewStatus.AWAITING_REVIEW);
@@ -221,6 +231,12 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
     expect(auditEvent).not.toBeNull();
     expect(auditEvent!.from_review_status).toBe(ReviewStatus.APPROVED);
     expect(auditEvent!.to_review_status).toBe(ReviewStatus.AWAITING_REVIEW);
+    expect(auditEvent!.from_publication_status).toBe(
+      PublicationStatus.PUBLISHED,
+    );
+    expect(auditEvent!.to_publication_status).toBe(
+      PublicationStatus.UNPUBLISHED,
+    );
     expect(auditEvent!.expected_version).toBe(1);
     expect(auditEvent!.resulting_version).toBe(2);
 
@@ -239,10 +255,10 @@ describeWithDatabase("Ingestion Governance Integration Tests (Real DB)", () => {
 
     expect(newBonusClaims.length).toBeGreaterThan(0);
     const headlineClaim = newBonusClaims.find(
-      (c) => c.field === BonusEvidenceField.HEADLINE_VALUE
+      (c) => c.field === BonusEvidenceField.HEADLINE_VALUE,
     );
     const wageringClaim = newBonusClaims.find(
-      (c) => c.field === BonusEvidenceField.WAGERING_REQUIREMENT
+      (c) => c.field === BonusEvidenceField.WAGERING_REQUIREMENT,
     );
 
     expect(headlineClaim).toBeDefined();

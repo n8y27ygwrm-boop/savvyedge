@@ -4,6 +4,7 @@ import {
   Prisma,
   PublicationStatus,
   ReviewStatus,
+  WorkflowEventType,
   prisma,
 } from "@savvyedge/database";
 import { BonusReverificationService } from "../src/services/bonus-reverification.service";
@@ -11,7 +12,6 @@ import { OrchestratorService } from "../src/services/orchestrator.service";
 import { ScraperAgent } from "@savvyedge/ai-agents";
 import { PublicationGateService } from "../src/services/publication-gate.service";
 import { WorkflowTransitionService } from "../src/services/workflow-transition.service";
-import { WorkflowTransitionError } from "../src/services/workflow-transition.errors";
 import { createBonusSourceOfferKey } from "../src/utils/bonus-source-identity";
 import { EvidenceArtifactStorageService } from "../src/services/evidence-artifact-storage.service";
 
@@ -284,198 +284,278 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     ).toBe(true);
   });
 
-  it("2. MATERIAL WAGERING CHANGE: does not advance verified_at, preserves governed terms, transitions to AWAITING_REVIEW", async () => {
-    const initialBonus = createMockApprovedBonus({ wagering_requirement: 35 });
+  it.each([
+    ["published", PublicationStatus.PUBLISHED],
+    ["already unpublished", PublicationStatus.UNPUBLISHED],
+  ] as const)(
+    "2. MATERIAL WAGERING CHANGE (%s): preserves approved values and atomically ends AWAITING_REVIEW + UNPUBLISHED",
+    async (_label, initialPublicationStatus) => {
+      const initialBonus = createMockApprovedBonus({
+        wagering_requirement: 35,
+        publication_status: initialPublicationStatus,
+      });
 
-    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+      vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(
+        initialBonus as any,
+      );
 
-    const createdHistoryDiffs: any[] = [];
-    const createdClaims: any[] = [];
-    let reviewCasWhere: any = null;
-    let workflowAuditData: any = null;
-    const workflowClaimLinks: any[] = [];
-    const governedState = { ...initialBonus };
+      const createdHistoryDiffs: any[] = [];
+      const createdClaims: any[] = [];
+      let createdEvidenceData: any = null;
+      let activePointerInput: any = null;
+      let reviewCasWhere: any = null;
+      const workflowAuditEvents: any[] = [];
+      const workflowClaimLinks: any[] = [];
+      const governedState = { ...initialBonus };
+      const historicalMutationSpies = {
+        evidenceUpdate: vi.fn(),
+        evidenceDelete: vi.fn(),
+        claimUpdate: vi.fn(),
+        claimDelete: vi.fn(),
+        historyUpdate: vi.fn(),
+        historyDelete: vi.fn(),
+        auditUpdate: vi.fn(),
+        auditDelete: vi.fn(),
+      };
 
-    vi.spyOn(prisma, "$transaction").mockImplementation(
-      async (callback: any) => {
-        const evidence = {
-          id: "ev-diff-1",
-          source_url: SOURCE_URL,
-          observed_at: FIXED_NOW_T1,
-          extracted_at: FIXED_NOW_T1,
-          valid_from: null,
-          expires_at: null,
-        };
-        const mockTx: any = {
-          ...activePointerTx(),
-          reviewActor: {
-            upsert: vi
-              .fn()
-              .mockResolvedValue({ id: "actor-service-reverification" }),
-            findUnique: vi.fn().mockResolvedValue({
-              id: "actor-service-reverification",
-              kind: "SERVICE",
-              active: true,
-            }),
-          },
-          dataSource: {
-            findFirst: vi
-              .fn()
-              .mockResolvedValue({ id: "ds-1", url: SOURCE_URL }),
-            create: vi.fn(),
-          },
-          evidenceRecord: {
-            create: vi.fn().mockResolvedValue(evidence),
-            findMany: vi.fn().mockResolvedValue([evidence]),
-          },
-          bonusEvidenceClaim: {
-            create: vi.fn().mockImplementation(async ({ data }: any) => {
-              const claim = {
-                id: `claim-diff-${createdClaims.length + 1}`,
-                ...data,
-              };
-              createdClaims.push(claim);
-              return claim;
-            }),
-            findMany: vi
-              .fn()
-              .mockImplementation(async ({ where }: any) =>
-                createdClaims.filter((claim) => where.id.in.includes(claim.id)),
-              ),
-          },
-          bonus: {
-            findUnique: vi.fn().mockImplementation(async () => governedState),
-            updateMany: vi
-              .fn()
-              .mockImplementation(async ({ where, data }: any) => {
-                reviewCasWhere = where;
-                if (
-                  governedState.governance_version !==
-                    where.governance_version ||
-                  governedState.review_status !== where.review_status ||
-                  governedState.publication_status !== where.publication_status
-                ) {
-                  return { count: 0 };
-                }
-                governedState.review_status = data.review_status;
-                governedState.publication_status = data.publication_status;
-                governedState.governance_version +=
-                  data.governance_version.increment;
-                return { count: 1 };
+      vi.spyOn(prisma, "$transaction").mockImplementation(
+        async (callback: any) => {
+          const evidence = {
+            id: "ev-diff-1",
+            source_url: SOURCE_URL,
+            observed_at: FIXED_NOW_T1,
+            extracted_at: FIXED_NOW_T1,
+            valid_from: null,
+            expires_at: null,
+          };
+          const mockTx: any = {
+            activeExtractionPointer: {
+              upsert: vi.fn().mockImplementation(async (input: any) => {
+                activePointerInput = input;
+                return { id: "active-pointer" };
               }),
-          },
-          bonusHistoryEvent: {
-            create: vi.fn().mockImplementation(async ({ data }: any) => {
-              createdHistoryDiffs.push(data);
-              return { id: `hist-diff-${createdHistoryDiffs.length}`, ...data };
-            }),
-          },
-          workflowAuditEvent: {
-            create: vi.fn().mockImplementation(async ({ data }: any) => {
-              workflowAuditData = data;
-              return { id: "wf-event-1" };
-            }),
-          },
-          workflowEventClaim: {
-            create: vi.fn().mockImplementation(async ({ data }: any) => {
-              workflowClaimLinks.push(data);
-              return data;
-            }),
-          },
-        };
+            },
+            reviewActor: {
+              upsert: vi
+                .fn()
+                .mockResolvedValue({ id: "actor-service-reverification" }),
+              findUnique: vi.fn().mockResolvedValue({
+                id: "actor-service-reverification",
+                kind: "SERVICE",
+                active: true,
+              }),
+            },
+            dataSource: {
+              findFirst: vi
+                .fn()
+                .mockResolvedValue({ id: "ds-1", url: SOURCE_URL }),
+              create: vi.fn(),
+            },
+            evidenceRecord: {
+              create: vi.fn().mockImplementation(async ({ data }: any) => {
+                createdEvidenceData = data;
+                return evidence;
+              }),
+              findMany: vi.fn().mockResolvedValue([evidence]),
+              update: historicalMutationSpies.evidenceUpdate,
+              delete: historicalMutationSpies.evidenceDelete,
+            },
+            bonusEvidenceClaim: {
+              create: vi.fn().mockImplementation(async ({ data }: any) => {
+                const claim = {
+                  id: `claim-diff-${createdClaims.length + 1}`,
+                  ...data,
+                };
+                createdClaims.push(claim);
+                return claim;
+              }),
+              findMany: vi
+                .fn()
+                .mockImplementation(async ({ where }: any) =>
+                  createdClaims.filter((claim) =>
+                    where.id.in.includes(claim.id),
+                  ),
+                ),
+              update: historicalMutationSpies.claimUpdate,
+              delete: historicalMutationSpies.claimDelete,
+            },
+            bonus: {
+              findUnique: vi.fn().mockImplementation(async () => governedState),
+              updateMany: vi
+                .fn()
+                .mockImplementation(async ({ where, data }: any) => {
+                  reviewCasWhere = where;
+                  if (
+                    governedState.governance_version !==
+                      where.governance_version ||
+                    governedState.review_status !== where.review_status ||
+                    governedState.publication_status !==
+                      where.publication_status
+                  ) {
+                    return { count: 0 };
+                  }
+                  governedState.review_status = data.review_status;
+                  governedState.publication_status = data.publication_status;
+                  governedState.governance_version +=
+                    data.governance_version.increment;
+                  return { count: 1 };
+                }),
+            },
+            bonusHistoryEvent: {
+              create: vi.fn().mockImplementation(async ({ data }: any) => {
+                createdHistoryDiffs.push(data);
+                return {
+                  id: `hist-diff-${createdHistoryDiffs.length}`,
+                  ...data,
+                };
+              }),
+              update: historicalMutationSpies.historyUpdate,
+              delete: historicalMutationSpies.historyDelete,
+            },
+            workflowAuditEvent: {
+              create: vi.fn().mockImplementation(async ({ data }: any) => {
+                workflowAuditEvents.push(data);
+                return { id: "wf-event-1" };
+              }),
+              update: historicalMutationSpies.auditUpdate,
+              delete: historicalMutationSpies.auditDelete,
+            },
+            workflowEventClaim: {
+              create: vi.fn().mockImplementation(async ({ data }: any) => {
+                workflowClaimLinks.push(data);
+                return data;
+              }),
+            },
+          };
 
-        return callback(mockTx);
-      },
-    );
-
-    const mockScraper = {
-      run: vi.fn().mockResolvedValue({
-        url: SOURCE_URL,
-        finalUrl: SOURCE_URL,
-        title: "Apex Casino Welcome Bonus Offer",
-        content:
-          "Get 100% up to £200 on first deposit. Wagering requirement is now 40x. Max conversion £1000.",
-        timestamp: FIXED_NOW_T1,
-      }),
-    };
-
-    const mockBonusAgent = {
-      run: vi.fn().mockResolvedValue({
-        headline_value: "100% up to £200",
-        type: "WELCOME",
-        wagering_requirement: 40, // Changed from 35 to 40!
-        max_conversion: 1000,
-        valid_from: null,
-        valid_until: null,
-        status: "ACTIVE",
-      }),
-    };
-
-    const result = await BonusReverificationService.reverifyBonus(
-      initialBonus.id,
-      {
-        scraperAgent: mockScraper,
-        bonusAgent: mockBonusAgent,
-        now: FIXED_NOW_T1,
-      },
-    );
-
-    expect(result.status).toBe("MATERIAL_CHANGE_DETECTED");
-    if (result.status === "MATERIAL_CHANGE_DETECTED") {
-      expect(result.diffs).toEqual([
-        {
-          field: "wagering_requirement",
-          oldVal: "35",
-          newVal: "40",
+          return callback(mockTx);
         },
-      ]);
-      expect(result.reviewStatus).toBe(ReviewStatus.AWAITING_REVIEW);
-      expect(result.governanceVersion).toBe(3); // Incremented from 2 to 3
-    }
+      );
 
-    // 1. verified_at was NOT updated
-    expect(governedState.wagering_requirement).toBe(35);
-    expect(governedState.verified_at).toEqual(initialBonus.verified_at);
-    expect(governedState.publication_status).toBe(PublicationStatus.PUBLISHED);
+      const mockScraper = {
+        run: vi.fn().mockResolvedValue({
+          url: SOURCE_URL,
+          finalUrl: SOURCE_URL,
+          title: "Apex Casino Welcome Bonus Offer",
+          content:
+            "Get 100% up to £200 on first deposit. Wagering requirement is now 40x. Max conversion £1000.",
+          timestamp: FIXED_NOW_T1,
+        }),
+      };
 
-    // 2. Diff recorded in BonusHistoryEvent
-    expect(createdHistoryDiffs.length).toBe(1);
-    expect(createdHistoryDiffs[0].field_changed).toBe("wagering_requirement");
-    expect(createdHistoryDiffs[0].old_value).toBe("35");
-    expect(createdHistoryDiffs[0].new_value).toBe("40");
+      const mockBonusAgent = {
+        run: vi.fn().mockResolvedValue({
+          headline_value: "100% up to £200",
+          type: "WELCOME",
+          wagering_requirement: 40, // Changed from 35 to 40!
+          max_conversion: 1000,
+          valid_from: null,
+          valid_until: null,
+          status: "ACTIVE",
+        }),
+      };
 
-    // 3. Actual WorkflowTransitionService semantics executed with CAS and audit links
-    expect(reviewCasWhere).toMatchObject({
-      id: initialBonus.id,
-      governance_version: 2,
-      review_status: ReviewStatus.APPROVED,
-      publication_status: PublicationStatus.PUBLISHED,
-    });
-    expect(workflowAuditData).toMatchObject({
-      bonus_id: initialBonus.id,
-      expected_version: 2,
-      resulting_version: 3,
-      from_review_status: ReviewStatus.APPROVED,
-      to_review_status: ReviewStatus.AWAITING_REVIEW,
-      from_publication_status: PublicationStatus.PUBLISHED,
-      to_publication_status: PublicationStatus.PUBLISHED,
-    });
-    expect(workflowClaimLinks).toHaveLength(createdClaims.length);
+      const result = await BonusReverificationService.reverifyBonus(
+        initialBonus.id,
+        {
+          scraperAgent: mockScraper,
+          bonusAgent: mockBonusAgent,
+          now: FIXED_NOW_T1,
+        },
+      );
 
-    // 4. PublicationGate fails closed because review_status is AWAITING_REVIEW
-    const postTransitionBonus = {
-      ...initialBonus,
-      review_status: ReviewStatus.AWAITING_REVIEW,
-      governance_version: 3,
-    };
-    expect(
-      PublicationGateService.isBonusPubliclyEligible(
-        postTransitionBonus,
-        baseCasino,
-        FIXED_NOW_T1,
-      ),
-    ).toBe(false);
-  });
+      expect(result.status).toBe("MATERIAL_CHANGE_DETECTED");
+      if (result.status === "MATERIAL_CHANGE_DETECTED") {
+        expect(result.diffs).toEqual([
+          {
+            field: "wagering_requirement",
+            oldVal: "35",
+            newVal: "40",
+          },
+        ]);
+        expect(result.reviewStatus).toBe(ReviewStatus.AWAITING_REVIEW);
+        expect(result.governanceVersion).toBe(3); // Incremented from 2 to 3
+      }
+
+      // 1. verified_at was NOT updated
+      expect(governedState.wagering_requirement).toBe(35);
+      expect(governedState.verified_at).toEqual(initialBonus.verified_at);
+      expect(governedState.review_status).toBe(ReviewStatus.AWAITING_REVIEW);
+      expect(governedState.publication_status).toBe(
+        PublicationStatus.UNPUBLISHED,
+      );
+      expect(governedState.governance_version).toBe(3);
+
+      // 2. New evidence, active pointer, claims and diff are all written in the transaction.
+      expect(createdEvidenceData).toMatchObject({
+        source_url: SOURCE_URL,
+        observed_at: FIXED_NOW_T1,
+        extracted_at: FIXED_NOW_T1,
+      });
+      expect(activePointerInput).toMatchObject({
+        create: {
+          bonus_id: initialBonus.id,
+          evidence_id: "ev-diff-1",
+        },
+        update: {
+          evidence_id: "ev-diff-1",
+        },
+      });
+      expect(createdClaims.length).toBeGreaterThan(0);
+      expect(createdHistoryDiffs.length).toBe(1);
+      expect(createdHistoryDiffs[0].field_changed).toBe("wagering_requirement");
+      expect(createdHistoryDiffs[0].old_value).toBe("35");
+      expect(createdHistoryDiffs[0].new_value).toBe("40");
+
+      // 3. One CAS changes both states and advances governance exactly once.
+      expect(reviewCasWhere).toMatchObject({
+        id: initialBonus.id,
+        governance_version: 2,
+        review_status: ReviewStatus.APPROVED,
+        publication_status: initialPublicationStatus,
+      });
+      expect(workflowAuditEvents).toHaveLength(1);
+      expect(workflowAuditEvents[0]).toMatchObject({
+        bonus_id: initialBonus.id,
+        event_type: WorkflowEventType.MATERIAL_CHANGE_DETECTED,
+        expected_version: 2,
+        resulting_version: 3,
+        from_review_status: ReviewStatus.APPROVED,
+        to_review_status: ReviewStatus.AWAITING_REVIEW,
+        from_publication_status: initialPublicationStatus,
+        to_publication_status: PublicationStatus.UNPUBLISHED,
+      });
+      expect(
+        workflowClaimLinks.map((link) => link.bonus_evidence_claim_id),
+      ).toEqual(createdClaims.map((claim) => claim.id));
+      expect(
+        workflowClaimLinks.some(
+          (link) =>
+            link.bonus_evidence_claim_id === initialBonus.evidence_claims[0].id,
+        ),
+      ).toBe(false);
+
+      // 4. No historical evidence, claims, history or audit rows are mutated.
+      for (const mutation of Object.values(historicalMutationSpies)) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(initialBonus.evidence_claims[0].id).toBe("claim-1");
+
+      // 5. The corrected state satisfies PUBLISHED => APPROVED by construction
+      // and is immediately rejected by the public gate.
+      expect(
+        governedState.publication_status !== PublicationStatus.PUBLISHED ||
+          governedState.review_status === ReviewStatus.APPROVED,
+      ).toBe(true);
+      expect(
+        PublicationGateService.isBonusPubliclyEligible(
+          governedState,
+          baseCasino,
+          FIXED_NOW_T1,
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("3. OFFER BECOMES INACTIVE: does not silently overwrite approved status, transitions to AWAITING_REVIEW", async () => {
     const initialBonus = createMockApprovedBonus();
@@ -522,7 +602,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
             subjectId: cmd.subjectId,
             workflowEventId: "wf-event-2",
             reviewStatus: ReviewStatus.AWAITING_REVIEW,
-            publicationStatus: PublicationStatus.PUBLISHED,
+            publicationStatus: PublicationStatus.UNPUBLISHED,
             governanceVersion: cmd.expectedVersion + 1,
           };
         });
@@ -794,15 +874,39 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     const initialBonus = createMockApprovedBonus({ governance_version: 2 });
 
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
+    const stagedWrites: string[] = [];
+    const committedWrites: string[] = [];
+    const createdClaims: any[] = [];
+    let casWhere: any = null;
+    const auditCreate = vi.fn();
+    const linkCreate = vi.fn();
 
     vi.spyOn(prisma, "$transaction").mockImplementation(
       async (callback: any) => {
+        const evidence = {
+          id: "ev-conflict",
+          source_url: SOURCE_URL,
+          observed_at: FIXED_NOW_T1,
+          extracted_at: FIXED_NOW_T1,
+          valid_from: null,
+          expires_at: null,
+        };
         const mockTx: any = {
-          ...activePointerTx(),
+          activeExtractionPointer: {
+            upsert: vi.fn().mockImplementation(async () => {
+              stagedWrites.push("active-pointer");
+              return { id: "active-pointer" };
+            }),
+          },
           reviewActor: {
             upsert: vi
               .fn()
               .mockResolvedValue({ id: "actor-service-reverification" }),
+            findUnique: vi.fn().mockResolvedValue({
+              id: "actor-service-reverification",
+              kind: "SERVICE",
+              active: true,
+            }),
           },
           dataSource: {
             findFirst: vi
@@ -811,28 +915,52 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
             create: vi.fn(),
           },
           evidenceRecord: {
-            create: vi.fn().mockResolvedValue({ id: "ev-1" }),
+            create: vi.fn().mockImplementation(async () => {
+              stagedWrites.push("evidence");
+              return evidence;
+            }),
+            findMany: vi.fn().mockResolvedValue([evidence]),
           },
           bonusEvidenceClaim: {
-            create: vi.fn().mockResolvedValue({ id: "claim-1" }),
+            create: vi.fn().mockImplementation(async ({ data }: any) => {
+              const claim = {
+                id: `claim-conflict-${createdClaims.length + 1}`,
+                ...data,
+              };
+              createdClaims.push(claim);
+              stagedWrites.push(claim.id);
+              return claim;
+            }),
+            findMany: vi
+              .fn()
+              .mockImplementation(async ({ where }: any) =>
+                createdClaims.filter((claim) => where.id.in.includes(claim.id)),
+              ),
           },
           bonus: {
-            update: vi.fn(),
+            findUnique: vi.fn().mockResolvedValue(initialBonus),
+            updateMany: vi.fn().mockImplementation(async ({ where }: any) => {
+              casWhere = where;
+              return { count: 0 };
+            }),
           },
           bonusHistoryEvent: {
-            create: vi.fn().mockResolvedValue({ id: "hist-1" }),
+            create: vi.fn().mockImplementation(async () => {
+              stagedWrites.push("history-diff");
+              return { id: "hist-conflict" };
+            }),
+          },
+          workflowAuditEvent: {
+            create: auditCreate,
+          },
+          workflowEventClaim: {
+            create: linkCreate,
           },
         };
 
-        // Mock CAS concurrency failure
-        vi.spyOn(
-          WorkflowTransitionService.prototype,
-          "transitionBonusReview",
-        ).mockRejectedValue(
-          new WorkflowTransitionError("STALE_GOVERNANCE_VERSION"),
-        );
-
-        return callback(mockTx);
+        const result = await callback(mockTx);
+        committedWrites.push(...stagedWrites);
+        return result;
       },
     );
 
@@ -867,6 +995,25 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     ).rejects.toThrow(
       "The governed subject changed before this transition could be applied.",
     );
+
+    expect(casWhere).toMatchObject({
+      id: initialBonus.id,
+      governance_version: 2,
+      review_status: ReviewStatus.APPROVED,
+      publication_status: PublicationStatus.PUBLISHED,
+    });
+    expect(stagedWrites).toEqual(
+      expect.arrayContaining(["evidence", "active-pointer", "history-diff"]),
+    );
+    expect(committedWrites).toEqual([]);
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(linkCreate).not.toHaveBeenCalled();
+    expect(initialBonus).toMatchObject({
+      review_status: ReviewStatus.APPROVED,
+      publication_status: PublicationStatus.PUBLISHED,
+      governance_version: 2,
+      wagering_requirement: 35,
+    });
   });
 
   it("10. FALSE-FRESHNESS REGRESSION: production VALIDATE_BONUS cannot advance verified_at without observing live source", async () => {
@@ -1178,9 +1325,9 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
   it("15. unchanged-path upload failure throws before extraction or governed mutation", async () => {
     const initialBonus = createMockApprovedBonus();
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
-    vi.mocked(EvidenceArtifactStorageService.persistObservation).mockRejectedValueOnce(
-      new Error("durable observation unavailable"),
-    );
+    vi.mocked(
+      EvidenceArtifactStorageService.persistObservation,
+    ).mockRejectedValueOnce(new Error("durable observation unavailable"));
     const bonusAgent = vi.fn().mockResolvedValue({
       headline_value: initialBonus.headline_value,
       type: initialBonus.type,
@@ -1215,9 +1362,9 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
   it("16. material-path upload failure throws with zero governed mutation", async () => {
     const initialBonus = createMockApprovedBonus({ wagering_requirement: 35 });
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
-    vi.mocked(EvidenceArtifactStorageService.persistObservation).mockRejectedValueOnce(
-      new Error("durable observation unavailable"),
-    );
+    vi.mocked(
+      EvidenceArtifactStorageService.persistObservation,
+    ).mockRejectedValueOnce(new Error("durable observation unavailable"));
     const bonusAgent = vi.fn().mockResolvedValue({
       headline_value: initialBonus.headline_value,
       type: initialBonus.type,
@@ -1249,8 +1396,8 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it("17. object-first success followed by DB rollback never reports governed success", async () => {
-    const initialBonus = createMockApprovedBonus();
+  it("17. material observation followed by DB rollback never reports or mutates governed success", async () => {
+    const initialBonus = createMockApprovedBonus({ wagering_requirement: 35 });
     vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(initialBonus as any);
     vi.spyOn(prisma, "$transaction").mockRejectedValue(
       new Error("database transaction rolled back"),
@@ -1262,9 +1409,9 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
           run: vi.fn().mockResolvedValue({
             url: SOURCE_URL,
             finalUrl: SOURCE_URL,
-            title: "Apex Casino Welcome Bonus Offer",
-            content: "Get 100% up to £200. Wagering is 35x.",
-            rawHtml: "<html>Get 100% up to £200. Wagering is 35x.</html>",
+            title: "Changed Apex offer terms",
+            content: "Get 100% up to £200. Wagering is now 50x.",
+            rawHtml: "<html>Get 100% up to £200. Wagering is now 50x.</html>",
             htmlHash: "c".repeat(64),
             timestamp: FIXED_NOW_T1,
           }),
@@ -1273,7 +1420,7 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
           run: vi.fn().mockResolvedValue({
             headline_value: initialBonus.headline_value,
             type: initialBonus.type,
-            wagering_requirement: initialBonus.wagering_requirement,
+            wagering_requirement: 50,
             max_conversion: initialBonus.max_conversion,
             valid_from: null,
             valid_until: null,
@@ -1287,5 +1434,12 @@ describe("D3B BonusReverificationService (Deterministic True Re-Verification)", 
     expect(
       EvidenceArtifactStorageService.persistObservation,
     ).toHaveBeenCalledOnce();
+    expect(initialBonus).toMatchObject({
+      review_status: ReviewStatus.APPROVED,
+      publication_status: PublicationStatus.PUBLISHED,
+      governance_version: 2,
+      wagering_requirement: 35,
+      verified_at: new Date("2026-08-01T00:00:00.000Z"),
+    });
   });
 });

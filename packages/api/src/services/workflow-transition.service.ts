@@ -133,10 +133,7 @@ export class WorkflowTransitionService {
   public transitionSlotPublication(
     command: PublicationTransitionCommand,
   ): Promise<WorkflowTransitionResult> {
-    return this.executePublicationTransition(
-      GovernedSubjectType.SLOT,
-      command,
-    );
+    return this.executePublicationTransition(GovernedSubjectType.SLOT, command);
   }
 
   private async executeReviewTransition(
@@ -145,7 +142,11 @@ export class WorkflowTransitionService {
   ): Promise<WorkflowTransitionResult> {
     return this.inSerializableTransaction(async (tx) => {
       const actor = await this.loadActor(tx, command.actorId);
-      const subject = await this.loadSubject(tx, subjectType, command.subjectId);
+      const subject = await this.loadSubject(
+        tx,
+        subjectType,
+        command.subjectId,
+      );
 
       if (!subject) {
         throw new WorkflowTransitionError("SUBJECT_NOT_FOUND");
@@ -188,10 +189,7 @@ export class WorkflowTransitionService {
       // Per-field approval requirements remain a product-policy boundary. Until
       // defined, approval fails closed unless at least one eligible supporting
       // claim for the exact governed subject is explicitly supplied.
-      if (
-        command.toStatus === ReviewStatus.APPROVED &&
-        claimIds.length === 0
-      ) {
+      if (command.toStatus === ReviewStatus.APPROVED && claimIds.length === 0) {
         throw new WorkflowTransitionError("EVIDENCE_INELIGIBLE");
       }
 
@@ -205,11 +203,15 @@ export class WorkflowTransitionService {
             )
           : null;
 
+      const isBonusMaterialChange =
+        subjectType === GovernedSubjectType.BONUS &&
+        decision.eventType === WorkflowEventType.MATERIAL_CHANGE_DETECTED;
       const resultingPublicationStatus =
         subject.publicationStatus === PublicationStatus.PUBLISHED &&
         (command.toStatus === ReviewStatus.REJECTED ||
           command.toStatus === ReviewStatus.QUARANTINED ||
-          command.toStatus === ReviewStatus.SUPERSEDED)
+          command.toStatus === ReviewStatus.SUPERSEDED ||
+          isBonusMaterialChange)
           ? PublicationStatus.UNPUBLISHED
           : subject.publicationStatus;
 
@@ -264,7 +266,11 @@ export class WorkflowTransitionService {
   ): Promise<WorkflowTransitionResult> {
     return this.inSerializableTransaction(async (tx) => {
       const actor = await this.loadActor(tx, command.actorId);
-      const subject = await this.loadSubject(tx, subjectType, command.subjectId);
+      const subject = await this.loadSubject(
+        tx,
+        subjectType,
+        command.subjectId,
+      );
 
       if (!subject) {
         throw new WorkflowTransitionError("SUBJECT_NOT_FOUND");
@@ -537,9 +543,7 @@ export class WorkflowTransitionService {
       isClearance &&
       this.normalizeSafeReason(command.internalReason) === null
     ) {
-      throw new WorkflowTransitionError(
-        "QUARANTINE_CLEARANCE_REASON_REQUIRED",
-      );
+      throw new WorkflowTransitionError("QUARANTINE_CLEARANCE_REASON_REQUIRED");
     }
     if (command.clearQuarantine === true && !isClearance) {
       throw new WorkflowTransitionError("INVALID_TRANSITION");
@@ -600,9 +604,7 @@ export class WorkflowTransitionService {
           ? command.quarantineReason!
           : null,
       duplicate_of_id:
-        command.toStatus === ReviewStatus.SUPERSEDED
-          ? canonicalTargetId
-          : null,
+        command.toStatus === ReviewStatus.SUPERSEDED ? canonicalTargetId : null,
       governance_version: { increment: 1 },
     } as const;
 
@@ -988,7 +990,6 @@ export class WorkflowTransitionService {
     casinoId: string,
     now: Date,
   ): Promise<void> {
-
     // License has no expiry scalar in the committed schema. Eligibility therefore
     // uses current ACTIVE status plus non-expired evidence linked to an immutable
     // License APPROVED event. No text fields or array order determine applicability.
