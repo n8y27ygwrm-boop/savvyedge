@@ -9,8 +9,12 @@ export async function GET(request: Request) {
 
     if (!slugsParam) {
       return NextResponse.json(
-        { data: null, meta: null, error: { message: "Missing 'slugs' query parameter" } },
-        { status: 400 }
+        {
+          data: null,
+          meta: null,
+          error: { message: "Missing 'slugs' query parameter" },
+        },
+        { status: 400 },
       );
     }
 
@@ -24,12 +28,17 @@ export async function GET(request: Request) {
         {
           data: null,
           meta: null,
-          error: { message: "Please provide between 2 and 3 casino slugs for comparison" },
+          error: {
+            message:
+              "Please provide between 2 and 3 casino slugs for comparison",
+          },
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
+    // One request-scoped clock for both the query predicate and the runtime gate.
+    const now = new Date();
     const publicCasinoWhere = PublicationGateService.whereCasinoPublic();
 
     // Database predicates reduce the candidate set; runtime predicates remain authoritative.
@@ -49,17 +58,19 @@ export async function GET(request: Request) {
           },
         },
         bonuses: {
-          where: PublicationGateService.whereBonusPublic(),
+          where: PublicationGateService.whereBonusPublic(now),
           orderBy: { created_at: "desc" },
           include: {
             history_events: true,
+            // Validation input for the runtime freshness gate only.
+            ...PublicationGateService.bonusActiveEvidenceInclude(),
           },
         },
       },
     });
 
     const casinos = candidateCasinos.filter((casino) =>
-      PublicationGateService.isCasinoPubliclyEligible(casino)
+      PublicationGateService.isCasinoPubliclyEligible(casino),
     );
 
     if (casinos.length < 2) {
@@ -68,14 +79,15 @@ export async function GET(request: Request) {
           data: null,
           meta: null,
           error: {
-            message: "Fewer than two requested casinos are currently eligible for comparison",
+            message:
+              "Fewer than two requested casinos are currently eligible for comparison",
           },
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
-    const ninetyDaysAgo = new Date();
+    const ninetyDaysAgo = new Date(now);
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
     const formattedData = await Promise.all(
@@ -88,7 +100,8 @@ export async function GET(request: Request) {
         });
 
         const activeLicense = casino.licenses.find(
-          (license) => license.status === "ACTIVE" && license.verified_at !== null
+          (license) =>
+            license.status === "ACTIVE" && license.verified_at !== null,
         );
         let licensePayload = null;
         if (activeLicense) {
@@ -102,7 +115,7 @@ export async function GET(request: Request) {
         }
 
         const activeBonus = casino.bonuses.find((bonus) =>
-          PublicationGateService.isBonusPubliclyEligible(bonus, casino)
+          PublicationGateService.isBonusPubliclyEligible(bonus, casino, now),
         );
         let activeBonusPayload = null;
         if (activeBonus) {
@@ -112,7 +125,8 @@ export async function GET(request: Request) {
             max_conversion: activeBonus.max_conversion,
             valid_until: activeBonus.valid_until,
             trueValueScore:
-              activeBonus.true_value_score !== null && activeBonus.true_value_score <= 100
+              activeBonus.true_value_score !== null &&
+              activeBonus.true_value_score <= 100
                 ? activeBonus.true_value_score
                 : null,
           };
@@ -127,13 +141,13 @@ export async function GET(request: Request) {
           activeBonus: activeBonusPayload,
           bonusChangeCount,
         };
-      })
+      }),
     );
 
     // Keep the order of returned casinos same as requested slugs
     const orderedData = slugs.flatMap((slug) => {
       const casino = formattedData.find(
-        (candidate) => candidate.slug.toLowerCase() === slug.toLowerCase()
+        (candidate) => candidate.slug.toLowerCase() === slug.toLowerCase(),
       );
       return casino ? [casino] : [];
     });
@@ -143,7 +157,7 @@ export async function GET(request: Request) {
     console.error("[API /api/v1/casinos/compare] Error:", error);
     return NextResponse.json(
       { data: null, meta: null, error: { message: "Internal server error" } },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

@@ -18,6 +18,8 @@ export default async function CasinosPage({
   const limit = parseInt(params.limit || "50", 10);
   const skip = (page - 1) * limit;
 
+  // One request-scoped clock for both the query predicate and the runtime gate.
+  const now = new Date();
   const publicWhere = PublicationGateService.whereCasinoPublic();
 
   const allPublicCasinos = await prisma.casino.findMany({
@@ -26,9 +28,11 @@ export default async function CasinosPage({
     include: {
       history_events: true,
       bonuses: {
-        where: PublicationGateService.whereBonusPublic(),
+        where: PublicationGateService.whereBonusPublic(now),
         include: {
           history_events: true,
+          // Validation input for the runtime freshness gate only.
+          ...PublicationGateService.bonusActiveEvidenceInclude(),
         },
       },
       licenses: {
@@ -44,11 +48,18 @@ export default async function CasinosPage({
   });
 
   const eligibleCasinos = allPublicCasinos.filter((c) =>
-    PublicationGateService.isCasinoPubliclyEligible(c)
+    PublicationGateService.isCasinoPubliclyEligible(c),
   );
 
   const total = eligibleCasinos.length;
-  const casinos = eligibleCasinos.slice(skip, skip + limit);
+  const casinos = eligibleCasinos.slice(skip, skip + limit).map((casino) => ({
+    ...casino,
+    bonuses: casino.bonuses
+      .filter((bonus) =>
+        PublicationGateService.isBonusPubliclyEligible(bonus, casino, now),
+      )
+      .map((bonus) => PublicationGateService.toPublicBonus(bonus)),
+  }));
 
   const totalPages = Math.ceil(total / limit) || 1;
 
@@ -74,8 +85,7 @@ export default async function CasinosPage({
           </p>
         </div>
         <div className="bg-[#161e2e] border border-slate-800 px-4 py-2 rounded-xl text-xs font-mono text-[#0ea5e9] shrink-0 self-start sm:self-auto">
-          Showing{" "}
-          <span className="font-bold text-white">{total}</span> eligible
+          Showing <span className="font-bold text-white">{total}</span> eligible
           operators
         </div>
       </div>

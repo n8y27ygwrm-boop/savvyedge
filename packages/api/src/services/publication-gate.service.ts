@@ -1,8 +1,10 @@
 import { Prisma, PublicationStatus, ReviewStatus } from "@savvyedge/database";
+import { BONUS_EXTRACTION_CONTEXT } from "../constants/extraction-context";
 import {
   BonusFreshnessPolicy,
-  DEFAULT_BONUS_FRESHNESS_POLICY,
-  isBonusFresh,
+  bonusFreshnessFloor,
+  evaluateActiveObservationFreshness,
+  type ActiveObservationFreshnessDecision,
 } from "./freshness.policy";
 
 /**
@@ -50,7 +52,9 @@ const QUARANTINED_EXACT_DOMAINS = [
   "casino.org",
 ];
 
-const EXCLUDED_DATA_SOURCES = ["DEV_MOCK", "MOCK", "dev_mock", "mock"];
+/** Canonical non-publishable data-source markers. Single source of truth:
+ * every gate clause and the production coverage audit read this list. */
+export const EXCLUDED_DATA_SOURCES = ["DEV_MOCK", "MOCK", "dev_mock", "mock"];
 
 export const SUPPORTED_CALCULATOR_BONUS_TYPES = [
   "WELCOME",
@@ -71,7 +75,14 @@ export interface MonetaryCapParseResult {
 }
 
 export interface CalculatorValidationResult {
-  status: "VALID" | "MISSING_FIELDS" | "MISSING_CAP" | "AMBIGUOUS_CAPS" | "INVALID_CAP" | "UNSUPPORTED_TYPE" | "INELIGIBLE_BONUS";
+  status:
+    | "VALID"
+    | "MISSING_FIELDS"
+    | "MISSING_CAP"
+    | "AMBIGUOUS_CAPS"
+    | "INVALID_CAP"
+    | "UNSUPPORTED_TYPE"
+    | "INELIGIBLE_BONUS";
   reason?: string;
   nominalValue?: number;
 }
@@ -91,7 +102,11 @@ export class PublicationGateService {
       const parsed = new URL(cleaned);
       return parsed.hostname.replace(/^www\./, "");
     } catch {
-      return url.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, "").split("/")[0];
+      return url
+        .trim()
+        .toLowerCase()
+        .replace(/^(https?:\/\/)?(www\.)?/, "")
+        .split("/")[0];
     }
   }
 
@@ -120,9 +135,17 @@ export class PublicationGateService {
    * Centralized Exact Identity Quarantine Matcher.
    * Avoids loose includes() matching to prevent false positive quarantining of legitimate brands.
    */
-  public static isQuarantinedIdentity(name?: string | null, slug?: string | null, websiteUrl?: string | null): boolean {
-    const nameNorm = String(name || "").trim().toLowerCase();
-    const slugNorm = String(slug || "").trim().toLowerCase();
+  public static isQuarantinedIdentity(
+    name?: string | null,
+    slug?: string | null,
+    websiteUrl?: string | null,
+  ): boolean {
+    const nameNorm = String(name || "")
+      .trim()
+      .toLowerCase();
+    const slugNorm = String(slug || "")
+      .trim()
+      .toLowerCase();
     const hostNorm = this.normalizeDomainHost(websiteUrl);
 
     if (nameNorm !== "" && QUARANTINED_EXACT_NAMES.includes(nameNorm)) {
@@ -153,7 +176,12 @@ export class PublicationGateService {
    * 3. timestamp occurred_at is valid, not in future, and within [verified_at - 7d, verified_at + 1d].
    */
   public static getQualifyingCasinoEvidence(casino: any): any | null {
-    if (!casino || typeof casino !== "object" || !Array.isArray(casino.history_events) || casino.history_events.length === 0) {
+    if (
+      !casino ||
+      typeof casino !== "object" ||
+      !Array.isArray(casino.history_events) ||
+      casino.history_events.length === 0
+    ) {
       return null;
     }
 
@@ -163,11 +191,18 @@ export class PublicationGateService {
       if (!he || typeof he !== "object") return false;
       if (!this.isValidSourceUrl(he.source_url)) return false;
 
-      const eventType = String(he.event_type || "").trim().toUpperCase();
-      const desc = String(he.description || "").trim().toLowerCase();
+      const eventType = String(he.event_type || "")
+        .trim()
+        .toUpperCase();
+      const desc = String(he.description || "")
+        .trim()
+        .toLowerCase();
 
       // STRICT: Ingestion or generic audits DO NOT qualify. Must be explicit VERIFICATION.
-      const isExplicitVerification = eventType === "VERIFICATION" || desc.includes("license verification") || desc.includes("verified license");
+      const isExplicitVerification =
+        eventType === "VERIFICATION" ||
+        desc.includes("license verification") ||
+        desc.includes("verified license");
       if (!isExplicitVerification) {
         return false;
       }
@@ -180,8 +215,12 @@ export class PublicationGateService {
       if (casino.verified_at) {
         const verifiedDate = new Date(casino.verified_at);
         if (!isNaN(verifiedDate.getTime())) {
-          const minAllowed = new Date(verifiedDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-          const maxAllowed = new Date(verifiedDate.getTime() + 24 * 60 * 60 * 1000);
+          const minAllowed = new Date(
+            verifiedDate.getTime() - 7 * 24 * 60 * 60 * 1000,
+          );
+          const maxAllowed = new Date(
+            verifiedDate.getTime() + 24 * 60 * 60 * 1000,
+          );
           if (eventDate < minAllowed || eventDate > maxAllowed) {
             return false;
           }
@@ -193,12 +232,16 @@ export class PublicationGateService {
 
     if (qualifyingEvents.length === 0) return null;
 
-    qualifyingEvents.sort((a: any, b: any) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
+    qualifyingEvents.sort(
+      (a: any, b: any) =>
+        new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime(),
+    );
     return qualifyingEvents[0];
   }
 
   /**
-   * Deterministic Bonus Verification Evidence Selector.
+   * Legacy Bonus verification history selector retained for D2 compatibility.
+   * Production publication uses isBonusPubliclyEligible and active evidence.
    * Qualifies ONLY when:
    * 1. source_url passes isValidSourceUrl();
    * 2. field_changed === "verified_at";
@@ -206,7 +249,12 @@ export class PublicationGateService {
    * 3. timestamp changed_at is valid, not in future, and within [verified_at - 7d, verified_at + 1d].
    */
   public static getQualifyingBonusEvidence(bonus: any): any | null {
-    if (!bonus || typeof bonus !== "object" || !Array.isArray(bonus.history_events) || bonus.history_events.length === 0) {
+    if (
+      !bonus ||
+      typeof bonus !== "object" ||
+      !Array.isArray(bonus.history_events) ||
+      bonus.history_events.length === 0
+    ) {
       return null;
     }
 
@@ -232,8 +280,12 @@ export class PublicationGateService {
       if (bonus.verified_at) {
         const verifiedDate = new Date(bonus.verified_at);
         if (!isNaN(verifiedDate.getTime())) {
-          const minAllowed = new Date(verifiedDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-          const maxAllowed = new Date(verifiedDate.getTime() + 24 * 60 * 60 * 1000);
+          const minAllowed = new Date(
+            verifiedDate.getTime() - 7 * 24 * 60 * 60 * 1000,
+          );
+          const maxAllowed = new Date(
+            verifiedDate.getTime() + 24 * 60 * 60 * 1000,
+          );
           if (eventDate < minAllowed || eventDate > maxAllowed) {
             return false;
           }
@@ -245,7 +297,10 @@ export class PublicationGateService {
 
     if (qualifyingEvents.length === 0) return null;
 
-    qualifyingEvents.sort((a: any, b: any) => new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime());
+    qualifyingEvents.sort(
+      (a: any, b: any) =>
+        new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime(),
+    );
     return qualifyingEvents[0];
   }
 
@@ -276,9 +331,7 @@ export class PublicationGateService {
     now: Date = new Date(),
     policy?: Partial<BonusFreshnessPolicy>,
   ): Prisma.BonusWhereInput {
-    const maxAgeMs =
-      policy?.maxAgeMs ?? DEFAULT_BONUS_FRESHNESS_POLICY.maxAgeMs;
-    const minVerifiedAt = new Date(now.getTime() - maxAgeMs);
+    const freshnessFloor = bonusFreshnessFloor(now, policy);
 
     return {
       publication_status: PublicationStatus.PUBLISHED,
@@ -286,18 +339,94 @@ export class PublicationGateService {
       quarantine_reason: null,
       status: "ACTIVE",
       data_source_type: { notIn: EXCLUDED_DATA_SOURCES },
+      // Projection prefilter only. verified_at is a denormalisation of the
+      // active observation, so it narrows the candidate set cheaply; the
+      // runtime gate still proves it equals the active observed_at.
       verified_at: {
-        gte: minVerifiedAt,
+        gte: freshnessFloor,
         lte: now,
       },
       OR: [{ valid_until: null }, { valid_until: { gte: now } }],
-      history_events: {
+      // Freshness authority: the single BONUS active-extraction pointer and the
+      // observation on the evidence it resolves to. BonusHistoryEvent is
+      // deliberately absent — history is an audit trail, not an observation.
+      active_extractions: {
         some: {
-          source_url: { not: null },
+          extraction_context: BONUS_EXTRACTION_CONTEXT,
+          evidence: {
+            observed_at: { gte: freshnessFloor, lte: now },
+            OR: [{ expires_at: null }, { expires_at: { gt: now } }],
+          },
         },
       },
       casino: this.whereCasinoPublic(),
     };
+  }
+
+  /**
+   * The minimum relation graph the runtime bonus gate needs.
+   *
+   * Public loaders spread this into their `include` so the gate can resolve the
+   * active pointer, its evidence observation and that evidence's claims. It is
+   * validation input only: strip it with {@link toPublicBonus} before
+   * serializing anything to a public consumer.
+   */
+  public static bonusActiveEvidenceInclude() {
+    return {
+      active_extractions: {
+        where: { extraction_context: BONUS_EXTRACTION_CONTEXT },
+        select: {
+          extraction_context: true,
+          bonus_id: true,
+          data_source_id: true,
+          evidence_id: true,
+          extraction_key: true,
+          contract_version: true,
+          evidence: {
+            select: {
+              id: true,
+              data_source_id: true,
+              source_url: true,
+              observed_at: true,
+              extracted_at: true,
+              valid_from: true,
+              expires_at: true,
+              extraction_key: true,
+              bonus_claims: {
+                select: { bonus_id: true, verdict: true },
+              },
+            },
+          },
+        },
+      },
+    } as const;
+  }
+
+  /**
+   * Removes internal validation relations from a gated bonus.
+   *
+   * Active pointers, evidence records and claims are governance internals: they
+   * are loaded to decide eligibility and must never reach public JSON.
+   */
+  public static toPublicBonus<T extends Record<string, any>>(
+    bonus: T,
+  ): Omit<T, "active_extractions"> {
+    const { active_extractions: _internalActiveEvidence, ...publicBonus } =
+      bonus;
+    return publicBonus;
+  }
+
+  /**
+   * Structured freshness decision for a bonus, derived from its active
+   * observation. Exposed for diagnostics and tests; the boolean gate below is
+   * the enforcement path.
+   */
+  public static evaluateBonusActiveFreshness(
+    bonus: any,
+    now: Date,
+    policy?: Partial<BonusFreshnessPolicy>,
+  ): ActiveObservationFreshnessDecision {
+    return evaluateActiveObservationFreshness(bonus, now, policy);
   }
 
   /**
@@ -323,17 +452,25 @@ export class PublicationGateService {
     if (!casino || typeof casino !== "object") return false;
     if (casino.publication_status !== PublicationStatus.PUBLISHED) return false;
     if (casino.review_status !== ReviewStatus.APPROVED) return false;
-    if (casino.quarantine_reason !== null && casino.quarantine_reason !== undefined) return false;
+    if (
+      casino.quarantine_reason !== null &&
+      casino.quarantine_reason !== undefined
+    )
+      return false;
 
     if (casino.status !== "ACTIVE") return false;
     if (
       casino.data_source_type &&
-      EXCLUDED_DATA_SOURCES.includes(String(casino.data_source_type).toUpperCase())
+      EXCLUDED_DATA_SOURCES.includes(
+        String(casino.data_source_type).toUpperCase(),
+      )
     ) {
       return false;
     }
     if (!casino.verified_at) return false;
-    if (this.isQuarantinedIdentity(casino.name, casino.slug, casino.website_url)) {
+    if (
+      this.isQuarantinedIdentity(casino.name, casino.slug, casino.website_url)
+    ) {
       return false;
     }
 
@@ -342,7 +479,7 @@ export class PublicationGateService {
     }
 
     const hasActiveVerifiedLicense = casino.licenses.some(
-      (l: any) => l && l.status === "ACTIVE" && l.verified_at !== null
+      (l: any) => l && l.status === "ACTIVE" && l.verified_at !== null,
     );
     if (!hasActiveVerifiedLicense) return false;
 
@@ -356,8 +493,14 @@ export class PublicationGateService {
 
   /**
    * Runtime in-memory predicate for Bonus eligibility.
-   * FAILS CLOSED if targetCasino is ineligible, bonus verification is stale,
-   * or getQualifyingBonusEvidence() returns null.
+   *
+   * FAILS CLOSED if targetCasino is ineligible, or if the bonus has no fresh
+   * active observation — missing pointer, missing/mismatched evidence,
+   * historical-only claims, stale, future or expired observation, or a
+   * verified_at projection that does not match the active observed_at.
+   *
+   * Callers must load {@link bonusActiveEvidenceInclude}; an unloaded relation
+   * is treated as an absent one.
    */
   public static isBonusPubliclyEligible(
     bonus: any,
@@ -368,19 +511,32 @@ export class PublicationGateService {
     if (!bonus || typeof bonus !== "object") return false;
     if (bonus.publication_status !== PublicationStatus.PUBLISHED) return false;
     if (bonus.review_status !== ReviewStatus.APPROVED) return false;
-    if (bonus.quarantine_reason !== null && bonus.quarantine_reason !== undefined) return false;
+    if (
+      bonus.quarantine_reason !== null &&
+      bonus.quarantine_reason !== undefined
+    )
+      return false;
 
     if (bonus.status !== "ACTIVE") return false;
     if (
       bonus.data_source_type &&
-      EXCLUDED_DATA_SOURCES.includes(String(bonus.data_source_type).toUpperCase())
+      EXCLUDED_DATA_SOURCES.includes(
+        String(bonus.data_source_type).toUpperCase(),
+      )
     ) {
       return false;
     }
 
     const evalNow = now ?? new Date();
 
-    if (!isBonusFresh(bonus.verified_at, evalNow, policy)) {
+    // D3C: the active observation is the single freshness authority. This also
+    // proves the complete pointer/evidence extraction identity, a SUPPORTS
+    // claim for this Bonus, the evidence source and time bounds, and the exact
+    // verified_at projection. Missing relations fail closed.
+    if (
+      evaluateActiveObservationFreshness(bonus, evalNow, policy).status !==
+      "FRESH"
+    ) {
       return false;
     }
 
@@ -404,11 +560,8 @@ export class PublicationGateService {
       return false;
     }
 
-    const evidence = this.getQualifyingBonusEvidence(bonus);
-    if (!evidence) {
-      return false;
-    }
-
+    // BonusHistoryEvent is deliberately NOT consulted here any more: history is
+    // an audit trail of what changed, not an observation of the live offer.
     return true;
   }
 
@@ -417,7 +570,8 @@ export class PublicationGateService {
    */
   public static isSlotPubliclyEligible(slot: any): boolean {
     if (!slot || typeof slot !== "object") return false;
-    if (!Array.isArray(slot.casino_slots) || slot.casino_slots.length === 0) return false;
+    if (!Array.isArray(slot.casino_slots) || slot.casino_slots.length === 0)
+      return false;
 
     return slot.casino_slots.some((cs: any) => {
       if (!cs || typeof cs !== "object") return false;
@@ -443,40 +597,64 @@ export class PublicationGateService {
    * Preserves structured outcomes: VALID, MISSING_CAP, AMBIGUOUS_CAPS, INVALID_CAP.
    * Strictly rejects malformed, zero, non-finite, and negative currency formats like -€500, €-500, -500 EUR, €abc, $--500, $1..500.
    */
-  public static parseStructuredMonetaryCap(headline: string): MonetaryCapParseResult {
+  public static parseStructuredMonetaryCap(
+    headline: string,
+  ): MonetaryCapParseResult {
     if (!headline || typeof headline !== "string") {
-      return { status: "MISSING_CAP", reason: "Headline value is empty or missing" };
+      return {
+        status: "MISSING_CAP",
+        reason: "Headline value is empty or missing",
+      };
     }
     const trimmed = headline.trim();
     if (!trimmed) {
-      return { status: "MISSING_CAP", reason: "Headline value is empty or missing" };
+      return {
+        status: "MISSING_CAP",
+        reason: "Headline value is empty or missing",
+      };
     }
 
     // 1. Detect explicit currency indicators ($ € £ EUR USD GBP AUD CAD)
-    const hasCurrencyIndicator = /[$€£]|\b(EUR|USD|GBP|AUD|CAD)\b/i.test(trimmed);
+    const hasCurrencyIndicator = /[$€£]|\b(EUR|USD|GBP|AUD|CAD)\b/i.test(
+      trimmed,
+    );
 
     // 2. Detect malformed / invalid / negative currency patterns
     if (hasCurrencyIndicator) {
       if (
-        /-\s*[$€£]|[$€£]\s*-|--\d|-\s*\d+\s*(?:EUR|USD|GBP|AUD|CAD)\b/i.test(trimmed) ||
+        /-\s*[$€£]|[$€£]\s*-|--\d|-\s*\d+\s*(?:EUR|USD|GBP|AUD|CAD)\b/i.test(
+          trimmed,
+        ) ||
         /[$€£]\s*(nan|infinity|abc|\D+)/i.test(trimmed) ||
         /\b(EUR|USD|GBP|AUD|CAD)\s*(nan|infinity|abc)/i.test(trimmed) ||
         /[$€£]\s*\d+\.\.\d+|[$€£]\s*\d+,\.\d+|[$€£]\s*\d+,,+\d+/i.test(trimmed)
       ) {
-        return { status: "INVALID_CAP", reason: "Headline contains malformed or negative monetary syntax" };
+        return {
+          status: "INVALID_CAP",
+          reason: "Headline contains malformed or negative monetary syntax",
+        };
       }
     }
 
     // 3. Extract monetary candidates matching currency symbols ($ € £) or codes (EUR USD GBP AUD CAD)
     const matches = Array.from(
-      trimmed.matchAll(/(?:(?:up\s+to\s+)?([$€£])\s*([0-9][0-9.,]*|[a-zA-Z]+)|(?:up\s+to\s+)?([0-9][0-9.,]*|[a-zA-Z]+)\s*(EUR|USD|GBP|AUD|CAD))\b/gi)
+      trimmed.matchAll(
+        /(?:(?:up\s+to\s+)?([$€£])\s*([0-9][0-9.,]*|[a-zA-Z]+)|(?:up\s+to\s+)?([0-9][0-9.,]*|[a-zA-Z]+)\s*(EUR|USD|GBP|AUD|CAD))\b/gi,
+      ),
     );
 
     if (matches.length === 0) {
       if (hasCurrencyIndicator) {
-        return { status: "INVALID_CAP", reason: "Explicit currency indicator exists but numerical value is missing or malformed" };
+        return {
+          status: "INVALID_CAP",
+          reason:
+            "Explicit currency indicator exists but numerical value is missing or malformed",
+        };
       }
-      return { status: "MISSING_CAP", reason: "Headline value contains no calculable monetary bonus cap" };
+      return {
+        status: "MISSING_CAP",
+        reason: "Headline value contains no calculable monetary bonus cap",
+      };
     }
 
     const candidates: { val: number; isValid: boolean }[] = [];
@@ -485,38 +663,64 @@ export class PublicationGateService {
     for (const m of matches) {
       const rawValStr = (m[2] || m[3] || "").replace(/[$€£]/g, "").trim();
       if (!rawValStr) {
-        return { status: "INVALID_CAP", reason: "Explicit currency symbol exists with no numeric value" };
+        return {
+          status: "INVALID_CAP",
+          reason: "Explicit currency symbol exists with no numeric value",
+        };
       }
 
       const matchIndex = m.index ?? 0;
       const matchText = m[0];
-      const beforeText = trimmed.slice(Math.max(0, matchIndex - 50), matchIndex).toLowerCase();
-      const afterText = trimmed.slice(matchIndex + matchText.length, matchIndex + matchText.length + 15).toLowerCase();
+      const beforeText = trimmed
+        .slice(Math.max(0, matchIndex - 50), matchIndex)
+        .toLowerCase();
+      const afterText = trimmed
+        .slice(
+          matchIndex + matchText.length,
+          matchIndex + matchText.length + 15,
+        )
+        .toLowerCase();
 
       // Ignore percentages (100%), wagering multipliers (35x), or free spins (50 spins)
-      if (afterText.startsWith("%") || /^\s*(%|x\b|spins?|free\s*spins?)/.test(afterText)) {
+      if (
+        afterText.startsWith("%") ||
+        /^\s*(%|x\b|spins?|free\s*spins?)/.test(afterText)
+      ) {
         continue;
       }
 
       // A per-spin value or a qualifying play/spend/deposit amount is not a bonus cap.
       if (
         /^\s*(?:per|each)\s*(?:free\s*)?spin\b/.test(afterText) ||
-        /(?:when\s+you\s+)?(?:play|spend|stake|deposit)(?:\s+(?:at\s+least|a\s+minimum\s+of|for|of))?\s*$/.test(beforeText)
+        /(?:when\s+you\s+)?(?:play|spend|stake|deposit)(?:\s+(?:at\s+least|a\s+minimum\s+of|for|of))?\s*$/.test(
+          beforeText,
+        )
       ) {
         ignoredNonCapCandidates += 1;
         continue;
       }
 
       // Check for malformed numbers (double dots, double commas, non-digit chars, zero)
-      if (/[^\d.,]/.test(rawValStr) || /\.\./.test(rawValStr) || /,,/.test(rawValStr) || /^0+$/.test(rawValStr.replace(/[,.]/g, ""))) {
-        return { status: "INVALID_CAP", reason: "Explicit monetary value is malformed or non-positive" };
+      if (
+        /[^\d.,]/.test(rawValStr) ||
+        /\.\./.test(rawValStr) ||
+        /,,/.test(rawValStr) ||
+        /^0+$/.test(rawValStr.replace(/[,.]/g, ""))
+      ) {
+        return {
+          status: "INVALID_CAP",
+          reason: "Explicit monetary value is malformed or non-positive",
+        };
       }
 
       const cleanStr = rawValStr.replace(/,/g, "");
       const val = parseFloat(cleanStr);
 
       if (isNaN(val) || !isFinite(val) || val <= 0) {
-        return { status: "INVALID_CAP", reason: "Explicit monetary cap must be a positive finite number" };
+        return {
+          status: "INVALID_CAP",
+          reason: "Explicit monetary cap must be a positive finite number",
+        };
       }
 
       candidates.push({ val, isValid: true });
@@ -526,17 +730,27 @@ export class PublicationGateService {
       if (ignoredNonCapCandidates > 0) {
         return {
           status: "MISSING_CAP",
-          reason: "Headline contains only qualifying or per-spin monetary values, not a bonus cap",
+          reason:
+            "Headline contains only qualifying or per-spin monetary values, not a bonus cap",
         };
       }
       if (hasCurrencyIndicator) {
-        return { status: "INVALID_CAP", reason: "Headline has currency indicator but no valid monetary cap" };
+        return {
+          status: "INVALID_CAP",
+          reason: "Headline has currency indicator but no valid monetary cap",
+        };
       }
-      return { status: "MISSING_CAP", reason: "Headline value contains no calculable monetary bonus cap" };
+      return {
+        status: "MISSING_CAP",
+        reason: "Headline value contains no calculable monetary bonus cap",
+      };
     }
 
     if (candidates.length > 1) {
-      return { status: "AMBIGUOUS_CAPS", reason: "Headline contains multiple conflicting monetary caps" };
+      return {
+        status: "AMBIGUOUS_CAPS",
+        reason: "Headline contains multiple conflicting monetary caps",
+      };
     }
 
     return { status: "VALID", value: candidates[0].val };
@@ -566,21 +780,34 @@ export class PublicationGateService {
     policy?: Partial<BonusFreshnessPolicy>,
   ): CalculatorValidationResult {
     if (!bonus || typeof bonus !== "object") {
-      return { status: "MISSING_FIELDS", reason: "Bonus record is missing or null" };
+      return {
+        status: "MISSING_FIELDS",
+        reason: "Bonus record is missing or null",
+      };
     }
 
-    const rawType = String(bonus.type || "").toUpperCase().trim();
-    const isWelcome = ["WELCOME", "WELCOME_MATCH", "WELCOME_PACKAGE"].includes(rawType);
+    const rawType = String(bonus.type || "")
+      .toUpperCase()
+      .trim();
+    const isWelcome = ["WELCOME", "WELCOME_MATCH", "WELCOME_PACKAGE"].includes(
+      rawType,
+    );
     const isReload = ["RELOAD", "RELOAD_MATCH"].includes(rawType);
     const isFreeSpins = ["FREE_SPINS", "SPINS"].includes(rawType);
     const isNoDeposit = ["NO_DEPOSIT", "NO_DEPOSIT_BONUS"].includes(rawType);
 
     if (!isWelcome && !isReload && !isFreeSpins && !isNoDeposit) {
-      return { status: "UNSUPPORTED_TYPE", reason: `Bonus type '${rawType}' is not supported for EV calculation` };
+      return {
+        status: "UNSUPPORTED_TYPE",
+        reason: `Bonus type '${rawType}' is not supported for EV calculation`,
+      };
     }
 
     if (!this.isBonusPubliclyEligible(bonus, casino, now, policy)) {
-      return { status: "INELIGIBLE_BONUS", reason: "Bonus fails public data publication gate" };
+      return {
+        status: "INELIGIBLE_BONUS",
+        reason: "Bonus fails public data publication gate",
+      };
     }
 
     const headline = String(bonus.headline_value || "").trim();
@@ -602,11 +829,21 @@ export class PublicationGateService {
         !Number.isFinite(wageringReq) ||
         wageringReq < 0
       ) {
-        return { status: "MISSING_FIELDS", reason: "Wagering requirement must be a non-negative finite number for deposit match bonuses" };
+        return {
+          status: "MISSING_FIELDS",
+          reason:
+            "Wagering requirement must be a non-negative finite number for deposit match bonuses",
+        };
       }
 
-      if (/(\+|\band\b)\s*\d+\s*(free\s*spins?|spins?|chips?)/i.test(headline)) {
-        return { status: "AMBIGUOUS_CAPS", reason: "Headline contains extra unvalued free spin or chip components" };
+      if (
+        /(\+|\band\b)\s*\d+\s*(free\s*spins?|spins?|chips?)/i.test(headline)
+      ) {
+        return {
+          status: "AMBIGUOUS_CAPS",
+          reason:
+            "Headline contains extra unvalued free spin or chip components",
+        };
       }
 
       return { status: "VALID", nominalValue: capResult.value };
@@ -617,7 +854,10 @@ export class PublicationGateService {
       return { status: "VALID", nominalValue: capResult.value };
     }
 
-    return { status: "UNSUPPORTED_TYPE", reason: `Unhandled bonus type '${rawType}'` };
+    return {
+      status: "UNSUPPORTED_TYPE",
+      reason: `Unhandled bonus type '${rawType}'`,
+    };
   }
 
   /**
@@ -629,6 +869,9 @@ export class PublicationGateService {
     now?: Date,
     policy?: Partial<BonusFreshnessPolicy>,
   ): boolean {
-    return this.validateCalculatorEligibility(bonus, casino, now, policy).status === "VALID";
+    return (
+      this.validateCalculatorEligibility(bonus, casino, now, policy).status ===
+      "VALID"
+    );
   }
 }

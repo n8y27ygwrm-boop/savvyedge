@@ -102,17 +102,20 @@ describe("Bonus source identity result routing", () => {
         create: vi.fn().mockResolvedValue(evidence),
       },
       bonusEvidenceClaim: {
-        create: vi
-          .fn()
-          .mockImplementation(async ({ data }) => ({
-            id: `claim-${data.field}`,
-          })),
+        create: vi.fn().mockImplementation(async ({ data }) => ({
+          id: `claim-${data.field}`,
+        })),
       },
       activeExtractionPointer: {
         upsert: vi.fn().mockResolvedValue({ id: "active-canonical" }),
       },
     };
     vi.spyOn(prisma.casino, "findUnique").mockResolvedValue(casino as never);
+    vi.spyOn(prisma.scrapeJob, "findUnique").mockResolvedValue({
+      id: "scrape-canonical",
+      canonical_url: "https://casino.example.com/promotions/canonical-welcome",
+    } as never);
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(null);
     vi.spyOn(
       (
         IngestionService as unknown as {
@@ -318,9 +321,9 @@ describe("Bonus source identity result routing", () => {
       id: "bonus-from-prior-evidence",
       casino: { id: "casino-from-prior-evidence" },
     };
-    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue(
-      { id: currentJob.id } as never,
-    );
+    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue({
+      id: currentJob.id,
+    } as never);
     vi.spyOn(IngestionService, "handleCrawl").mockResolvedValue(undefined);
     vi.spyOn(prisma.jobQueue, "updateMany").mockResolvedValue({ count: 1 });
     vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue(
@@ -371,9 +374,9 @@ describe("Bonus source identity result routing", () => {
       content_hash: TEST_CONTENT_HASH,
       snapshot_path: "/isolated/current.html",
     };
-    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue(
-      { id: currentJob.id } as never,
-    );
+    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue({
+      id: currentJob.id,
+    } as never);
     vi.spyOn(IngestionService, "handleCrawl").mockResolvedValue(undefined);
     vi.spyOn(prisma.jobQueue, "updateMany").mockResolvedValue({ count: 1 });
     vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue(
@@ -406,9 +409,9 @@ describe("Bonus source identity result routing", () => {
       content_hash: TEST_CONTENT_HASH,
       snapshot_path: "/isolated/current.html",
     };
-    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue(
-      { id: currentJob.id } as never,
-    );
+    vi.spyOn(IngestionService, "enqueueIngestion").mockResolvedValue({
+      id: currentJob.id,
+    } as never);
     vi.spyOn(IngestionService, "handleCrawl").mockResolvedValue(undefined);
     vi.spyOn(prisma.jobQueue, "updateMany").mockResolvedValue({ count: 1 });
     vi.spyOn(prisma.scrapeJob, "findUniqueOrThrow").mockResolvedValue(

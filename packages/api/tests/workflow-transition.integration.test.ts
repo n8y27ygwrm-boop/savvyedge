@@ -13,6 +13,8 @@ import {
   type ReviewTransitionCommand,
 } from "../src/services/workflow-transition.service";
 import { requireIsolatedTestDatabase } from "./helpers/isolated-test-database-guard";
+import { EXTRACTION_CONTRACT_VERSION } from "@savvyedge/ai-agents/extraction-contract";
+import { activeBonusExtractionKey } from "./helpers/active-bonus-evidence.fixture";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -83,8 +85,7 @@ describeWithDatabase(
           id: evidenceId,
           data_source_id: ids.dataSource,
           evidence_type: EvidenceType.OPERATOR_PAGE,
-          source_url:
-            options.sourceUrl ?? "https://operator.example/evidence",
+          source_url: options.sourceUrl ?? "https://operator.example/evidence",
           observed_at: new Date(now.getTime() - 60_000),
           extracted_at: new Date(now.getTime() - 30_000),
           valid_from: options.validFrom ?? null,
@@ -122,6 +123,51 @@ describeWithDatabase(
         });
       }
       return claimId;
+    };
+
+    const activateBonusClaim = async (
+      bonusId: string,
+      claimId: string,
+      options: {
+        extractionKey?: string;
+        contractVersion?: string;
+      } = {},
+    ): Promise<void> => {
+      const claim = await database.bonusEvidenceClaim.findUniqueOrThrow({
+        where: { id: claimId },
+        select: { evidence_id: true },
+      });
+      const evidence = await database.evidenceRecord.findUniqueOrThrow({
+        where: { id: claim.evidence_id },
+        select: {
+          data_source_id: true,
+          observed_at: true,
+          extracted_at: true,
+        },
+      });
+      const extractionKey =
+        options.extractionKey ??
+        activeBonusExtractionKey(nextId("active-extraction"));
+      await database.evidenceRecord.update({
+        where: { id: claim.evidence_id },
+        data: { extraction_key: extractionKey },
+      });
+      await database.bonus.update({
+        where: { id: bonusId },
+        data: { verified_at: evidence.observed_at },
+      });
+      await database.activeExtractionPointer.create({
+        data: {
+          bonus_id: bonusId,
+          data_source_id: evidence.data_source_id,
+          extraction_context: "BONUS",
+          evidence_id: claim.evidence_id,
+          extraction_key: extractionKey,
+          contract_version:
+            options.contractVersion ?? EXTRACTION_CONTRACT_VERSION,
+          activated_at: evidence.extracted_at,
+        },
+      });
     };
 
     const setCasinoState = async (
@@ -409,29 +455,32 @@ describeWithDatabase(
       [ReviewStatus.IN_REVIEW, ReviewStatus.REJECTED],
       [ReviewStatus.APPROVED, ReviewStatus.REJECTED],
       [ReviewStatus.REJECTED, ReviewStatus.AWAITING_REVIEW],
-    ] as const)("applies allowed Casino transition %s -> %s", async (from, to) => {
-      await setCasinoState(from);
-      const claimIds =
-        to === ReviewStatus.APPROVED
-          ? [await createClaim("CASINO", ids.casinoA)]
-          : [];
+    ] as const)(
+      "applies allowed Casino transition %s -> %s",
+      async (from, to) => {
+        await setCasinoState(from);
+        const claimIds =
+          to === ReviewStatus.APPROVED
+            ? [await createClaim("CASINO", ids.casinoA)]
+            : [];
 
-      const result = await workflow.transitionCasinoReview({
-        subjectId: ids.casinoA,
-        actorId: ids.human,
-        expectedVersion: 0,
-        toStatus: to,
-        claimIds,
-      });
+        const result = await workflow.transitionCasinoReview({
+          subjectId: ids.casinoA,
+          actorId: ids.human,
+          expectedVersion: 0,
+          toStatus: to,
+          claimIds,
+        });
 
-      expect(result.reviewStatus).toBe(to);
-      expect(result.governanceVersion).toBe(1);
-      const persisted = await database.casino.findUniqueOrThrow({
-        where: { id: ids.casinoA },
-      });
-      expect(persisted.review_status).toBe(to);
-      expect(persisted.governance_version).toBe(1);
-    });
+        expect(result.reviewStatus).toBe(to);
+        expect(result.governanceVersion).toBe(1);
+        const persisted = await database.casino.findUniqueOrThrow({
+          where: { id: ids.casinoA },
+        });
+        expect(persisted.review_status).toBe(to);
+        expect(persisted.governance_version).toBe(1);
+      },
+    );
 
     it("rejects illegal and same-state transitions", async () => {
       await expectCode(
@@ -584,6 +633,8 @@ describeWithDatabase(
       await setBonusState(ReviewStatus.IN_REVIEW);
       await setSlotState(ReviewStatus.IN_REVIEW);
       await setLicenseState(ids.licenseA, ReviewStatus.IN_REVIEW);
+      const activeBonusClaim = await createClaim("BONUS", ids.bonusA);
+      await activateBonusClaim(ids.bonusA, activeBonusClaim);
 
       const cases = [
         {
@@ -602,7 +653,7 @@ describeWithDatabase(
         {
           kind: "BONUS" as const,
           subjectId: ids.bonusA,
-          claimId: await createClaim("BONUS", ids.bonusA),
+          claimId: activeBonusClaim,
           run: (claimId: string) =>
             workflow.transitionBonusReview({
               subjectId: ids.bonusA,
@@ -806,6 +857,7 @@ describeWithDatabase(
     it("publishes and explicitly unpublishes with immutable audit history", async () => {
       await setBonusState(ReviewStatus.APPROVED);
       const claimId = await createClaim("BONUS", ids.bonusA);
+      await activateBonusClaim(ids.bonusA, claimId);
       const published = await workflow.transitionBonusPublication({
         subjectId: ids.bonusA,
         actorId: ids.human,
@@ -844,6 +896,83 @@ describeWithDatabase(
       });
     });
 
+    it("rejects a database-valid malformed extraction identity, then accepts its canonical replacement", async () => {
+      await setBonusState(ReviewStatus.APPROVED);
+      const claimId = await createClaim("BONUS", ids.bonusA);
+      await activateBonusClaim(ids.bonusA, claimId, {
+        extractionKey: "active-extraction",
+        contractVersion: EXTRACTION_CONTRACT_VERSION,
+      });
+
+      await expectCode(
+        workflow.transitionBonusPublication({
+          subjectId: ids.bonusA,
+          actorId: ids.human,
+          expectedVersion: 0,
+          toStatus: PublicationStatus.PUBLISHED,
+          claimIds: [claimId],
+        }),
+        "EVIDENCE_INELIGIBLE",
+      );
+
+      expect(
+        await database.bonus.findUniqueOrThrow({ where: { id: ids.bonusA } }),
+      ).toMatchObject({
+        publication_status: PublicationStatus.UNPUBLISHED,
+        governance_version: 0,
+      });
+      expect(
+        await database.workflowAuditEvent.count({
+          where: { bonus_id: ids.bonusA },
+        }),
+      ).toBe(0);
+      expect(await database.workflowEventClaim.count()).toBe(0);
+
+      const pointer = await database.activeExtractionPointer.findUniqueOrThrow({
+        where: {
+          bonus_id_extraction_context: {
+            bonus_id: ids.bonusA,
+            extraction_context: "BONUS",
+          },
+        },
+        select: { id: true, evidence_id: true },
+      });
+      const canonicalKey = activeBonusExtractionKey(
+        "workflow-malformed-identity-replacement",
+      );
+      await database.$transaction([
+        database.evidenceRecord.update({
+          where: { id: pointer.evidence_id },
+          data: { extraction_key: canonicalKey },
+        }),
+        database.activeExtractionPointer.update({
+          where: { id: pointer.id },
+          data: {
+            extraction_key: canonicalKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+          },
+        }),
+      ]);
+
+      const published = await workflow.transitionBonusPublication({
+        subjectId: ids.bonusA,
+        actorId: ids.human,
+        expectedVersion: 0,
+        toStatus: PublicationStatus.PUBLISHED,
+        claimIds: [claimId],
+      });
+      expect(published).toMatchObject({
+        publicationStatus: PublicationStatus.PUBLISHED,
+        governanceVersion: 1,
+      });
+      expect(
+        await database.workflowAuditEvent.count({
+          where: { bonus_id: ids.bonusA },
+        }),
+      ).toBe(1);
+      expect(await database.workflowEventClaim.count()).toBe(1);
+    });
+
     it("publishes Slot with eligible subject evidence", async () => {
       await setSlotState(ReviewStatus.APPROVED);
       const claimId = await createClaim("SLOT", ids.slotA);
@@ -869,8 +998,7 @@ describeWithDatabase(
           subjectId: ids.bonusA,
           actorId: ids.human,
           expectedVersion: 0,
-          toStatus:
-            "WITHDRAWN" as unknown as PublicationStatus,
+          toStatus: "WITHDRAWN" as unknown as PublicationStatus,
           claimIds: [claimId],
         }),
         "INVALID_TRANSITION",
@@ -936,9 +1064,7 @@ describeWithDatabase(
           canonicalTargetId:
             toStatus === ReviewStatus.SUPERSEDED ? ids.casinoB : undefined,
         });
-        expect(result.publicationStatus).toBe(
-          PublicationStatus.UNPUBLISHED,
-        );
+        expect(result.publicationStatus).toBe(PublicationStatus.UNPUBLISHED);
         const event = await database.workflowAuditEvent.findUniqueOrThrow({
           where: { id: result.workflowEventId },
         });
@@ -950,14 +1076,8 @@ describeWithDatabase(
     );
 
     it("automatically unpublishes through the Bonus and Slot review branches", async () => {
-      await setBonusState(
-        ReviewStatus.APPROVED,
-        PublicationStatus.PUBLISHED,
-      );
-      await setSlotState(
-        ReviewStatus.APPROVED,
-        PublicationStatus.PUBLISHED,
-      );
+      await setBonusState(ReviewStatus.APPROVED, PublicationStatus.PUBLISHED);
+      await setSlotState(ReviewStatus.APPROVED, PublicationStatus.PUBLISHED);
 
       const rejectedBonus = await workflow.transitionBonusReview({
         subjectId: ids.bonusA,
@@ -1005,9 +1125,7 @@ describeWithDatabase(
         }),
       ]);
       expect(
-        links.some(
-          (link) => link.license_evidence_claim_id === licenseClaimId,
-        ),
+        links.some((link) => link.license_evidence_claim_id === licenseClaimId),
       ).toBe(false);
     });
 
@@ -1087,10 +1205,7 @@ describeWithDatabase(
         "ACTOR_NOT_AUTHORIZED",
       );
 
-      await setBonusState(
-        ReviewStatus.APPROVED,
-        PublicationStatus.PUBLISHED,
-      );
+      await setBonusState(ReviewStatus.APPROVED, PublicationStatus.PUBLISHED);
       await expectCode(
         workflow.transitionBonusPublication({
           subjectId: ids.bonusA,
@@ -1247,9 +1362,9 @@ describeWithDatabase(
         workflow.transitionCasinoReview(command),
       ]);
 
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(
-        1,
-      );
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
       const rejected = results.find((result) => result.status === "rejected");
       expect(
         rejected && "reason" in rejected ? rejected.reason : undefined,
@@ -1262,6 +1377,39 @@ describeWithDatabase(
           })
         ).governance_version,
       ).toBe(1);
+    });
+
+    it("allows at most one concurrent Bonus publication for one active pointer projection", async () => {
+      await setBonusState(ReviewStatus.APPROVED);
+      const claimId = await createClaim("BONUS", ids.bonusA);
+      await activateBonusClaim(ids.bonusA, claimId);
+      const command = {
+        subjectId: ids.bonusA,
+        actorId: ids.human,
+        expectedVersion: 0,
+        toStatus: PublicationStatus.PUBLISHED,
+        claimIds: [claimId],
+      } as const;
+
+      const results = await Promise.allSettled([
+        workflow.transitionBonusPublication(command),
+        workflow.transitionBonusPublication(command),
+      ]);
+
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected");
+      expect(
+        rejected && "reason" in rejected ? rejected.reason : undefined,
+      ).toMatchObject({ code: "STALE_GOVERNANCE_VERSION" });
+      expect(await database.workflowAuditEvent.count()).toBe(1);
+      expect(
+        await database.bonus.findUniqueOrThrow({ where: { id: ids.bonusA } }),
+      ).toMatchObject({
+        publication_status: PublicationStatus.PUBLISHED,
+        governance_version: 1,
+      });
     });
   },
   60_000,

@@ -1,10 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalEnv": [
-    "DATABASE_URL",
-    "DIRECT_URL",
-    "NEXT_PUBLIC_SITE_URL"
-  ],
+  "globalEnv": ["DATABASE_URL", "DIRECT_URL", "NEXT_PUBLIC_SITE_URL"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
@@ -15,6 +11,9 @@
       "persistent": true
     },
     "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
       "dependsOn": ["^build"]
     }
   }

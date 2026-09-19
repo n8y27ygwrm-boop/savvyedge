@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicationStatus, ReviewStatus, prisma } from "@savvyedge/database";
 import { PublicationGateService } from "../src/services/publication-gate.service";
+import { activeBonusEvidence } from "./helpers/active-bonus-evidence.fixture";
 import { GET as getCasinoBySlugV1 } from "../../../apps/web/src/app/api/v1/casinos/[slug]/route";
 
 const NOW = new Date("2026-08-26T12:00:00.000Z");
@@ -9,8 +10,9 @@ const FRESH_AT = new Date("2026-08-26T11:00:00.000Z");
 const SOURCE_URL = "https://public-casino.example.test/bonus-terms";
 
 function makeBonus(overrides: Record<string, unknown> = {}) {
+  const id = (overrides.id as string) ?? "bonus-fresh";
   return {
-    id: "bonus-fresh",
+    id,
     casino_id: "casino-public",
     type: "WELCOME",
     headline_value: "100% up to £200",
@@ -30,10 +32,17 @@ function makeBonus(overrides: Record<string, unknown> = {}) {
     quarantine_reason: null,
     governance_version: 2,
     duplicate_of_id: null,
+    // D3C: the active observation is the freshness authority; verified_at only
+    // projects it.
+    active_extractions: activeBonusEvidence({
+      bonusId: id,
+      observedAt: FRESH_AT,
+      sourceUrl: SOURCE_URL,
+    }),
     history_events: [
       {
         id: "bonus-verification-event",
-        bonus_id: "bonus-fresh",
+        bonus_id: id,
         field_changed: "verified_at",
         old_value: null,
         new_value: FRESH_AT.toISOString(),
@@ -124,6 +133,21 @@ describe("D3A public v1 casino-detail nested BONUS containment", () => {
       lte: NOW,
     });
     expect(query.include.bonuses.include.history_events).toBe(true);
+    expect(
+      query.include.bonuses.include.active_extractions.select.evidence.select
+        .bonus_claims,
+    ).toEqual({ select: { bonus_id: true, verdict: true } });
+    const activeRelation =
+      PublicationGateService.bonusActiveEvidenceInclude().active_extractions;
+    expect(activeRelation.select).toMatchObject({
+      extraction_context: true,
+      bonus_id: true,
+      data_source_id: true,
+      evidence_id: true,
+      extraction_key: true,
+      contract_version: true,
+      evidence: { select: { data_source_id: true } },
+    });
   });
 
   it("keeps fresh eligible bonuses in database order and preserves their public shape", async () => {
@@ -144,6 +168,7 @@ describe("D3A public v1 casino-detail nested BONUS containment", () => {
       "bonus-second",
     ]);
     expect(body.data.bonuses[0]).not.toHaveProperty("history_events");
+    expect(body.data.bonuses[0]).not.toHaveProperty("active_extractions");
     expect(body.data.bonuses[0]).toMatchObject({
       id: "bonus-first",
       headline_value: "100% up to £200",
@@ -181,19 +206,16 @@ describe("D3A public v1 casino-detail nested BONUS containment", () => {
     },
   );
 
-  it("runtime-filters malformed evidence even when scalar fields pass the query predicate", async () => {
+  it("runtime-filters malformed active evidence even when scalar fields pass the query predicate", async () => {
+    // Scalar columns look publishable, but the active extraction carries only a
+    // CONTRADICTS claim, so the runtime gate must still drop the bonus.
     const queryEligibleButRuntimeIneligible = makeBonus({
-      history_events: [
-        {
-          id: "unrelated-event",
-          bonus_id: "bonus-fresh",
-          field_changed: "status",
-          old_value: "INACTIVE",
-          new_value: "ACTIVE",
-          changed_at: FRESH_AT,
-          source_url: SOURCE_URL,
-        },
-      ],
+      active_extractions: activeBonusEvidence({
+        bonusId: "bonus-fresh",
+        observedAt: FRESH_AT,
+        sourceUrl: SOURCE_URL,
+        verdict: "CONTRADICTS",
+      }),
     });
     vi.spyOn(prisma.casino, "findUnique").mockResolvedValue(
       makeCasino([queryEligibleButRuntimeIneligible]) as never,

@@ -38,6 +38,7 @@ import {
 } from "./extraction-input-sufficiency";
 import {
   BonusSourceIdentityError,
+  createBonusSourceOfferKey,
   isBonusIdentityUniqueViolation,
   isRetryableBonusIdentityTransactionError,
 } from "../utils/bonus-source-identity";
@@ -71,6 +72,12 @@ import {
   sanitizeUrlForLogging,
   type IngestBonusInput,
 } from "./ingestion-enqueue.service";
+import {
+  applyAutomatedEvidenceReplacementGovernance,
+  assertAutomatedEvidenceReplacementAllowed,
+  assertBonusAuthoritySnapshotUnchanged,
+  type BonusAuthorityState,
+} from "./bonus-active-evidence-governance";
 
 // Re-exported so the existing public surface of this module is unchanged.
 export { sanitizeUrlForLogging } from "./ingestion-enqueue.service";
@@ -167,7 +174,11 @@ function exactUtf8(bytes: Buffer): string {
 }
 
 function hashString(val: string): string {
-  return crypto.createHash("sha256").update(val.trim().toLowerCase()).digest("hex").slice(0, 16);
+  return crypto
+    .createHash("sha256")
+    .update(val.trim().toLowerCase())
+    .digest("hex")
+    .slice(0, 16);
 }
 
 function parseObservedAt(value: string | Date): Date {
@@ -273,7 +284,8 @@ export function classifyErrorForLogging(err: unknown): string {
 export class IngestionService {
   private static scraperAgent = new ScraperAgent();
   private static scrapingAntFallbackService = new ScrapingAntFallbackService();
-  private static evidenceArtifactReader = new EvidenceArtifactRetrievalService();
+  private static evidenceArtifactReader =
+    new EvidenceArtifactRetrievalService();
   private static bonusAgent = new BonusAgent();
   private static casinoResolutionAgent = new CasinoResolutionAgent();
   private static gameListAgent = new GameListAgent();
@@ -553,12 +565,7 @@ export class IngestionService {
     scrapeResult: CrawlScrapeResult,
     observedAt: Date,
   ) {
-    const {
-      scrapeJobId,
-      url,
-      casinoId,
-      taskContext = "BONUS",
-    } = payload;
+    const { scrapeJobId, url, casinoId, taskContext = "BONUS" } = payload;
     const safeUrl = sanitizeUrlForLogging(url);
 
     // Extraction-input boundary. The durable artifact and its provenance are
@@ -633,9 +640,7 @@ export class IngestionService {
       httpStatus: primaryResult.httpStatus,
     });
     if (geoBlock.blocked) {
-      throw new GeoFallbackRuntimeError(
-        "LOCAL_RECOVERY_STILL_GEO_BLOCKED",
-      );
+      throw new GeoFallbackRuntimeError("LOCAL_RECOVERY_STILL_GEO_BLOCKED");
     }
 
     const { eligibility } = this.eligibilityForResult(payload, primaryResult);
@@ -701,8 +706,7 @@ export class IngestionService {
         rawHtml,
         expectedHtmlHash: htmlHash,
         observationId: `${payload.scrapeJobId}_local_recovery`,
-        sourceUrl:
-          primaryResult.finalUrl || primaryResult.url || payload.url,
+        sourceUrl: primaryResult.finalUrl || primaryResult.url || payload.url,
         observedAt,
       });
     const recoveredCheckpoint = sufficiency.sufficient
@@ -751,11 +755,7 @@ export class IngestionService {
       throw new ExtractionInputRejectedError(sufficiency);
     }
 
-    return this.enqueueExtractionForResult(
-      payload,
-      primaryResult,
-      observedAt,
-    );
+    return this.enqueueExtractionForResult(payload, primaryResult, observedAt);
   }
 
   private static async performBonusGeoFallback(
@@ -816,9 +816,7 @@ export class IngestionService {
       const decision = await this.resumeGeoFallbackIfNeeded(payload, latest);
       if (decision.action === "HANDLED") return;
       if (decision.action === "LOCAL_RECOVERY") {
-        throw new GeoFallbackRuntimeError(
-          "LOCAL_RECOVERY_STILL_GEO_BLOCKED",
-        );
+        throw new GeoFallbackRuntimeError("LOCAL_RECOVERY_STILL_GEO_BLOCKED");
       }
       throw new GeoFallbackRuntimeError("FALLBACK_CONCURRENT_STATE_CHANGED");
     }
@@ -886,9 +884,7 @@ export class IngestionService {
     // Retrying the provider in either case could exceed the one-credit budget,
     // so these states never pay again. A later queue delivery may still make
     // one free local-browser recovery attempt.
-    let paidResult: Awaited<
-      ReturnType<ScrapingAntFallbackService["scrape"]>
-    >;
+    let paidResult: Awaited<ReturnType<ScrapingAntFallbackService["scrape"]>>;
     try {
       paidResult = await this.scrapingAntFallbackService.scrape(payload.url);
     } catch (error: unknown) {
@@ -911,7 +907,9 @@ export class IngestionService {
         where: {
           id: payload.scrapeJobId,
           retry_count: currentJob.retry_count + 1,
-          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+          geo_fallback_checkpoint: {
+            equals: checkpointJson(claimedCheckpoint),
+          },
         },
         data: {
           geo_fallback_checkpoint: checkpointJson(failedCheckpoint),
@@ -953,7 +951,9 @@ export class IngestionService {
         where: {
           id: payload.scrapeJobId,
           retry_count: currentJob.retry_count + 1,
-          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+          geo_fallback_checkpoint: {
+            equals: checkpointJson(claimedCheckpoint),
+          },
         },
         data: {
           geo_fallback_checkpoint: checkpointJson(rejectedCheckpoint),
@@ -989,14 +989,18 @@ export class IngestionService {
         where: {
           id: payload.scrapeJobId,
           retry_count: currentJob.retry_count + 1,
-          geo_fallback_checkpoint: { equals: checkpointJson(claimedCheckpoint) },
+          geo_fallback_checkpoint: {
+            equals: checkpointJson(claimedCheckpoint),
+          },
         },
         data: {
           snapshot_path: null,
           html_hash: fallbackResult.htmlHash,
           content_hash: fallbackResult.contentHash,
           canonical_url:
-            fallbackResult.canonicalUrl || fallbackResult.finalUrl || payload.url,
+            fallbackResult.canonicalUrl ||
+            fallbackResult.finalUrl ||
+            payload.url,
           geo_fallback_checkpoint: checkpointJson(deduplicatedCheckpoint),
           status: "COMPLETED",
           completed_at: new Date(),
@@ -1589,7 +1593,9 @@ export class IngestionService {
     } = payload;
     const sourceObservedAt = parseObservedAt(observedAt);
     const safeUrl = sanitizeUrlForLogging(url);
-    console.log(`[IngestionService] [Worker] Extracting entities for URL: ${safeUrl}`);
+    console.log(
+      `[IngestionService] [Worker] Extracting entities for URL: ${safeUrl}`,
+    );
 
     // 1. Resolve domain
     let domain = "example.com";
@@ -1600,16 +1606,93 @@ export class IngestionService {
     }
 
     // 2. AI Entity Resolution (executed outside DB transaction)
-    let initialCasino = casinoId ? await prisma.casino.findUnique({ where: { id: casinoId } }) : null;
-    let resolvedIdentity: { name: string; slug: string; domain?: string; website_url?: string; license_info?: string | null } | null = null;
+    let initialCasino = casinoId
+      ? await prisma.casino.findUnique({ where: { id: casinoId } })
+      : null;
+
+    // Snapshot every existing Bonus carrying this observation's stable source
+    // key before either AI resolver runs. A discovery job may not yet know its
+    // Casino, so key-scoped candidates are captured by ID and the ultimately
+    // selected Bonus must match its exact pre-machine authority (or absence).
+    let initialBonusAuthorityById: Map<string, BonusAuthorityState> | undefined;
+    if (scrapeJobId) {
+      const initialScrapeJob = await prisma.scrapeJob.findUnique({
+        where: { id: scrapeJobId },
+        select: { canonical_url: true },
+      });
+      const provenance = resolveBonusSourceProvenance(url, initialScrapeJob);
+      const sourceOfferKey = createBonusSourceOfferKey(
+        provenance.sourceIdentityUrl,
+      );
+      const authoritySelect = {
+        id: true,
+        governance_version: true,
+        review_status: true,
+        publication_status: true,
+      } as const;
+      const candidates = initialCasino
+        ? [
+            await prisma.bonus.findUnique({
+              where: {
+                casino_id_source_offer_key: {
+                  casino_id: initialCasino.id,
+                  source_offer_key: sourceOfferKey,
+                },
+              },
+              select: authoritySelect,
+            }),
+          ]
+        : await prisma.bonus.findMany({
+            where: { source_offer_key: sourceOfferKey },
+            select: authoritySelect,
+          });
+      initialBonusAuthorityById = new Map(
+        candidates
+          .filter(
+            (candidate): candidate is BonusAuthorityState => candidate !== null,
+          )
+          .map((candidate) => [candidate.id, candidate]),
+      );
+    }
+
+    let resolvedIdentity: {
+      name: string;
+      slug: string;
+      domain?: string;
+      website_url?: string;
+      license_info?: string | null;
+    } | null = null;
 
     if (!initialCasino) {
-      console.log(`[IngestionService] [Worker] Resolving casino entity for domain '${domain}'...`);
+      console.log(
+        `[IngestionService] [Worker] Resolving casino entity for domain '${domain}'...`,
+      );
       resolvedIdentity = await this.casinoResolutionAgent.run({
         url,
         domain,
         pageMetadata: scrapedMetadata,
         scrapedContentSnippet: scrapedContent,
+      });
+
+      // Resolve the same stable Casino identity used by persistence before the
+      // slower Bonus extraction begins. Discovery jobs do not always carry a
+      // casinoId, but their governed Bonus authority still needs a pre-fetch
+      // snapshot so later human approval wins the race.
+      const resolvedDomain = (resolvedIdentity.domain || domain)
+        .replace(/^www\./, "")
+        .toLowerCase();
+      initialCasino = await prisma.casino.findFirst({
+        where: {
+          OR: [
+            {
+              website_url: {
+                contains: resolvedDomain,
+                mode: "insensitive",
+              },
+            },
+            { slug: resolvedIdentity.slug.toLowerCase() },
+          ],
+        },
       });
     }
 
@@ -1625,337 +1708,395 @@ export class IngestionService {
     // 3. Governed Persistence inside a Single Atomic Transaction
     const { casino, bonus, evidence } =
       await this.runGovernedPersistenceTransaction(async (tx) => {
-      // a. Resolve/Upsert Service Actor (service:ingestion)
-      const actor = await tx.reviewActor.upsert({
-        where: { stable_key: "service:ingestion" },
-        update: { active: true },
-        create: {
-          kind: ActorKind.SERVICE,
-          stable_key: "service:ingestion",
-          display_name: "Ingestion Service",
-          active: true,
-        },
-        select: { id: true },
-      });
+        // a. Resolve/Upsert Service Actor (service:ingestion)
+        const actor = await tx.reviewActor.upsert({
+          where: { stable_key: "service:ingestion" },
+          update: { active: true },
+          create: {
+            kind: ActorKind.SERVICE,
+            stable_key: "service:ingestion",
+            display_name: "Ingestion Service",
+            active: true,
+          },
+          select: { id: true },
+        });
 
-      // b. Resolve or Create Casino
-      let activeCasino = initialCasino;
-      let isNewCasino = false;
-      let isCasinoApprovedOrPublished = false;
-      let hasCasinoFieldDiffs = false;
-      if (!activeCasino) {
-        const res = await CasinoService.resolveOrCreateCasino({
-          name: resolvedIdentity!.name,
-          slug: resolvedIdentity!.slug,
-          domain: resolvedIdentity!.domain || domain,
-          website_url: resolvedIdentity!.website_url,
-          license_info: resolvedIdentity!.license_info ?? null,
-        }, tx);
-        activeCasino = res.casino;
-        isNewCasino = res.isNew;
-        isCasinoApprovedOrPublished = res.isApprovedOrPublished;
-        hasCasinoFieldDiffs = res.hasFieldDiffs;
-      } else {
-        isCasinoApprovedOrPublished =
-          activeCasino.review_status === ReviewStatus.APPROVED ||
-          activeCasino.publication_status === PublicationStatus.PUBLISHED;
-        hasCasinoFieldDiffs =
-          Boolean(resolvedIdentity?.name && resolvedIdentity.name !== activeCasino.name) ||
-          Boolean(resolvedIdentity?.website_url && resolvedIdentity.website_url !== activeCasino.website_url) ||
-          Boolean(resolvedIdentity?.license_info !== undefined && resolvedIdentity.license_info !== activeCasino.license_info);
-      }
-
-      const safeCasino = activeCasino!;
-
-      // c. Resolve the current ScrapeJob and its stable source provenance
-      const scrapeJob = scrapeJobId
-        ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } })
-        : null;
-      const bonusProvenance = resolveBonusSourceProvenance(url, scrapeJob);
-
-      // d. Create or Update Bonus through its source-offer identity
-      const bonusPayload = { ...bonusInput, casino_id: safeCasino.id };
-      const {
-        bonus: savedBonus,
-        isNew: isNewBonus,
-        isApprovedOrPublished: isBonusApprovedOrPublished,
-        hasFieldDiffs: hasBonusFieldDiffs,
-      } = await BonusService.saveGovernedBonus(
-        bonusPayload,
-        bonusProvenance,
-        tx,
-      );
-
-      // e. Resolve DataSource
-      let dataSourceId = scrapeJob ? scrapeJob.data_source_id : null;
-      if (!dataSourceId) {
-        let ds = await tx.dataSource.findFirst({ where: { url } });
-        if (!ds) {
-          ds = await tx.dataSource.create({
-            data: {
-              url,
-              source_type: "CASINO_PROMOTION_PAGE",
-              last_scraped_at: new Date(),
+        // b. Resolve or Create Casino
+        let activeCasino = initialCasino;
+        let isNewCasino = false;
+        let isCasinoApprovedOrPublished = false;
+        let hasCasinoFieldDiffs = false;
+        if (!activeCasino) {
+          const res = await CasinoService.resolveOrCreateCasino(
+            {
+              name: resolvedIdentity!.name,
+              slug: resolvedIdentity!.slug,
+              domain: resolvedIdentity!.domain || domain,
+              website_url: resolvedIdentity!.website_url,
+              license_info: resolvedIdentity!.license_info ?? null,
             },
-          });
+            tx,
+          );
+          activeCasino = res.casino;
+          isNewCasino = res.isNew;
+          isCasinoApprovedOrPublished = res.isApprovedOrPublished;
+          hasCasinoFieldDiffs = res.hasFieldDiffs;
+        } else {
+          isCasinoApprovedOrPublished =
+            activeCasino.review_status === ReviewStatus.APPROVED ||
+            activeCasino.publication_status === PublicationStatus.PUBLISHED;
+          hasCasinoFieldDiffs =
+            Boolean(
+              resolvedIdentity?.name &&
+              resolvedIdentity.name !== activeCasino.name,
+            ) ||
+            Boolean(
+              resolvedIdentity?.website_url &&
+              resolvedIdentity.website_url !== activeCasino.website_url,
+            ) ||
+            Boolean(
+              resolvedIdentity?.license_info !== undefined &&
+              resolvedIdentity.license_info !== activeCasino.license_info,
+            );
         }
-        dataSourceId = ds.id;
-      }
 
-      // e. Create Single Shared EvidenceRecord
-      const now = new Date();
+        const safeCasino = activeCasino!;
 
-      // Observation-scoped extraction identity. Derived from the artifact this
-      // execution actually verified, so a later real observation of identical
-      // content is a distinct extraction, while re-reading the same stored
-      // artifact under the same contract version collides benignly.
-      const extractionKey = resolveBonusExtractionKey(scrapeJob);
+        // c. Resolve the current ScrapeJob and its stable source provenance
+        const scrapeJob = scrapeJobId
+          ? await tx.scrapeJob.findUnique({ where: { id: scrapeJobId } })
+          : null;
+        const bonusProvenance = resolveBonusSourceProvenance(url, scrapeJob);
 
-      const evidenceRecord = await tx.evidenceRecord.create({
-        data: {
-          data_source_id: dataSourceId,
-          scrape_job_id: scrapeJob ? scrapeJob.id : null,
-          evidence_type: EvidenceType.OPERATOR_PAGE,
-          source_url: url,
-          snapshot_path: scrapeJob?.snapshot_path || null,
-          html_hash: scrapeJob?.html_hash || null,
-          content_hash: scrapeJob?.content_hash || null,
-          extraction_key: extractionKey,
-          observed_at: sourceObservedAt,
-          extracted_at: now,
-          created_by_id: actor.id,
-        },
-      });
+        // d. Create or Update Bonus through its source-offer identity
+        const bonusPayload = { ...bonusInput, casino_id: safeCasino.id };
+        const { bonus: savedBonus, isNew: isNewBonus } =
+          await BonusService.saveGovernedBonus(
+            bonusPayload,
+            bonusProvenance,
+            tx,
+          );
+        let governedBonus = savedBonus;
 
-      // f. Create Casino Evidence Claims
-      const casinoClaimIds: string[] = [];
-      const casinoObservedName = resolvedIdentity?.name || safeCasino.name;
-      const casinoObservedUrl = resolvedIdentity?.website_url || safeCasino.website_url;
-      const casinoObservedLicense = resolvedIdentity?.license_info ?? safeCasino.license_info;
+        if (!isNewBonus) {
+          assertBonusAuthoritySnapshotUnchanged(
+            initialBonusAuthorityById
+              ? (initialBonusAuthorityById.get(savedBonus.id) ?? null)
+              : undefined,
+            savedBonus,
+          );
+          assertAutomatedEvidenceReplacementAllowed(savedBonus);
+        }
 
-      if (isNewCasino || hasCasinoFieldDiffs) {
-        if (casinoObservedName) {
-          const claim = await tx.casinoEvidenceClaim.create({
+        // e. Resolve DataSource
+        let dataSourceId = scrapeJob ? scrapeJob.data_source_id : null;
+        if (!dataSourceId) {
+          let ds = await tx.dataSource.findFirst({ where: { url } });
+          if (!ds) {
+            ds = await tx.dataSource.create({
+              data: {
+                url,
+                source_type: "CASINO_PROMOTION_PAGE",
+                last_scraped_at: new Date(),
+              },
+            });
+          }
+          dataSourceId = ds.id;
+        }
+
+        // e. Create Single Shared EvidenceRecord
+        const now = new Date();
+
+        // Observation-scoped extraction identity. Derived from the artifact this
+        // execution actually verified, so a later real observation of identical
+        // content is a distinct extraction, while re-reading the same stored
+        // artifact under the same contract version collides benignly.
+        const extractionKey = resolveBonusExtractionKey(scrapeJob);
+
+        const evidenceRecord = await tx.evidenceRecord.create({
+          data: {
+            data_source_id: dataSourceId,
+            scrape_job_id: scrapeJob ? scrapeJob.id : null,
+            evidence_type: EvidenceType.OPERATOR_PAGE,
+            source_url: url,
+            snapshot_path: scrapeJob?.snapshot_path || null,
+            html_hash: scrapeJob?.html_hash || null,
+            content_hash: scrapeJob?.content_hash || null,
+            extraction_key: extractionKey,
+            observed_at: sourceObservedAt,
+            extracted_at: now,
+            created_by_id: actor.id,
+          },
+        });
+
+        // f. Create Casino Evidence Claims
+        const casinoClaimIds: string[] = [];
+        const casinoObservedName = resolvedIdentity?.name || safeCasino.name;
+        const casinoObservedUrl =
+          resolvedIdentity?.website_url || safeCasino.website_url;
+        const casinoObservedLicense =
+          resolvedIdentity?.license_info ?? safeCasino.license_info;
+
+        if (isNewCasino || hasCasinoFieldDiffs) {
+          if (casinoObservedName) {
+            const claim = await tx.casinoEvidenceClaim.create({
+              data: {
+                evidence_id: evidenceRecord.id,
+                casino_id: safeCasino.id,
+                field: CasinoEvidenceField.NAME,
+                observed_value: casinoObservedName,
+                normalized_value_hash: `normalizer-v1:NAME:${hashString(casinoObservedName)}`,
+                verdict: EvidenceVerdict.SUPPORTS,
+              },
+            });
+            casinoClaimIds.push(claim.id);
+          }
+          if (casinoObservedUrl) {
+            const host =
+              PublicationGateService.normalizeDomainHost(casinoObservedUrl);
+            const claim = await tx.casinoEvidenceClaim.create({
+              data: {
+                evidence_id: evidenceRecord.id,
+                casino_id: safeCasino.id,
+                field: CasinoEvidenceField.WEBSITE_HOST,
+                observed_value: casinoObservedUrl,
+                normalized_value_hash: `normalizer-v1:WEBSITE_HOST:${hashString(host)}`,
+                verdict: EvidenceVerdict.SUPPORTS,
+              },
+            });
+            casinoClaimIds.push(claim.id);
+          }
+          if (casinoObservedLicense) {
+            const claim = await tx.casinoEvidenceClaim.create({
+              data: {
+                evidence_id: evidenceRecord.id,
+                casino_id: safeCasino.id,
+                field: CasinoEvidenceField.LICENSE_ASSOCIATION,
+                observed_value: casinoObservedLicense,
+                normalized_value_hash: `normalizer-v1:LICENSE:${hashString(casinoObservedLicense)}`,
+                verdict: EvidenceVerdict.SUPPORTS,
+              },
+            });
+            casinoClaimIds.push(claim.id);
+          }
+        }
+
+        // g. Create Bonus Evidence Claims from newly extracted bonusInput
+        const bonusClaimIds: string[] = [];
+        const extractedType = bonusInput.type || savedBonus.type;
+        if (extractedType) {
+          const claim = await tx.bonusEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
-              casino_id: safeCasino.id,
-              field: CasinoEvidenceField.NAME,
-              observed_value: casinoObservedName,
-              normalized_value_hash: `normalizer-v1:NAME:${hashString(casinoObservedName)}`,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.TYPE,
+              observed_value: extractedType,
+              normalized_value_hash: `normalizer-v1:TYPE:${hashString(extractedType)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
-          casinoClaimIds.push(claim.id);
+          bonusClaimIds.push(claim.id);
         }
-        if (casinoObservedUrl) {
-          const host = PublicationGateService.normalizeDomainHost(casinoObservedUrl);
-          const claim = await tx.casinoEvidenceClaim.create({
+
+        const headlineEvidence = resolveHeadlineEvidenceObservation(
+          bonusInput,
+          bonusSourceSemantics,
+        );
+        if (headlineEvidence) {
+          const claim = await tx.bonusEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
-              casino_id: safeCasino.id,
-              field: CasinoEvidenceField.WEBSITE_HOST,
-              observed_value: casinoObservedUrl,
-              normalized_value_hash: `normalizer-v1:WEBSITE_HOST:${hashString(host)}`,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.HEADLINE_VALUE,
+              observed_value: headlineEvidence,
+              normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(headlineEvidence)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
-          casinoClaimIds.push(claim.id);
+          bonusClaimIds.push(claim.id);
         }
-        if (casinoObservedLicense) {
-          const claim = await tx.casinoEvidenceClaim.create({
+
+        if (
+          bonusInput.wagering_requirement !== null &&
+          bonusInput.wagering_requirement !== undefined
+        ) {
+          const scopedWageringEvidence =
+            bonusSourceSemantics.wagering?.scope === "FREE_SPIN_WINNINGS" &&
+            bonusSourceSemantics.wagering.multiplier ===
+              bonusInput.wagering_requirement
+              ? bonusSourceSemantics.wagering.sourceText
+              : String(bonusInput.wagering_requirement);
+          const claim = await tx.bonusEvidenceClaim.create({
             data: {
               evidence_id: evidenceRecord.id,
-              casino_id: safeCasino.id,
-              field: CasinoEvidenceField.LICENSE_ASSOCIATION,
-              observed_value: casinoObservedLicense,
-              normalized_value_hash: `normalizer-v1:LICENSE:${hashString(casinoObservedLicense)}`,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.WAGERING_REQUIREMENT,
+              observed_value: scopedWageringEvidence,
+              normalized_value_hash: `normalizer-v1:WAGERING:${hashString(scopedWageringEvidence)}`,
               verdict: EvidenceVerdict.SUPPORTS,
             },
           });
-          casinoClaimIds.push(claim.id);
+          bonusClaimIds.push(claim.id);
         }
-      }
 
-      // g. Create Bonus Evidence Claims from newly extracted bonusInput
-      const bonusClaimIds: string[] = [];
-      const extractedType = bonusInput.type || savedBonus.type;
-      if (extractedType) {
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
-            bonus_id: savedBonus.id,
-            field: BonusEvidenceField.TYPE,
-            observed_value: extractedType,
-            normalized_value_hash: `normalizer-v1:TYPE:${hashString(extractedType)}`,
-            verdict: EvidenceVerdict.SUPPORTS,
+        if (
+          bonusInput.max_conversion !== null &&
+          bonusInput.max_conversion !== undefined
+        ) {
+          const claim = await tx.bonusEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.MAX_CONVERSION,
+              observed_value: String(bonusInput.max_conversion),
+              normalized_value_hash: `normalizer-v1:MAX_CONVERSION:${bonusInput.max_conversion}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          bonusClaimIds.push(claim.id);
+        }
+
+        if (bonusInput.valid_from) {
+          const claim = await tx.bonusEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.VALID_FROM,
+              observed_value:
+                bonusInput.valid_from instanceof Date
+                  ? bonusInput.valid_from.toISOString()
+                  : String(bonusInput.valid_from),
+              normalized_value_hash: `normalizer-v1:VALID_FROM:${hashString(String(bonusInput.valid_from))}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          bonusClaimIds.push(claim.id);
+        }
+
+        if (bonusInput.valid_until) {
+          const claim = await tx.bonusEvidenceClaim.create({
+            data: {
+              evidence_id: evidenceRecord.id,
+              bonus_id: savedBonus.id,
+              field: BonusEvidenceField.VALID_UNTIL,
+              observed_value:
+                bonusInput.valid_until instanceof Date
+                  ? bonusInput.valid_until.toISOString()
+                  : String(bonusInput.valid_until),
+              normalized_value_hash: `normalizer-v1:VALID_UNTIL:${hashString(String(bonusInput.valid_until))}`,
+              verdict: EvidenceVerdict.SUPPORTS,
+            },
+          });
+          bonusClaimIds.push(claim.id);
+        }
+
+        // h. Execute Governed Workflow Transitions (NEW -> AWAITING_REVIEW or APPROVED -> AWAITING_REVIEW)
+        const workflowService = new WorkflowTransitionService(tx as any);
+
+        if (isNewCasino && casinoClaimIds.length > 0) {
+          await workflowService.transitionCasinoReview({
+            subjectId: safeCasino.id,
+            actorId: actor.id,
+            expectedVersion: 0,
+            toStatus: ReviewStatus.AWAITING_REVIEW,
+            claimIds: casinoClaimIds,
+          });
+        } else if (
+          !isNewCasino &&
+          isCasinoApprovedOrPublished &&
+          hasCasinoFieldDiffs &&
+          casinoClaimIds.length > 0
+        ) {
+          await workflowService.transitionCasinoReview({
+            subjectId: safeCasino.id,
+            actorId: actor.id,
+            expectedVersion: safeCasino.governance_version,
+            toStatus: ReviewStatus.AWAITING_REVIEW,
+            claimIds: casinoClaimIds,
+          });
+        }
+
+        if (isNewBonus && bonusClaimIds.length > 0) {
+          const transition = await workflowService.transitionBonusReview({
+            subjectId: savedBonus.id,
+            actorId: actor.id,
+            expectedVersion: 0,
+            toStatus: ReviewStatus.AWAITING_REVIEW,
+            claimIds: bonusClaimIds,
+          });
+          governedBonus = Object.assign(savedBonus, {
+            review_status: transition.reviewStatus,
+            publication_status:
+              transition.publicationStatus ?? savedBonus.publication_status,
+            governance_version: transition.governanceVersion,
+          });
+        } else if (!isNewBonus) {
+          const transition = await applyAutomatedEvidenceReplacementGovernance({
+            transaction: tx,
+            bonus: savedBonus,
+            actorId: actor.id,
+            claimIds: bonusClaimIds,
+            internalReason:
+              "A fresh automated observation requires renewed human approval",
+          });
+          governedBonus = Object.assign(savedBonus, {
+            review_status: transition.reviewStatus,
+            publication_status: transition.publicationStatus,
+            governance_version: transition.governanceVersion,
+          });
+        }
+
+        // h2. Move the active-extraction pointer. Same Serializable transaction as
+        // the evidence, its claims, the Bonus/history writes and ScrapeJob
+        // completion, so a rollback cannot leave the pointer advanced. Historical
+        // EvidenceRecord and claim rows are never touched — they simply stop
+        // being referenced.
+        await tx.activeExtractionPointer.upsert({
+          where: {
+            bonus_id_extraction_context: {
+              bonus_id: savedBonus.id,
+              extraction_context: BONUS_EXTRACTION_CONTEXT,
+            },
           },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      const headlineEvidence = resolveHeadlineEvidenceObservation(
-        bonusInput,
-        bonusSourceSemantics,
-      );
-      if (headlineEvidence) {
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
+          create: {
             bonus_id: savedBonus.id,
-            field: BonusEvidenceField.HEADLINE_VALUE,
-            observed_value: headlineEvidence,
-            normalized_value_hash: `normalizer-v1:HEADLINE:${hashString(headlineEvidence)}`,
-            verdict: EvidenceVerdict.SUPPORTS,
-          },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      if (bonusInput.wagering_requirement !== null && bonusInput.wagering_requirement !== undefined) {
-        const scopedWageringEvidence =
-          bonusSourceSemantics.wagering?.scope === "FREE_SPIN_WINNINGS" &&
-          bonusSourceSemantics.wagering.multiplier === bonusInput.wagering_requirement
-            ? bonusSourceSemantics.wagering.sourceText
-            : String(bonusInput.wagering_requirement);
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
-            bonus_id: savedBonus.id,
-            field: BonusEvidenceField.WAGERING_REQUIREMENT,
-            observed_value: scopedWageringEvidence,
-            normalized_value_hash: `normalizer-v1:WAGERING:${hashString(scopedWageringEvidence)}`,
-            verdict: EvidenceVerdict.SUPPORTS,
-          },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      if (bonusInput.max_conversion !== null && bonusInput.max_conversion !== undefined) {
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
-            bonus_id: savedBonus.id,
-            field: BonusEvidenceField.MAX_CONVERSION,
-            observed_value: String(bonusInput.max_conversion),
-            normalized_value_hash: `normalizer-v1:MAX_CONVERSION:${bonusInput.max_conversion}`,
-            verdict: EvidenceVerdict.SUPPORTS,
-          },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      if (bonusInput.valid_from) {
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
-            bonus_id: savedBonus.id,
-            field: BonusEvidenceField.VALID_FROM,
-            observed_value: bonusInput.valid_from instanceof Date ? bonusInput.valid_from.toISOString() : String(bonusInput.valid_from),
-            normalized_value_hash: `normalizer-v1:VALID_FROM:${hashString(String(bonusInput.valid_from))}`,
-            verdict: EvidenceVerdict.SUPPORTS,
-          },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      if (bonusInput.valid_until) {
-        const claim = await tx.bonusEvidenceClaim.create({
-          data: {
-            evidence_id: evidenceRecord.id,
-            bonus_id: savedBonus.id,
-            field: BonusEvidenceField.VALID_UNTIL,
-            observed_value: bonusInput.valid_until instanceof Date ? bonusInput.valid_until.toISOString() : String(bonusInput.valid_until),
-            normalized_value_hash: `normalizer-v1:VALID_UNTIL:${hashString(String(bonusInput.valid_until))}`,
-            verdict: EvidenceVerdict.SUPPORTS,
-          },
-        });
-        bonusClaimIds.push(claim.id);
-      }
-
-      // h. Execute Governed Workflow Transitions (NEW -> AWAITING_REVIEW or APPROVED -> AWAITING_REVIEW)
-      const workflowService = new WorkflowTransitionService(tx as any);
-
-      if (isNewCasino && casinoClaimIds.length > 0) {
-        await workflowService.transitionCasinoReview({
-          subjectId: safeCasino.id,
-          actorId: actor.id,
-          expectedVersion: 0,
-          toStatus: ReviewStatus.AWAITING_REVIEW,
-          claimIds: casinoClaimIds,
-        });
-      } else if (!isNewCasino && isCasinoApprovedOrPublished && hasCasinoFieldDiffs && casinoClaimIds.length > 0) {
-        await workflowService.transitionCasinoReview({
-          subjectId: safeCasino.id,
-          actorId: actor.id,
-          expectedVersion: safeCasino.governance_version,
-          toStatus: ReviewStatus.AWAITING_REVIEW,
-          claimIds: casinoClaimIds,
-        });
-      }
-
-      if (isNewBonus && bonusClaimIds.length > 0) {
-        await workflowService.transitionBonusReview({
-          subjectId: savedBonus.id,
-          actorId: actor.id,
-          expectedVersion: 0,
-          toStatus: ReviewStatus.AWAITING_REVIEW,
-          claimIds: bonusClaimIds,
-        });
-      } else if (!isNewBonus && isBonusApprovedOrPublished && hasBonusFieldDiffs && bonusClaimIds.length > 0) {
-        await workflowService.transitionBonusReview({
-          subjectId: savedBonus.id,
-          actorId: actor.id,
-          expectedVersion: savedBonus.governance_version,
-          toStatus: ReviewStatus.AWAITING_REVIEW,
-          claimIds: bonusClaimIds,
-        });
-      }
-
-      // h2. Move the active-extraction pointer. Same Serializable transaction as
-      // the evidence, its claims, the Bonus/history writes and ScrapeJob
-      // completion, so a rollback cannot leave the pointer advanced. Historical
-      // EvidenceRecord and claim rows are never touched — they simply stop
-      // being referenced.
-      await tx.activeExtractionPointer.upsert({
-        where: {
-          bonus_id_extraction_context: {
-            bonus_id: savedBonus.id,
+            data_source_id: dataSourceId,
             extraction_context: BONUS_EXTRACTION_CONTEXT,
+            evidence_id: evidenceRecord.id,
+            extraction_key: extractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: now,
           },
-        },
-        create: {
-          bonus_id: savedBonus.id,
-          data_source_id: dataSourceId,
-          extraction_context: BONUS_EXTRACTION_CONTEXT,
-          evidence_id: evidenceRecord.id,
-          extraction_key: extractionKey,
-          contract_version: EXTRACTION_CONTRACT_VERSION,
-          activated_at: now,
-        },
-        update: {
-          data_source_id: dataSourceId,
-          evidence_id: evidenceRecord.id,
-          extraction_key: extractionKey,
-          contract_version: EXTRACTION_CONTRACT_VERSION,
-          activated_at: now,
-        },
-      });
-
-      // i. Mark ScrapeJob Completed
-      if (scrapeJobId) {
-        await tx.scrapeJob.update({
-          where: { id: scrapeJobId },
-          data: {
-            status: "COMPLETED",
-            completed_at: now,
+          update: {
+            data_source_id: dataSourceId,
+            evidence_id: evidenceRecord.id,
+            extraction_key: extractionKey,
+            contract_version: EXTRACTION_CONTRACT_VERSION,
+            activated_at: now,
           },
         });
-      }
 
-      return { casino: safeCasino, bonus: savedBonus, evidence: evidenceRecord };
-    });
+        // i. Mark ScrapeJob Completed
+        if (scrapeJobId) {
+          await tx.scrapeJob.update({
+            where: { id: scrapeJobId },
+            data: {
+              status: "COMPLETED",
+              completed_at: now,
+            },
+          });
+        }
 
-    console.log(`[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${casino.id}, Bonus ID: ${bonus.id}`);
+        return {
+          casino: safeCasino,
+          bonus: governedBonus,
+          evidence: evidenceRecord,
+        };
+      });
+
+    console.log(
+      `[IngestionService] [Worker] Extraction complete. Linked Casino ID: ${casino.id}, Bonus ID: ${bonus.id}`,
+    );
     return { casino, bonus, evidence };
   }
 
@@ -2178,7 +2319,7 @@ export class IngestionService {
     }
 
     console.log(
-      `[GameListExtraction] Casino ${casinoId}: ${gameListResult.games.length} games extracted, ${matchedCount} matched to existing slots, ${unmatchedNames.length} unmatched: [${unmatchedNames.join(", ")}]`
+      `[GameListExtraction] Casino ${casinoId}: ${gameListResult.games.length} games extracted, ${matchedCount} matched to existing slots, ${unmatchedNames.length} unmatched: [${unmatchedNames.join(", ")}]`,
     );
 
     await prisma.scrapeJob.update({
@@ -2320,7 +2461,8 @@ export class IngestionService {
     return {
       CRAWL_URL: (payload: any) => this.handleCrawl(payload),
       EXTRACT_BONUS: (payload: any) => this.handleExtraction(payload),
-      EXTRACT_GAME_LIST: (payload: any) => this.handleGameListExtraction(payload),
+      EXTRACT_GAME_LIST: (payload: any) =>
+        this.handleGameListExtraction(payload),
       REPROCESS_SNAPSHOT: (payload: any) =>
         this.handleSnapshotReprocessing(payload),
     };
@@ -2331,13 +2473,17 @@ export class IngestionService {
    */
   public static async ingestBonusFromUrl({ url, casino_id }: IngestBonusInput) {
     const startTime = Date.now();
-    
+
     // Create job record and queue the crawl job
     const scrapeJob = await this.enqueueIngestion({ url, casino_id });
-    
+
     // Execute crawl handler inline synchronously
-    await this.handleCrawl({ scrapeJobId: scrapeJob.id, url, casinoId: casino_id });
-    
+    await this.handleCrawl({
+      scrapeJobId: scrapeJob.id,
+      url,
+      casinoId: casino_id,
+    });
+
     // Mark enqueued CRAWL_URL job for this scrapeJob as COMPLETED since executed inline
     await prisma.jobQueue.updateMany({
       where: {
@@ -2349,10 +2495,14 @@ export class IngestionService {
       data: { status: "COMPLETED" },
     });
 
-    const updatedJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
+    const updatedJob = await prisma.scrapeJob.findUniqueOrThrow({
+      where: { id: scrapeJob.id },
+    });
 
     if (updatedJob.status === "COMPLETED") {
-      console.log(`[IngestionService] Ingestion short-circuited for job ${scrapeJob.id}. Retrieving existing entities.`);
+      console.log(
+        `[IngestionService] Ingestion short-circuited for job ${scrapeJob.id}. Retrieving existing entities.`,
+      );
       const { bonus, casino } =
         await this.findPriorPersistedBonusForShortCircuit(updatedJob);
 
@@ -2379,11 +2529,13 @@ export class IngestionService {
       },
       orderBy: { created_at: "desc" },
     });
-    
+
     if (!queuedJob) {
-      throw new Error("Queued EXTRACT_BONUS job not found during synchronous execution");
+      throw new Error(
+        "Queued EXTRACT_BONUS job not found during synchronous execution",
+      );
     }
-    
+
     const payload = JSON.parse(queuedJob.payload);
     const extractionResult = await this.handleExtraction(payload);
     if (!extractionResult) {
@@ -2391,7 +2543,7 @@ export class IngestionService {
         `Synchronous extraction for ScrapeJob ${scrapeJob.id} did not return a persisted Bonus`,
       );
     }
-    
+
     // Mark queued jobs as COMPLETED
     await prisma.jobQueue.updateMany({
       where: {
@@ -2402,7 +2554,9 @@ export class IngestionService {
     });
 
     // Retrieve the current ScrapeJob while preserving the exact extraction result
-    const finalJob = await prisma.scrapeJob.findUniqueOrThrow({ where: { id: scrapeJob.id } });
+    const finalJob = await prisma.scrapeJob.findUniqueOrThrow({
+      where: { id: scrapeJob.id },
+    });
 
     return {
       bonus: extractionResult.bonus,
@@ -2467,5 +2621,4 @@ export class IngestionService {
       casino: priorClaim.bonus.casino,
     };
   }
-
 }

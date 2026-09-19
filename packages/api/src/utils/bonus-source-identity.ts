@@ -2,11 +2,11 @@ import { createHash } from "crypto";
 import { isKnownTrackingParam } from "@savvyedge/ai-agents/url-normalizer";
 import { Prisma } from "@savvyedge/database";
 
-const BONUS_SOURCE_KEY_VERSION = "bonus-url-v1";
+export { isBonusSourceOfferKey } from "./bonus-source-offer-key";
+import { BONUS_SOURCE_KEY_VERSION } from "./bonus-source-offer-key";
 
 export type BonusSourceIdentityErrorCode =
-  | "INVALID_SOURCE_IDENTITY_URL"
-  | "CONCURRENT_SOURCE_IDENTITY_CONFLICT";
+  "INVALID_SOURCE_IDENTITY_URL" | "CONCURRENT_SOURCE_IDENTITY_CONFLICT";
 
 export class BonusSourceIdentityError extends Error {
   constructor(

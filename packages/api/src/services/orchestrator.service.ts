@@ -1,4 +1,4 @@
-import { prisma } from "@savvyedge/database";
+import { Prisma, prisma } from "@savvyedge/database";
 import { INGESTION_QUEUE_NAME } from "../constants/queue-names";
 import type {
   IngestionJobPayloadMap,
@@ -10,9 +10,13 @@ import {
   getOrchestratorInstanceId,
 } from "../utils/orchestrator-instance";
 import { DiscoveryService } from "./discovery.service";
-import { IngestionService } from "./ingestion.service";
+import {
+  BONUS_EXTRACTION_CONTEXT,
+  IngestionService,
+} from "./ingestion.service";
 import { BonusService } from "./bonus.service";
 import {
+  BONUS_ACTIVE_SOURCE_POINTER_SELECT,
   BonusReverificationService,
   type ReverificationOverrides,
 } from "./bonus-reverification.service";
@@ -21,6 +25,28 @@ export const BONUS_REVERIFICATION_AGE_MS = 60 * 60 * 60 * 1000;
 export const BONUS_REVERIFICATION_COOLDOWN_MS = 60 * 60 * 1000;
 export const BONUS_REVERIFICATION_BATCH_SIZE = 100;
 export const DEFAULT_BONUS_REVERIFICATION_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * The exact Bonus/parent-Casino publication-state pairs the proactive
+ * re-verification sweep may select. Published Bonuses still require a
+ * published parent; unpublished publication-queue Bonuses may be maintained
+ * beneath either an unpublished or published eligible parent.
+ */
+export const BONUS_REVERIFICATION_ELIGIBLE_PUBLICATION_STATE_PAIRS: readonly Prisma.BonusWhereInput[] =
+  [
+    {
+      publication_status: "PUBLISHED",
+      casino: { publication_status: "PUBLISHED" },
+    },
+    {
+      publication_status: "UNPUBLISHED",
+      casino: { publication_status: "PUBLISHED" },
+    },
+    {
+      publication_status: "UNPUBLISHED",
+      casino: { publication_status: "UNPUBLISHED" },
+    },
+  ];
 
 export interface BonusReverificationSweepResult {
   enqueued: number;
@@ -44,9 +70,7 @@ export interface WorkerNodePersistenceAdapter {
     workerNames: string[];
     now: Date;
   }): Promise<number>;
-  markWorkersDead(params: {
-    workerNames: string[];
-  }): Promise<number>;
+  markWorkersDead(params: { workerNames: string[] }): Promise<number>;
   countActiveWorkers?(): Promise<number>;
 }
 
@@ -122,7 +146,8 @@ export interface OrchestratorConfig {
   instanceId?: string;
 }
 
-export type OrchestratorLifecycleState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING";
+export type OrchestratorLifecycleState =
+  "STOPPED" | "STARTING" | "RUNNING" | "STOPPING";
 
 export class OrchestratorService {
   private static lifecycleState: OrchestratorLifecycleState = "STOPPED";
@@ -138,7 +163,8 @@ export class OrchestratorService {
   private static recoveryInFlight = false;
   private static currentRecoveryPromise: Promise<void> | null = null;
   private static recoveryGeneration = 0;
-  private static workerNodeAdapter: WorkerNodePersistenceAdapter = defaultWorkerNodePersistence;
+  private static workerNodeAdapter: WorkerNodePersistenceAdapter =
+    defaultWorkerNodePersistence;
   private static ownedWorkerNames: string[] = [];
   private static instanceId: string | null = null;
   private static heartbeatInFlight = false;
@@ -168,17 +194,29 @@ export class OrchestratorService {
 
   private static getConfig(): Required<OrchestratorConfig> {
     return {
-      discoveryIntervalMs: parseInt(process.env.DISCOVERY_INTERVAL_MS || "300000", 10),
+      discoveryIntervalMs: parseInt(
+        process.env.DISCOVERY_INTERVAL_MS || "300000",
+        10,
+      ),
       crawlIntervalMs: parseInt(process.env.CRAWL_INTERVAL_MS || "60000", 10),
-      extractionIntervalMs: parseInt(process.env.EXTRACTION_INTERVAL_MS || "30000", 10),
+      extractionIntervalMs: parseInt(
+        process.env.EXTRACTION_INTERVAL_MS || "30000",
+        10,
+      ),
       verificationIntervalMs: parseInt(
         process.env.VERIFICATION_INTERVAL_MS ||
           String(DEFAULT_BONUS_REVERIFICATION_INTERVAL_MS),
         10,
       ),
       workerConcurrency: parseInt(process.env.WORKER_CONCURRENCY || "4", 10),
-      maxConcurrentPerDomain: parseInt(process.env.DEFAULT_MAX_CONCURRENT_PER_DOMAIN || "2", 10),
-      minDomainDelayMs: parseInt(process.env.DEFAULT_MIN_DOMAIN_DELAY_MS || "1000", 10),
+      maxConcurrentPerDomain: parseInt(
+        process.env.DEFAULT_MAX_CONCURRENT_PER_DOMAIN || "2",
+        10,
+      ),
+      minDomainDelayMs: parseInt(
+        process.env.DEFAULT_MIN_DOMAIN_DELAY_MS || "1000",
+        10,
+      ),
       seedSources: (
         process.env.SEED_SOURCES ||
         "https://www.askgamblers.com/online-casinos/bonuses/,https://www.casinos.com/us/bonuses,https://www.gambling.com/us/online-casinos/bonuses"
@@ -202,7 +240,9 @@ export class OrchestratorService {
   /**
    * Starts the continuous Platform Orchestrator
    */
-  public static async start(customConfig?: Partial<OrchestratorConfig>): Promise<void> {
+  public static async start(
+    customConfig?: Partial<OrchestratorConfig>,
+  ): Promise<void> {
     while (this.lifecycleState === "STOPPING" && this.stopPromise) {
       try {
         await this.stopPromise;
@@ -237,14 +277,17 @@ export class OrchestratorService {
             customConfig?.enableBonusReverificationScheduler ??
             masterSchedulersEnabled,
         };
-        this.workerNodeAdapter = config.workerNodeAdapter ?? defaultWorkerNodePersistence;
+        this.workerNodeAdapter =
+          config.workerNodeAdapter ?? defaultWorkerNodePersistence;
 
         console.log("=================================================");
         console.log("    SAVVYEDGE PLATFORM ORCHESTRATOR STARTING     ");
         console.log(` -> Instance ID:        ${config.instanceId}`);
         console.log(` -> Worker Concurrency: ${config.workerConcurrency}`);
         console.log(` -> Discovery Interval: ${config.discoveryIntervalMs} ms`);
-        console.log(` -> Verification Int.: ${config.verificationIntervalMs} ms`);
+        console.log(
+          ` -> Verification Int.: ${config.verificationIntervalMs} ms`,
+        );
         console.log(` -> Crawl Interval:     ${config.crawlIntervalMs} ms`);
         console.log(` -> Max Domain Concur:  ${config.maxConcurrentPerDomain}`);
         console.log(` -> Workers Enabled:    ${config.enableWorkers}`);
@@ -282,7 +325,8 @@ export class OrchestratorService {
         const domainLimiter = {
           checkDomainAllowed: (domain: string) =>
             this.checkDomainAllowed(domain, config),
-          recordDomainAccess: (domain: string) => this.recordDomainAccess(domain),
+          recordDomainAccess: (domain: string) =>
+            this.recordDomainAccess(domain),
         };
 
         if (config.enableWorkers) {
@@ -296,7 +340,10 @@ export class OrchestratorService {
                 domainLimiter,
               },
             );
-            this.workerHandles.push({ id: workerId, stop: () => handle.stop() });
+            this.workerHandles.push({
+              id: workerId,
+              stop: () => handle.stop(),
+            });
           }
         }
 
@@ -366,7 +413,10 @@ export class OrchestratorService {
   /**
    * Domain rate limiting check: enforces max concurrent requests and min delay between requests
    */
-  private static checkDomainAllowed(domain: string, config: OrchestratorConfig): boolean {
+  private static checkDomainAllowed(
+    domain: string,
+    config: OrchestratorConfig,
+  ): boolean {
     const active = this.domainActiveCount.get(domain) || 0;
     if (active >= config.maxConcurrentPerDomain) {
       return false;
@@ -388,7 +438,10 @@ export class OrchestratorService {
 
     // Automatically decrement after processing delay window
     setTimeout(() => {
-      const updated = Math.max(0, (this.domainActiveCount.get(domain) || 1) - 1);
+      const updated = Math.max(
+        0,
+        (this.domainActiveCount.get(domain) || 1) - 1,
+      );
       this.domainActiveCount.set(domain, updated);
     }, 1000);
   }
@@ -408,7 +461,10 @@ export class OrchestratorService {
     }
   }
 
-  private static startHeartbeatLoop(workerNames: string[], intervalMs: number = 5000) {
+  private static startHeartbeatLoop(
+    workerNames: string[],
+    intervalMs: number = 5000,
+  ) {
     this.heartbeatTimer = setInterval(() => {
       if (this.lifecycleState !== "RUNNING" || this.heartbeatInFlight) {
         return;
@@ -423,7 +479,9 @@ export class OrchestratorService {
             now: new Date(),
           });
         } catch {
-          console.error("[PlatformOrchestrator] Worker heartbeat update failed");
+          console.error(
+            "[PlatformOrchestrator] Worker heartbeat update failed",
+          );
         } finally {
           this.heartbeatInFlight = false;
           this.currentHeartbeatPromise = null;
@@ -445,7 +503,8 @@ export class OrchestratorService {
       if (
         generation !== this.recoveryGeneration ||
         this.recoveryInFlight ||
-        (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+        (this.lifecycleState !== "RUNNING" &&
+          this.lifecycleState !== "STARTING")
       ) {
         return;
       }
@@ -455,7 +514,8 @@ export class OrchestratorService {
         try {
           if (
             generation !== this.recoveryGeneration ||
-            (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+            (this.lifecycleState !== "RUNNING" &&
+              this.lifecycleState !== "STARTING")
           ) {
             return;
           }
@@ -480,7 +540,8 @@ export class OrchestratorService {
 
       if (
         generation === this.recoveryGeneration &&
-        (this.lifecycleState === "RUNNING" || this.lifecycleState === "STARTING")
+        (this.lifecycleState === "RUNNING" ||
+          this.lifecycleState === "STARTING")
       ) {
         this.recoveryTimer = setTimeout(scheduleSweep, intervalMs);
       }
@@ -573,7 +634,8 @@ export class OrchestratorService {
       try {
         if (
           generation !== this.recoveryGeneration ||
-          (this.lifecycleState !== "RUNNING" && this.lifecycleState !== "STARTING")
+          (this.lifecycleState !== "RUNNING" &&
+            this.lifecycleState !== "STARTING")
         ) {
           return;
         }
@@ -599,9 +661,12 @@ export class OrchestratorService {
   }
 
   /**
-   * Selects published Bonuses approaching the freshness limit and enqueues the
-   * canonical true source re-verification path. This method is selection-only:
-   * it never writes Bonus state.
+   * Selects Bonuses approaching the freshness limit and enqueues the canonical
+   * true source re-verification path. This method is selection-only: it never
+   * writes Bonus state.
+   *
+   * Eligible publication-state pairs are enumerated in
+   * {@link BONUS_REVERIFICATION_ELIGIBLE_PUBLICATION_STATE_PAIRS}.
    */
   public static async runBonusReverificationSweep(
     now: Date = new Date(),
@@ -655,20 +720,27 @@ export class OrchestratorService {
           : {}),
         status: "ACTIVE",
         review_status: "APPROVED",
-        publication_status: "PUBLISHED",
         quarantine_reason: null,
         OR: [{ verified_at: null }, { verified_at: { lte: cutoff } }],
-        AND: [{ OR: [{ valid_until: null }, { valid_until: { gte: now } }] }],
+        AND: [
+          { OR: [{ valid_until: null }, { valid_until: { gte: now } }] },
+          {
+            OR: [...BONUS_REVERIFICATION_ELIGIBLE_PUBLICATION_STATE_PAIRS],
+          },
+        ],
         casino: {
           status: "ACTIVE",
           review_status: "APPROVED",
-          publication_status: "PUBLISHED",
           quarantine_reason: null,
         },
       },
       select: {
         id: true,
         source_offer_key: true,
+        active_extractions: {
+          where: { extraction_context: BONUS_EXTRACTION_CONTEXT },
+          select: BONUS_ACTIVE_SOURCE_POINTER_SELECT,
+        },
         evidence_claims: {
           select: {
             id: true,
@@ -706,9 +778,8 @@ export class OrchestratorService {
     };
 
     for (const bonus of candidates) {
-      const source = BonusReverificationService.resolveAuthoritativeSourceUrl(
-        bonus,
-      );
+      const source =
+        BonusReverificationService.resolveAuthoritativeSourceUrl(bonus);
       if ("error" in source) {
         result.skipped.push({ bonusId: bonus.id, reason: source.error });
         console.warn(
@@ -748,13 +819,19 @@ export class OrchestratorService {
         payload: IngestionJobPayloadMap["DISCOVER_SEEDS"],
       ) => {
         const seeds = payload.seedUrls || seedSources;
-        console.log(`[PlatformOrchestrator] Executing DISCOVER_SEEDS across ${seeds.length} seeds...`);
+        console.log(
+          `[PlatformOrchestrator] Executing DISCOVER_SEEDS across ${seeds.length} seeds...`,
+        );
         const result = await DiscoveryService.discoverAndEnqueue(seeds);
-        console.log(`[PlatformOrchestrator] DISCOVER_SEEDS complete: ${result.totalEnqueued} URLs enqueued.`);
+        console.log(
+          `[PlatformOrchestrator] DISCOVER_SEEDS complete: ${result.totalEnqueued} URLs enqueued.`,
+        );
       },
 
       INGEST_URL: async (payload: IngestionJobPayloadMap["INGEST_URL"]) => {
-        console.log(`[PlatformOrchestrator] Processing INGEST_URL: ${payload.url}`);
+        console.log(
+          `[PlatformOrchestrator] Processing INGEST_URL: ${payload.url}`,
+        );
         await IngestionService.enqueueIngestion({ url: payload.url });
       },
 
@@ -765,14 +842,15 @@ export class OrchestratorService {
       EXTRACT_BONUS: async (
         payload: IngestionJobPayloadMap["EXTRACT_BONUS"],
       ) => {
-        const extractionResult = await IngestionService.handleExtraction(payload);
+        const extractionResult =
+          await IngestionService.handleExtraction(payload);
 
         if (extractionResult) {
           await JobQueueService.enqueue(
             INGESTION_QUEUE_NAME,
             "VALIDATE_BONUS",
             { bonusId: extractionResult.bonus.id, url: payload.url },
-            { priority: "LOW", deduplicate: true }
+            { priority: "LOW", deduplicate: true },
           );
         }
       },
@@ -790,7 +868,9 @@ export class OrchestratorService {
       },
 
       VALIDATE_BONUS: async (payload: { bonusId: string; url: string }) => {
-        console.log(`[PlatformOrchestrator] Re-verifying Bonus ${payload.bonusId}...`);
+        console.log(
+          `[PlatformOrchestrator] Re-verifying Bonus ${payload.bonusId}...`,
+        );
         const result = bonusReverificationOverrides
           ? await BonusReverificationService.reverifyBonus(
               payload.bonusId,
@@ -799,6 +879,12 @@ export class OrchestratorService {
           : await BonusReverificationService.reverifyBonus(payload.bonusId);
 
         if (result.status === "VERIFIED_UNCHANGED") {
+          if (result.humanApprovalRequired) {
+            console.log(
+              `[PlatformOrchestrator] [REVIEW_REQUIRED] Bonus ${payload.bonusId} was reverified at ${result.verifiedAt.toISOString()}; prior approval was invalidated.`,
+            );
+            return;
+          }
           console.log(
             `[PlatformOrchestrator] [PASS] Bonus ${payload.bonusId} verified at ${result.verifiedAt.toISOString()}.`,
           );
@@ -909,7 +995,10 @@ export class OrchestratorService {
             });
           }
         } catch (error) {
-          console.error("[PlatformOrchestrator] Failed to persist terminal worker status:", error);
+          console.error(
+            "[PlatformOrchestrator] Failed to persist terminal worker status:",
+            error,
+          );
           if (firstError === null) {
             firstError = error;
           }
@@ -945,7 +1034,9 @@ export class OrchestratorService {
    */
   public static async getMetrics() {
     const jobMetrics = await JobQueueService.getMetrics();
-    const activeWorkers = await prisma.workerNode.count({ where: { status: "ACTIVE" } });
+    const activeWorkers = await prisma.workerNode.count({
+      where: { status: "ACTIVE" },
+    });
 
     return {
       activeWorkers,

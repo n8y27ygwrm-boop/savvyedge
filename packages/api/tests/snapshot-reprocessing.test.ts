@@ -3,9 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  buildScrapeResultFromHtml,
-} from "@savvyedge/ai-agents";
+import { buildScrapeResultFromHtml } from "@savvyedge/ai-agents";
 import {
   ExtractionContractError,
   bonusExtractionKey,
@@ -26,6 +24,7 @@ import {
 } from "../src/services/ingestion.service";
 import { JobQueueService } from "../src/services/job-queue.service";
 import { BonusService } from "../src/services/bonus.service";
+import { evaluateActiveObservationFreshness } from "../src/services/freshness.policy";
 import { planSnapshotReprocessing } from "@savvyedge/api/snapshot-reprocessing";
 import {
   getGovernanceEligibleBonusClaimIds,
@@ -35,6 +34,7 @@ import {
   EXTRACTION_IDENTITY_CONSTRAINT,
   isExtractionKeyUniqueViolation,
 } from "../src/utils/extraction-identity";
+import { activeBonusEvidence } from "./helpers/active-bonus-evidence.fixture";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -216,6 +216,8 @@ describe("REPROCESS_SNAPSHOT zero-network boundary", () => {
     const enqueue = vi
       .spyOn(JobQueueService, "enqueue")
       .mockResolvedValue({ id: "queued" } as never);
+    const bonusUpdate = vi.spyOn(prisma.bonus, "update");
+    const bonusUpdateMany = vi.spyOn(prisma.bonus, "updateMany");
 
     await IngestionService.handleSnapshotReprocessing(basePayload());
 
@@ -226,6 +228,11 @@ describe("REPROCESS_SNAPSHOT zero-network boundary", () => {
     expect(scraper).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
     expect(networkFetch).not.toHaveBeenCalled();
+    // Snapshot reprocessing preserves the original observation for a later
+    // extraction; it cannot directly manufacture a new Bonus freshness
+    // projection from job or commit time.
+    expect(bonusUpdate).not.toHaveBeenCalled();
+    expect(bonusUpdateMany).not.toHaveBeenCalled();
 
     // Source observation time is preserved; extracted_at is the new run.
     expect(enqueue).toHaveBeenCalledWith(
@@ -237,6 +244,26 @@ describe("REPROCESS_SNAPSHOT zero-network boundary", () => {
       }),
       { deduplicate: true },
     );
+    const queuedPayload = enqueue.mock.calls[0][2] as {
+      observedAt: string;
+    };
+    const laterExtraction = new Date(
+      OBSERVED_AT.getTime() + 72 * 60 * 60 * 1000 + 1,
+    );
+    expect(
+      evaluateActiveObservationFreshness(
+        {
+          id: "bonus-reprocessed",
+          verified_at: queuedPayload.observedAt,
+          active_extractions: activeBonusEvidence({
+            bonusId: "bonus-reprocessed",
+            observedAt: new Date(queuedPayload.observedAt),
+            extractedAt: laterExtraction,
+          }),
+        },
+        laterExtraction,
+      ),
+    ).toEqual({ status: "REJECTED", code: "STALE_OBSERVATION" });
     // Verified hashes are written only after verification.
     expect(jobUpdate.mock.calls[0][0]).toMatchObject({
       where: { id: NEW_JOB },
@@ -579,6 +606,14 @@ describe("malformed extraction provenance", () => {
       publication_status: "UNPUBLISHED",
       governance_version: 0,
     } as never);
+    vi.spyOn(prisma.scrapeJob, "findUnique").mockResolvedValue(
+      sourceJobRow({
+        id: NEW_JOB,
+        status: "PROCESSING",
+        html_hash: "synthetic-not-sha256",
+      }) as never,
+    );
+    vi.spyOn(prisma.bonus, "findUnique").mockResolvedValue(null);
     vi.spyOn(internals.bonusAgent, "run").mockResolvedValue({
       casino_id: "casino-1",
       type: "FREE_SPINS",
@@ -1005,10 +1040,22 @@ describe("bonus governance UI transition payloads", () => {
     // Ordered as the pages render them (created_at desc), with superseded rows
     // interleaved so an order-preserving filter is distinguishable.
     const DISPLAYED_CLAIMS = [
-      { id: "70000000-0000-4000-8000-000000000011", evidence_id: ACTIVE_EVIDENCE_ID },
-      { id: "70000000-0000-4000-8000-000000000012", evidence_id: HISTORICAL_EVIDENCE_ID },
-      { id: "70000000-0000-4000-8000-000000000013", evidence_id: HISTORICAL_EVIDENCE_ID },
-      { id: "70000000-0000-4000-8000-000000000014", evidence_id: ACTIVE_EVIDENCE_ID },
+      {
+        id: "70000000-0000-4000-8000-000000000011",
+        evidence_id: ACTIVE_EVIDENCE_ID,
+      },
+      {
+        id: "70000000-0000-4000-8000-000000000012",
+        evidence_id: HISTORICAL_EVIDENCE_ID,
+      },
+      {
+        id: "70000000-0000-4000-8000-000000000013",
+        evidence_id: HISTORICAL_EVIDENCE_ID,
+      },
+      {
+        id: "70000000-0000-4000-8000-000000000014",
+        evidence_id: ACTIVE_EVIDENCE_ID,
+      },
     ];
     const ACTIVE_IDS = [
       "70000000-0000-4000-8000-000000000011",
@@ -1063,15 +1110,30 @@ describe("governed bonus evidence boundary for admin transitions", () => {
 
   const ACTIVE_CLAIMS = [
     // TYPE = FREE_SPINS
-    { id: "70000000-0000-4000-8000-000000000001", evidence_id: ACTIVE_EVIDENCE_ID },
+    {
+      id: "70000000-0000-4000-8000-000000000001",
+      evidence_id: ACTIVE_EVIDENCE_ID,
+    },
     // HEADLINE_VALUE = 10 Free Spins
-    { id: "70000000-0000-4000-8000-000000000002", evidence_id: ACTIVE_EVIDENCE_ID },
+    {
+      id: "70000000-0000-4000-8000-000000000002",
+      evidence_id: ACTIVE_EVIDENCE_ID,
+    },
   ];
   const HISTORICAL_CLAIMS = [
     // WAGERING_REQUIREMENT = 20, superseded by the reprocessed extraction.
-    { id: "70000000-0000-4000-8000-000000000003", evidence_id: HISTORICAL_EVIDENCE_ID },
-    { id: "70000000-0000-4000-8000-000000000004", evidence_id: HISTORICAL_EVIDENCE_ID },
-    { id: "70000000-0000-4000-8000-000000000005", evidence_id: HISTORICAL_EVIDENCE_ID },
+    {
+      id: "70000000-0000-4000-8000-000000000003",
+      evidence_id: HISTORICAL_EVIDENCE_ID,
+    },
+    {
+      id: "70000000-0000-4000-8000-000000000004",
+      evidence_id: HISTORICAL_EVIDENCE_ID,
+    },
+    {
+      id: "70000000-0000-4000-8000-000000000005",
+      evidence_id: HISTORICAL_EVIDENCE_ID,
+    },
   ];
   const ALL_CLAIMS = [...ACTIVE_CLAIMS, ...HISTORICAL_CLAIMS];
 
@@ -1087,14 +1149,13 @@ describe("governed bonus evidence boundary for admin transitions", () => {
 
     // The eligible set is queried by bonus_id, so a foreign-subject claim id
     // is never a member of it regardless of what the browser supplies.
-    vi.spyOn(prisma.bonusEvidenceClaim, "findMany").mockImplementation(
-      (async ({ where }: { where: { bonus_id: string } }) =>
-        where.bonus_id === BONUS_ID ? ALL_CLAIMS : []) as never,
-    );
+    vi.spyOn(prisma.bonusEvidenceClaim, "findMany").mockImplementation((async ({
+      where,
+    }: {
+      where: { bonus_id: string };
+    }) => (where.bonus_id === BONUS_ID ? ALL_CLAIMS : [])) as never);
     vi.spyOn(prisma.activeExtractionPointer, "findUnique").mockResolvedValue(
-      (hasActivePointer
-        ? { evidence_id: ACTIVE_EVIDENCE_ID }
-        : null) as never,
+      (hasActivePointer ? { evidence_id: ACTIVE_EVIDENCE_ID } : null) as never,
     );
     vi.spyOn(prisma.adminSession, "findUnique").mockResolvedValue({
       id: "80000000-0000-4000-8000-000000000001",
@@ -1133,12 +1194,16 @@ describe("governed bonus evidence boundary for admin transitions", () => {
     suppliedClaimIds: string[],
   ): Promise<string[]> {
     const method =
-      action === "APPROVE" ? "transitionBonusReview" : "transitionBonusPublication";
+      action === "APPROVE"
+        ? "transitionBonusReview"
+        : "transitionBonusPublication";
     const spy = vi
       .spyOn(WorkflowTransitionService.prototype, method)
       .mockResolvedValue({ ok: true } as never);
 
-    const response = await transitionRoute(transitionRequest(action, suppliedClaimIds));
+    const response = await transitionRoute(
+      transitionRequest(action, suppliedClaimIds),
+    );
     expect(response.status).toBe(200);
     expect(spy).toHaveBeenCalledTimes(1);
 
@@ -1175,9 +1240,9 @@ describe("governed bonus evidence boundary for admin transitions", () => {
     async (action) => {
       stubBoundaryReads();
 
-      expect((await linkedClaimIdsFor(action, ACTIVE_CLAIM_IDS)).sort()).toEqual(
-        [...ACTIVE_CLAIM_IDS].sort(),
-      );
+      expect(
+        (await linkedClaimIdsFor(action, ACTIVE_CLAIM_IDS)).sort(),
+      ).toEqual([...ACTIVE_CLAIM_IDS].sort());
     },
   );
 

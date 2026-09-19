@@ -12,13 +12,16 @@ export async function GET(request: Request) {
     const limit = parseInt(searchParams.get("limit") || "50", 10);
     const skip = (page - 1) * limit;
 
-    const whereClause = PublicationGateService.whereBonusPublic();
+    // One request-scoped clock for both the query predicate and the runtime gate.
+    const now = new Date();
+    const whereClause = PublicationGateService.whereBonusPublic(now);
 
     const rawBonuses = await prisma.bonus.findMany({
       where: whereClause,
       orderBy: { true_value_score: "desc" },
       include: {
         history_events: true,
+        ...PublicationGateService.bonusActiveEvidenceInclude(),
         casino: {
           include: {
             history_events: true,
@@ -29,11 +32,13 @@ export async function GET(request: Request) {
     });
 
     const eligibleBonuses = rawBonuses.filter((b) =>
-      PublicationGateService.isBonusPubliclyEligible(b)
+      PublicationGateService.isBonusPubliclyEligible(b, b.casino, now),
     );
 
     const total = eligibleBonuses.length;
-    const bonuses = eligibleBonuses.slice(skip, skip + limit);
+    const bonuses = eligibleBonuses
+      .slice(skip, skip + limit)
+      .map((b) => PublicationGateService.toPublicBonus(b));
     const totalPages = Math.ceil(total / limit) || 1;
 
     return NextResponse.json({
@@ -44,7 +49,7 @@ export async function GET(request: Request) {
   } catch (error) {
     return NextResponse.json(
       { data: null, meta: null, error: { message: "Internal server error" } },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -54,7 +59,7 @@ export async function POST(request: Request) {
   if (!auth.authorized) {
     return NextResponse.json(
       { data: null, meta: null, error: { message: auth.errorMessage } },
-      { status: auth.statusCode || 401 }
+      { status: auth.statusCode || 401 },
     );
   }
 
@@ -69,17 +74,31 @@ export async function POST(request: Request) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { data: null, meta: null, error: { message: "Validation error", details: parsed.error.format() } },
-        { status: 400 }
+        {
+          data: null,
+          meta: null,
+          error: {
+            message: "Validation error",
+            details: parsed.error.format(),
+          },
+        },
+        { status: 400 },
       );
     }
 
     const bonus = await BonusService.createBonus(parsed.data);
-    return NextResponse.json({ data: bonus, meta: null, error: null }, { status: 201 });
+    return NextResponse.json(
+      { data: bonus, meta: null, error: null },
+      { status: 201 },
+    );
   } catch (error: any) {
     return NextResponse.json(
-      { data: null, meta: null, error: { message: error.message || "Internal server error" } },
-      { status: 500 }
+      {
+        data: null,
+        meta: null,
+        error: { message: error.message || "Internal server error" },
+      },
+      { status: 500 },
     );
   }
 }

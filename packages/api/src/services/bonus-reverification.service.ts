@@ -26,11 +26,20 @@ import {
 } from "@savvyedge/ai-agents";
 import { BONUS_EXTRACTION_CONTEXT } from "./ingestion.service";
 import { resolveHeadlineEvidenceObservation } from "./ingestion.service";
-import { createBonusSourceOfferKey } from "../utils/bonus-source-identity";
+import {
+  createBonusSourceOfferKey,
+  isBonusSourceOfferKey,
+} from "../utils/bonus-source-identity";
 import {
   EvidenceArtifactStorageService,
   type EvidenceArtifactStore,
 } from "./evidence-artifact-storage.service";
+import {
+  applyAutomatedEvidenceReplacementGovernance,
+  assertAutomatedEvidenceReplacementAllowed,
+  assertBonusAuthoritySnapshotUnchanged,
+  isBonusHumanReviewPending,
+} from "./bonus-active-evidence-governance";
 
 export interface ReverificationOverrides {
   scraperAgent?: { run: (input: { url: string }) => Promise<any> };
@@ -55,12 +64,17 @@ export type ReverificationResult =
       verifiedAt: Date;
       evidenceRecordId: string;
       claimIds: string[];
+      reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
+      governanceVersion: number;
+      humanApprovalRequired: boolean;
     }
   | {
       status: "MATERIAL_CHANGE_DETECTED";
       bonusId: string;
       diffs: BonusFieldDiff[];
       reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
       governanceVersion: number;
       evidenceRecordId: string;
       claimIds: string[];
@@ -70,9 +84,18 @@ export type ReverificationResult =
       bonusId: string;
       diffs: BonusFieldDiff[];
       reviewStatus: ReviewStatus;
+      publicationStatus: PublicationStatus;
       governanceVersion: number;
       evidenceRecordId: string;
       claimIds: string[];
+    }
+  | {
+      status: "HUMAN_REVIEW_PENDING";
+      bonusId: string;
+      reviewStatus:
+        typeof ReviewStatus.AWAITING_REVIEW | typeof ReviewStatus.IN_REVIEW;
+      governanceVersion: number;
+      reason: string;
     }
   | {
       status: "SOURCE_REJECTED";
@@ -150,13 +173,70 @@ function compareNewestSource(
   return left.url.localeCompare(right.url);
 }
 
+function asExactIdentity(value: unknown): string | null {
+  return typeof value === "string" && value !== "" && value.trim() === value
+    ? value
+    : null;
+}
+
+export const BONUS_ACTIVE_SOURCE_POINTER_SELECT = {
+  extraction_context: true,
+  bonus_id: true,
+  data_source_id: true,
+  evidence_id: true,
+  extraction_key: true,
+  evidence: {
+    select: {
+      id: true,
+      data_source_id: true,
+      scrape_job_id: true,
+      source_url: true,
+      extraction_key: true,
+      scrape_job: {
+        select: {
+          id: true,
+          data_source_id: true,
+          canonical_url: true,
+        },
+      },
+      bonus_claims: {
+        select: { bonus_id: true, verdict: true },
+      },
+    },
+  },
+} as const;
+
 export class BonusReverificationService {
   /**
    * Resolves the authoritative offer source URL from immutable evidence records or history.
    */
   public static resolveAuthoritativeSourceUrl(
     bonus: {
+      id?: string | null;
       source_offer_key?: string | null;
+      active_extractions?: Array<{
+        extraction_context?: string | null;
+        bonus_id?: string | null;
+        data_source_id?: string | null;
+        evidence_id?: string | null;
+        extraction_key?: string | null;
+        evidence?: {
+          id?: string;
+          data_source_id?: string | null;
+          scrape_job_id?: string | null;
+          source_url?: string | null;
+          extraction_key?: string | null;
+          scrape_job?: {
+            id?: string | null;
+            data_source_id?: string | null;
+            canonical_url?: string | null;
+          } | null;
+          bonus_claims?: Array<{
+            bonus_id?: string | null;
+            verdict?: string | null;
+          }> | null;
+        } | null;
+      }> | null;
       evidence_claims?: Array<{
         id?: string;
         verdict?: string;
@@ -182,6 +262,12 @@ export class BonusReverificationService {
         error: "NO_AUTHORITATIVE_SOURCE_URL" | "SOURCE_IDENTITY_MISMATCH";
         reason: string;
       } {
+    const sourceOfferKey =
+      typeof bonus.source_offer_key === "string" ? bonus.source_offer_key : "";
+    // Canonical format is decided in one place only; this service must never
+    // carry its own copy of the source-offer-key syntax.
+    const hasTrustworthyLegacyIdentity = isBonusSourceOfferKey(sourceOfferKey);
+
     const validateCandidate = (
       rawUrl: string,
     ): { url: string } | { identityMismatch: true } | null => {
@@ -192,8 +278,8 @@ export class BonusReverificationService {
           return null;
         }
         if (
-          bonus.source_offer_key &&
-          createBonusSourceOfferKey(url) !== bonus.source_offer_key
+          sourceOfferKey &&
+          createBonusSourceOfferKey(url) !== sourceOfferKey
         ) {
           return { identityMismatch: true };
         }
@@ -203,19 +289,147 @@ export class BonusReverificationService {
       }
     };
 
+    // D3C: when an active extraction pointer exists it is the only source of
+    // truth for this bonus. Neither an explicit override nor newer historical
+    // evidence may override it, and any invalid identity fails closed.
+    const activePointers = (bonus.active_extractions ?? []).filter(
+      (pointer) =>
+        pointer &&
+        typeof pointer === "object" &&
+        pointer.extraction_context === BONUS_EXTRACTION_CONTEXT,
+    );
+    if (activePointers.length > 1) {
+      return {
+        error: "NO_AUTHORITATIVE_SOURCE_URL",
+        reason: "The bonus has multiple active BONUS extraction pointers",
+      };
+    }
+    const activePointer = activePointers[0];
+    if (activePointer) {
+      const bonusId = asExactIdentity(bonus.id);
+      const pointerBonusId = asExactIdentity(activePointer.bonus_id);
+      const pointerDataSourceId = asExactIdentity(activePointer.data_source_id);
+      const evidenceDataSourceId = asExactIdentity(
+        activePointer.evidence?.data_source_id,
+      );
+      const pointerEvidenceId = asExactIdentity(activePointer.evidence_id);
+      const evidenceId = asExactIdentity(activePointer.evidence?.id);
+      const pointerExtractionKey = asExactIdentity(
+        activePointer.extraction_key,
+      );
+      const evidenceExtractionKey = asExactIdentity(
+        activePointer.evidence?.extraction_key,
+      );
+      const hasSupportingClaim =
+        bonusId !== null &&
+        Array.isArray(activePointer.evidence?.bonus_claims) &&
+        activePointer.evidence.bonus_claims.some(
+          (claim) =>
+            claim?.bonus_id === bonusId &&
+            claim.verdict === EvidenceVerdict.SUPPORTS,
+        );
+      if (
+        !bonusId ||
+        !pointerBonusId ||
+        pointerBonusId !== bonusId ||
+        !pointerDataSourceId ||
+        !evidenceDataSourceId ||
+        pointerDataSourceId !== evidenceDataSourceId ||
+        !pointerEvidenceId ||
+        !evidenceId ||
+        pointerEvidenceId !== evidenceId ||
+        !pointerExtractionKey ||
+        !evidenceExtractionKey ||
+        pointerExtractionKey !== evidenceExtractionKey ||
+        !hasSupportingClaim
+      ) {
+        return {
+          error: "NO_AUTHORITATIVE_SOURCE_URL",
+          reason:
+            "The active extraction pointer does not resolve to the same evidence extraction",
+        };
+      }
+      const evidenceScrapeJobId = asExactIdentity(
+        activePointer.evidence?.scrape_job_id,
+      );
+      const linkedScrapeJobId = asExactIdentity(
+        activePointer.evidence?.scrape_job?.id,
+      );
+      const scrapeJobDataSourceId = asExactIdentity(
+        activePointer.evidence?.scrape_job?.data_source_id,
+      );
+      const canonicalProvenanceIsLinked =
+        evidenceScrapeJobId !== null &&
+        linkedScrapeJobId === evidenceScrapeJobId &&
+        scrapeJobDataSourceId === evidenceDataSourceId;
+
+      let canonicalIdentityMismatch = false;
+      const canonicalUrl = canonicalProvenanceIsLinked
+        ? activePointer.evidence?.scrape_job?.canonical_url
+        : null;
+      if (sourceOfferKey && canonicalUrl) {
+        const canonicalCandidate = validateCandidate(canonicalUrl);
+        if (canonicalCandidate && "url" in canonicalCandidate) {
+          return canonicalCandidate;
+        }
+        canonicalIdentityMismatch = Boolean(
+          canonicalCandidate && "identityMismatch" in canonicalCandidate,
+        );
+      }
+
+      const activeSourceUrl = activePointer.evidence?.source_url;
+      if (!activeSourceUrl) {
+        return canonicalIdentityMismatch
+          ? {
+              error: "SOURCE_IDENTITY_MISMATCH",
+              reason:
+                "Neither the active extraction canonical URL nor its source URL matches the stored source_offer_key",
+            }
+          : {
+              error: "NO_AUTHORITATIVE_SOURCE_URL",
+              reason:
+                "The active extraction pointer does not resolve to an evidence source URL",
+            };
+      }
+      const activeCandidate = validateCandidate(activeSourceUrl);
+      if (activeCandidate && "url" in activeCandidate) {
+        return activeCandidate;
+      }
+      return canonicalIdentityMismatch ||
+        (activeCandidate && "identityMismatch" in activeCandidate)
+        ? {
+            error: "SOURCE_IDENTITY_MISMATCH",
+            reason:
+              "Neither the active extraction canonical URL nor its source URL matches the stored source_offer_key",
+          }
+        : {
+            error: "NO_AUTHORITATIVE_SOURCE_URL",
+            reason:
+              "The active extraction source URL is not a valid HTTP(S) URL",
+          };
+    }
+
+    if (!hasTrustworthyLegacyIdentity) {
+      return {
+        error: "NO_AUTHORITATIVE_SOURCE_URL",
+        reason:
+          "Legacy source bootstrap requires a valid stored source_offer_key",
+      };
+    }
+
     if (typeof overrideUrl === "string" && overrideUrl.trim().length > 0) {
       const explicit = validateCandidate(overrideUrl);
       if (explicit && "url" in explicit) return explicit;
       return {
-        error: bonus.source_offer_key
-          ? "SOURCE_IDENTITY_MISMATCH"
-          : "NO_AUTHORITATIVE_SOURCE_URL",
-        reason: bonus.source_offer_key
-          ? "Explicit source URL does not match the stored source_offer_key"
-          : "Explicit source URL is not a valid HTTP(S) URL",
+        error: "SOURCE_IDENTITY_MISMATCH",
+        reason:
+          "Explicit source URL does not match the stored source_offer_key",
       };
     }
 
+    // Legacy bootstrap only: bonuses that predate the extraction contract have
+    // no pointer, so the existing tightly scoped, identity-checked fallback
+    // still recovers a source from supporting evidence and verified_at history.
     let sawIdentityMismatch = false;
     const evidenceCandidates: SourceCandidate[] = [];
     for (const claim of bonus.evidence_claims ?? []) {
@@ -293,6 +507,10 @@ export class BonusReverificationService {
             governance_version: true,
           },
         },
+        active_extractions: {
+          where: { extraction_context: BONUS_EXTRACTION_CONTEXT },
+          select: BONUS_ACTIVE_SOURCE_POINTER_SELECT,
+        },
         evidence_claims: {
           include: {
             evidence: true,
@@ -308,6 +526,22 @@ export class BonusReverificationService {
     if (!bonus) {
       return { status: "BONUS_NOT_FOUND", bonusId };
     }
+
+    // Never replace the evidence underneath a human review without advancing
+    // its governance version. These states have no legal service transition
+    // back to AWAITING_REVIEW, so the fail-closed behavior is to leave the
+    // active evidence and freshness projection untouched.
+    if (isBonusHumanReviewPending(bonus)) {
+      return {
+        status: "HUMAN_REVIEW_PENDING",
+        bonusId,
+        reviewStatus: bonus.review_status,
+        governanceVersion: bonus.governance_version,
+        reason:
+          "Automated reverification cannot replace evidence during review",
+      };
+    }
+    assertAutomatedEvidenceReplacementAllowed(bonus);
 
     // 2. Authoritative Source URL Resolution
     const resolved = this.resolveAuthoritativeSourceUrl(
@@ -484,6 +718,21 @@ export class BonusReverificationService {
       // BRANCH A: UNCHANGED TERMS & ACTIVE OFFER -> RENEW VERIFICATION
       // -------------------------------------------------------------
       return await this.runInTransaction(db, async (tx) => {
+        const current = await tx.bonus.findUnique({
+          where: { id: bonus.id },
+          select: {
+            id: true,
+            governance_version: true,
+            review_status: true,
+            publication_status: true,
+          },
+        });
+        if (!current) {
+          throw new WorkflowTransitionError("STALE_GOVERNANCE_VERSION");
+        }
+        assertAutomatedEvidenceReplacementAllowed(current);
+        assertBonusAuthoritySnapshotUnchanged(bonus, current);
+
         // a. Actor
         const actor = await tx.reviewActor.upsert({
           where: { stable_key: "service:bonus-reverification" },
@@ -562,11 +811,42 @@ export class BonusReverificationService {
           semantics,
         );
 
-        // e. Update Bonus.verified_at
+        // e. A machine-created observation never inherits an earlier human
+        //    approval. Invalidate any current approval through the canonical
+        //    workflow before projecting the replacement observation.
+        let finalReviewStatus = bonus.review_status;
+        let finalPublicationStatus = bonus.publication_status;
+        let finalGovernanceVersion = bonus.governance_version;
+
+        if (bonus.review_status === ReviewStatus.APPROVED) {
+          const transitionRes =
+            await applyAutomatedEvidenceReplacementGovernance({
+              transaction: tx,
+              bonus,
+              actorId: actor.id,
+              claimIds,
+              internalReason:
+                "A fresh automated observation requires renewed human approval",
+            });
+          finalReviewStatus = transitionRes.reviewStatus;
+          finalPublicationStatus = transitionRes.publicationStatus;
+          finalGovernanceVersion = transitionRes.governanceVersion;
+        }
+
+        // f. Project the authoritative observation onto Bonus.verified_at.
+        //    verified_at is a denormalisation of the active evidence
+        //    observed_at, so it must be the scraper's real observation instant,
+        //    never the extraction/commit time. updated_at stays commit time:
+        //    it records when the row changed, not when the offer was seen.
         const freshnessCas = await tx.bonus.updateMany({
-          where: this.createBonusCasPredicate(bonus),
+          where: {
+            ...this.createBonusCasPredicate(bonus),
+            governance_version: finalGovernanceVersion,
+            review_status: finalReviewStatus,
+            publication_status: finalPublicationStatus,
+          },
           data: {
-            verified_at: extractedAt,
+            verified_at: observedAt,
             updated_at: extractedAt,
           },
         });
@@ -574,7 +854,7 @@ export class BonusReverificationService {
           throw new WorkflowTransitionError("STALE_GOVERNANCE_VERSION");
         }
 
-        // f. Append verified_at BonusHistoryEvent
+        // g. Append verified_at BonusHistoryEvent
         await tx.bonusHistoryEvent.create({
           data: {
             bonus_id: bonus.id,
@@ -582,7 +862,9 @@ export class BonusReverificationService {
             old_value: bonus.verified_at
               ? bonus.verified_at.toISOString()
               : null,
-            new_value: extractedAt.toISOString(),
+            // The audit trail records the authoritative observation instant,
+            // while changed_at stays the commit instant.
+            new_value: observedAt.toISOString(),
             changed_at: extractedAt,
             source_url: sourceUrl,
           },
@@ -591,9 +873,13 @@ export class BonusReverificationService {
         return {
           status: "VERIFIED_UNCHANGED" as const,
           bonusId: bonus.id,
-          verifiedAt: extractedAt,
+          verifiedAt: observedAt,
           evidenceRecordId: evidenceRecord.id,
           claimIds,
+          reviewStatus: finalReviewStatus,
+          publicationStatus: finalPublicationStatus,
+          governanceVersion: finalGovernanceVersion,
+          humanApprovalRequired: finalReviewStatus !== ReviewStatus.APPROVED,
         };
       });
     } else {
@@ -601,6 +887,21 @@ export class BonusReverificationService {
       // BRANCH B/E: MATERIAL CHANGES DETECTED OR INACTIVE OFFER
       // -------------------------------------------------------------
       return await this.runInTransaction(db, async (tx) => {
+        const current = await tx.bonus.findUnique({
+          where: { id: bonus.id },
+          select: {
+            id: true,
+            governance_version: true,
+            review_status: true,
+            publication_status: true,
+          },
+        });
+        if (!current) {
+          throw new WorkflowTransitionError("STALE_GOVERNANCE_VERSION");
+        }
+        assertAutomatedEvidenceReplacementAllowed(current);
+        assertBonusAuthoritySnapshotUnchanged(bonus, current);
+
         // a. Actor
         const actor = await tx.reviewActor.upsert({
           where: { stable_key: "service:bonus-reverification" },
@@ -699,24 +1000,25 @@ export class BonusReverificationService {
 
         let resultingVersion = bonus.governance_version;
         let resultingReviewStatus = bonus.review_status;
+        let resultingPublicationStatus = bonus.publication_status;
 
         if (bonus.review_status === ReviewStatus.APPROVED) {
           // Do NOT mutate governed fields in-place.
           // Do NOT refresh verified_at.
           // Transition review APPROVED -> AWAITING_REVIEW via CAS
-          const txWorkflow = new WorkflowTransitionService(tx as any);
-          const transitionRes = await txWorkflow.transitionBonusReview({
-            subjectId: bonus.id,
-            actorId: actor.id,
-            expectedVersion: bonus.governance_version,
-            toStatus: ReviewStatus.AWAITING_REVIEW,
-            claimIds,
-            internalReason: isOfferInactive
-              ? "Offer observed as INACTIVE during source re-verification"
-              : "Material terms changed during source re-verification",
-          });
+          const transitionRes =
+            await applyAutomatedEvidenceReplacementGovernance({
+              transaction: tx,
+              bonus,
+              actorId: actor.id,
+              claimIds,
+              internalReason: isOfferInactive
+                ? "Offer observed as INACTIVE during source re-verification"
+                : "Material terms changed during source re-verification",
+            });
           resultingVersion = transitionRes.governanceVersion;
           resultingReviewStatus = transitionRes.reviewStatus;
+          resultingPublicationStatus = transitionRes.publicationStatus;
         } else if (
           bonus.publication_status === PublicationStatus.PUBLISHED &&
           bonus.review_status === ReviewStatus.AWAITING_REVIEW
@@ -761,6 +1063,7 @@ export class BonusReverificationService {
           bonusId: bonus.id,
           diffs,
           reviewStatus: resultingReviewStatus,
+          publicationStatus: resultingPublicationStatus,
           governanceVersion: resultingVersion,
           evidenceRecordId: evidenceRecord.id,
           claimIds,

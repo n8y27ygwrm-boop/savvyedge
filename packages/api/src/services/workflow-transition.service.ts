@@ -20,6 +20,11 @@ import {
   isActorAuthorized,
   type WorkflowAction,
 } from "./workflow-transition.policy";
+import {
+  evaluateActiveObservationFreshness,
+  type ActiveObservationRejectionCode,
+} from "./freshness.policy";
+import { BONUS_EXTRACTION_CONTEXT } from "../constants/extraction-context";
 
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 const MAX_SAFE_REASON_LENGTH = 500;
@@ -192,6 +197,12 @@ export class WorkflowTransitionService {
       if (command.toStatus === ReviewStatus.APPROVED && claimIds.length === 0) {
         throw new WorkflowTransitionError("EVIDENCE_INELIGIBLE");
       }
+      if (
+        subjectType === GovernedSubjectType.BONUS &&
+        command.toStatus === ReviewStatus.APPROVED
+      ) {
+        await this.requireActiveBonusClaims(tx, subject.id, claimIds);
+      }
 
       const canonicalTargetId =
         command.toStatus === ReviewStatus.SUPERSEDED
@@ -350,6 +361,21 @@ export class WorkflowTransitionService {
         command.toStatus === PublicationStatus.PUBLISHED
       ) {
         await this.requireOneEligibleCasinoLicense(tx, subject.id, now);
+      }
+
+      // D3C: bonus publication is authoritative here, not in the admin adapter.
+      // A caller that bypasses the adapter still cannot publish a bonus without
+      // a fresh, projection-consistent active observation.
+      if (
+        subjectType === GovernedSubjectType.BONUS &&
+        command.toStatus === PublicationStatus.PUBLISHED
+      ) {
+        await this.requireFreshActiveBonusEvidence(
+          tx,
+          subject.id,
+          claimIds,
+          now,
+        );
       }
 
       const updated = await this.compareAndSwapPublicationState(
@@ -783,6 +809,158 @@ export class WorkflowTransitionService {
       return GovernedSubjectType.LICENSE;
     }
     return null;
+  }
+
+  /**
+   * Maps an active-observation rejection onto the existing safe error contract.
+   * No new codes: the public vocabulary stays coarse so a rejected publication
+   * never narrates internal evidence state back to a caller.
+   */
+  private static readonly ACTIVE_EVIDENCE_ERROR_CODES: Record<
+    ActiveObservationRejectionCode,
+    WorkflowTransitionErrorCode
+  > = {
+    MISSING_ACTIVE_POINTER: "EVIDENCE_INELIGIBLE",
+    AMBIGUOUS_ACTIVE_POINTER: "EVIDENCE_INELIGIBLE",
+    MISSING_ACTIVE_EVIDENCE: "EVIDENCE_RECORD_NOT_FOUND",
+    ACTIVE_EVIDENCE_MISMATCH: "EVIDENCE_RECORD_NOT_FOUND",
+    INVALID_EXTRACTION_IDENTITY: "EVIDENCE_INELIGIBLE",
+    MISSING_SUPPORTING_CLAIM: "EVIDENCE_INELIGIBLE",
+    INVALID_EVIDENCE_SOURCE: "EVIDENCE_INELIGIBLE",
+    INVALID_OBSERVATION: "EVIDENCE_INELIGIBLE",
+    FUTURE_OBSERVATION: "EVIDENCE_INELIGIBLE",
+    PREMATURE_EVIDENCE: "EVIDENCE_INELIGIBLE",
+    EXPIRED_EVIDENCE: "EVIDENCE_EXPIRED",
+    STALE_OBSERVATION: "EVIDENCE_INELIGIBLE",
+    PROJECTION_MISMATCH: "EVIDENCE_INELIGIBLE",
+  };
+
+  /**
+   * Human approval is evidence-specific. Resolve active authority inside the
+   * same serializable transaction as the approval CAS so an admin-side claim
+   * snapshot cannot approve a superseded machine observation.
+   */
+  private async requireActiveBonusClaims(
+    tx: Prisma.TransactionClient,
+    bonusId: string,
+    claimIds: readonly string[],
+  ): Promise<void> {
+    const pointers = await tx.activeExtractionPointer.findMany({
+      where: {
+        bonus_id: bonusId,
+        extraction_context: BONUS_EXTRACTION_CONTEXT,
+      },
+      select: { evidence_id: true },
+    });
+    if (pointers.length !== 1) {
+      throw new WorkflowTransitionError("EVIDENCE_INELIGIBLE");
+    }
+
+    const claims = await tx.bonusEvidenceClaim.findMany({
+      where: { id: { in: [...claimIds] }, bonus_id: bonusId },
+      select: { id: true, evidence_id: true },
+    });
+    const evidenceByClaimId = new Map(
+      claims.map((claim) => [claim.id, claim.evidence_id]),
+    );
+    for (const claimId of claimIds) {
+      if (evidenceByClaimId.get(claimId) !== pointers[0].evidence_id) {
+        throw new WorkflowTransitionError("EVIDENCE_INELIGIBLE");
+      }
+    }
+  }
+
+  /**
+   * BONUS -> PUBLISHED authority (D3C).
+   *
+   * Inside the same serializable transaction as the state change, proves that
+   * the bonus has exactly one BONUS active-extraction pointer, that it resolves
+   * to an existing evidence record carrying a SUPPORTS claim for this bonus,
+   * that the observation is valid, not future, unexpired and within the
+   * freshness window, and that Bonus.verified_at projects that observation
+   * exactly. Every relied-upon claim must belong to that same active evidence,
+   * so a legacy or historical claim can never authorize a publication.
+   */
+  private async requireFreshActiveBonusEvidence(
+    tx: Prisma.TransactionClient,
+    bonusId: string,
+    claimIds: readonly string[],
+    now: Date,
+  ): Promise<void> {
+    const bonus = await tx.bonus.findUnique({
+      where: { id: bonusId },
+      select: { id: true, verified_at: true },
+    });
+    if (!bonus) {
+      throw new WorkflowTransitionError("SUBJECT_NOT_FOUND");
+    }
+
+    const pointers = await tx.activeExtractionPointer.findMany({
+      where: {
+        bonus_id: bonusId,
+        extraction_context: BONUS_EXTRACTION_CONTEXT,
+      },
+      select: {
+        extraction_context: true,
+        bonus_id: true,
+        data_source_id: true,
+        evidence_id: true,
+        extraction_key: true,
+        contract_version: true,
+        evidence: {
+          select: {
+            id: true,
+            data_source_id: true,
+            source_url: true,
+            observed_at: true,
+            extracted_at: true,
+            valid_from: true,
+            expires_at: true,
+            extraction_key: true,
+            bonus_claims: {
+              where: { bonus_id: bonusId },
+              select: { bonus_id: true, verdict: true },
+            },
+          },
+        },
+      },
+    });
+
+    const decision = evaluateActiveObservationFreshness(
+      {
+        id: bonus.id,
+        verified_at: bonus.verified_at,
+        active_extractions: pointers ?? [],
+      },
+      now,
+    );
+    if (decision.status !== "FRESH") {
+      throw new WorkflowTransitionError(
+        WorkflowTransitionService.ACTIVE_EVIDENCE_ERROR_CODES[decision.code],
+      );
+    }
+
+    if (claimIds.length === 0) {
+      return;
+    }
+
+    const suppliedClaims = await tx.bonusEvidenceClaim.findMany({
+      where: { id: { in: [...claimIds] } },
+      select: { id: true, evidence_id: true },
+    });
+    const evidenceByClaimId = new Map(
+      suppliedClaims.map((claim) => [claim.id, claim.evidence_id]),
+    );
+    for (const claimId of claimIds) {
+      const evidenceId = evidenceByClaimId.get(claimId);
+      if (evidenceId === undefined) {
+        throw new WorkflowTransitionError("CLAIM_NOT_FOUND");
+      }
+      if (evidenceId !== decision.evidenceId) {
+        // The claim exists but belongs to a superseded extraction.
+        throw new WorkflowTransitionError("EVIDENCE_INELIGIBLE");
+      }
+    }
   }
 
   private async validateClaims(

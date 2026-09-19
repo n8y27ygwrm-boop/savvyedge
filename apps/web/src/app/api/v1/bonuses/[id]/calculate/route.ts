@@ -3,17 +3,24 @@ import { BonusService } from "@savvyedge/api/bonus-service";
 import { PublicationGateService } from "@savvyedge/api/publication-gate";
 import { prisma } from "@savvyedge/database";
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const depositAmount = typeof body.depositAmount === "number" ? body.depositAmount : 0;
+    const depositAmount =
+      typeof body.depositAmount === "number" ? body.depositAmount : 0;
     const slotId = typeof body.slotId === "string" ? body.slotId : undefined;
 
+    // One request-scoped clock for the calculator eligibility gate.
+    const now = new Date();
     const bonus = await prisma.bonus.findUnique({
       where: { id },
       include: {
         history_events: true,
+        ...PublicationGateService.bonusActiveEvidenceInclude(),
         casino: {
           include: {
             history_events: true,
@@ -25,21 +32,33 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     if (!bonus) {
       return NextResponse.json(
-        { data: null, meta: null, error: { message: "Bonus not found", code: "NOT_FOUND" } },
-        { status: 404 }
+        {
+          data: null,
+          meta: null,
+          error: { message: "Bonus not found", code: "NOT_FOUND" },
+        },
+        { status: 404 },
       );
     }
 
-    const validation = PublicationGateService.validateCalculatorEligibility(bonus, bonus.casino);
+    const validation = PublicationGateService.validateCalculatorEligibility(
+      bonus,
+      bonus.casino,
+      now,
+    );
     if (validation.status !== "VALID") {
       const statusCode = validation.status === "INELIGIBLE_BONUS" ? 403 : 400;
       return NextResponse.json(
         {
           data: null,
           meta: null,
-          error: { message: validation.reason || "Bonus is ineligible for public calculation", code: validation.status },
+          error: {
+            message:
+              validation.reason || "Bonus is ineligible for public calculation",
+            code: validation.status,
+          },
         },
-        { status: statusCode }
+        { status: statusCode },
       );
     }
 
@@ -68,9 +87,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           {
             data: null,
             meta: null,
-            error: { message: "Requested game is ineligible for public calculation", code: "INELIGIBLE_SLOT" },
+            error: {
+              message: "Requested game is ineligible for public calculation",
+              code: "INELIGIBLE_SLOT",
+            },
           },
-          { status: 403 }
+          { status: 403 },
         );
       }
 
@@ -93,7 +115,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     console.error("[API /api/v1/bonuses/[id]/calculate] Error:", error);
     return NextResponse.json(
       { data: null, meta: null, error: { message: "Internal server error" } },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

@@ -5,6 +5,7 @@ import {
   ExtractionContractError,
   artifactIdentity,
   bonusExtractionKey,
+  isCanonicalBonusExtractionIdentity,
 } from "@savvyedge/ai-agents/extraction-contract";
 import { normalizeBonusExtraction } from "@savvyedge/ai-agents";
 import type { CreateBonusInput } from "@savvyedge/types";
@@ -22,7 +23,9 @@ const HTML_HASH_B =
 const CONTENT_HASH =
   "e303cbd3d0c055a25134a89f1afaddc068bf732288d145cc1f11e08826b1717a";
 
-function extracted(overrides: Partial<CreateBonusInput> = {}): CreateBonusInput {
+function extracted(
+  overrides: Partial<CreateBonusInput> = {},
+): CreateBonusInput {
   return {
     casino_id: "00000000-0000-4000-8000-000000000001",
     type: "FREE_SPINS",
@@ -76,13 +79,17 @@ describe("extraction contract identity", () => {
   });
 
   it("changes identity when only the html hash changes", () => {
-    expect(artifactIdentity({ snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_A })).not.toBe(
+    expect(
+      artifactIdentity({ snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_A }),
+    ).not.toBe(
       artifactIdentity({ snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_B }),
     );
   });
 
   it("changes identity when only the snapshot locator changes", () => {
-    expect(artifactIdentity({ snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_A })).not.toBe(
+    expect(
+      artifactIdentity({ snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_A }),
+    ).not.toBe(
       artifactIdentity({ snapshotLocator: LOCATOR_B, htmlHash: HTML_HASH_A }),
     );
   });
@@ -106,12 +113,116 @@ describe("extraction contract identity", () => {
   });
 
   it.each([
-    ["empty locator", { snapshotLocator: "  ", htmlHash: HTML_HASH_A, contentHash: CONTENT_HASH }],
-    ["bad html hash", { snapshotLocator: LOCATOR_A, htmlHash: "nope", contentHash: CONTENT_HASH }],
-    ["bad content hash", { snapshotLocator: LOCATOR_A, htmlHash: HTML_HASH_A, contentHash: "nope" }],
+    [
+      "empty locator",
+      {
+        snapshotLocator: "  ",
+        htmlHash: HTML_HASH_A,
+        contentHash: CONTENT_HASH,
+      },
+    ],
+    [
+      "bad html hash",
+      {
+        snapshotLocator: LOCATOR_A,
+        htmlHash: "nope",
+        contentHash: CONTENT_HASH,
+      },
+    ],
+    [
+      "bad content hash",
+      {
+        snapshotLocator: LOCATOR_A,
+        htmlHash: HTML_HASH_A,
+        contentHash: "nope",
+      },
+    ],
   ])("rejects %s rather than fabricating identity", (_label, input) => {
     expect(() => bonusExtractionKey(input as never)).toThrow(
       ExtractionContractError,
+    );
+  });
+
+  describe("persisted identity validation", () => {
+    const canonicalKey = bonusExtractionKey({
+      snapshotLocator: LOCATOR_A,
+      htmlHash: HTML_HASH_A,
+      contentHash: CONTENT_HASH,
+    });
+    const [version, context, artifactDigest, contentHash] =
+      canonicalKey.split(":");
+
+    it("accepts only the exact current BONUS extraction identity", () => {
+      expect(
+        isCanonicalBonusExtractionIdentity({
+          extractionKey: canonicalKey,
+          contractVersion: EXTRACTION_CONTRACT_VERSION,
+          extractionContext: "BONUS",
+        }),
+      ).toBe(true);
+    });
+
+    it.each([
+      ["arbitrary matching value", "active-extraction", version, context],
+      ["missing contract version", canonicalKey, undefined, context],
+      ["unsupported contract version", canonicalKey, "extraction-v3", context],
+      ["padded contract version", canonicalKey, ` ${version}`, context],
+      ["wrong pointer context", canonicalKey, version, "CASINO"],
+      [
+        "embedded version mismatch",
+        `extraction-v3:${context}:${artifactDigest}:${contentHash}`,
+        version,
+        context,
+      ],
+      [
+        "embedded context mismatch",
+        `${version}:CASINO:${artifactDigest}:${contentHash}`,
+        version,
+        context,
+      ],
+      [
+        "short artifact digest",
+        `${version}:${context}:${artifactDigest.slice(1)}:${contentHash}`,
+        version,
+        context,
+      ],
+      [
+        "short content hash",
+        `${version}:${context}:${artifactDigest}:${contentHash.slice(1)}`,
+        version,
+        context,
+      ],
+      [
+        "uppercase artifact digest",
+        `${version}:${context}:${artifactDigest.toUpperCase()}:${contentHash}`,
+        version,
+        context,
+      ],
+      [
+        "uppercase content hash",
+        `${version}:${context}:${artifactDigest}:${contentHash.toUpperCase()}`,
+        version,
+        context,
+      ],
+      [
+        "non-hex artifact digest",
+        `${version}:${context}:${"z".repeat(64)}:${contentHash}`,
+        version,
+        context,
+      ],
+      ["wrong segment count", `${canonicalKey}:extra`, version, context],
+      ["padded extraction key", ` ${canonicalKey}`, version, context],
+    ])(
+      "rejects %s",
+      (_label, extractionKey, contractVersion, extractionContext) => {
+        expect(
+          isCanonicalBonusExtractionIdentity({
+            extractionKey,
+            contractVersion,
+            extractionContext,
+          }),
+        ).toBe(false);
+      },
     );
   });
 });
@@ -131,13 +242,19 @@ describe("extraction contract golden corpus", () => {
       "Opt in, wager £20+ on eligible games Mon 00:01 - Thurs 23:59 for 10 Free Spins worth 10p each",
     ],
     ["explicit-10x", "Get 50 free spins, wager winnings 10x to withdraw"],
-    ["explicit-10-times", "Get 50 free spins, wager winnings 10 times to withdraw"],
+    [
+      "explicit-10-times",
+      "Get 50 free spins, wager winnings 10 times to withdraw",
+    ],
     [
       "free-spin-winnings-scope",
       "Get 300 FREE SPINS when you play £30 on slots\nWager winnings from Free Spins 10 times to receive Cash",
     ],
     ["absent-wagering", "Get 100 free spins when you deposit £20"],
-    ["monetary-qualifying-spend", "Spend £25 on any slot to receive 20 free spins"],
+    [
+      "monetary-qualifying-spend",
+      "Spend £25 on any slot to receive 20 free spins",
+    ],
   ];
 
   const results = CORPUS.map(([name, source]) => {
@@ -155,27 +272,40 @@ describe("extraction contract golden corpus", () => {
   });
 
   it("holds the incident case at null wagering", () => {
-    const incident = results.find((r) => r.name === "betmgm-wager-20-incident")!;
+    const incident = results.find(
+      (r) => r.name === "betmgm-wager-20-incident",
+    )!;
     expect(incident.wagering_requirement).toBeNull();
-    expect(incident.qualifyingPlaySpend).toMatchObject({ amount: 20, currency: "£" });
+    expect(incident.qualifyingPlaySpend).toMatchObject({
+      amount: 20,
+      currency: "£",
+    });
   });
 
   it.each(["explicit-10x", "explicit-10-times"])(
     "keeps %s as a real multiplier",
     (name) => {
-      expect(results.find((r) => r.name === name)!.wagering_requirement).toBe(10);
+      expect(results.find((r) => r.name === name)!.wagering_requirement).toBe(
+        10,
+      );
     },
   );
 
   it("keeps the free-spin-winnings scope", () => {
     const scoped = results.find((r) => r.name === "free-spin-winnings-scope")!;
-    expect(scoped.wagering).toMatchObject({ scope: "FREE_SPIN_WINNINGS", multiplier: 10 });
+    expect(scoped.wagering).toMatchObject({
+      scope: "FREE_SPIN_WINNINGS",
+      multiplier: 10,
+    });
   });
 
   it("leaves absent wagering and monetary qualifying spend unfabricated", () => {
-    expect(results.find((r) => r.name === "absent-wagering")!.wagering_requirement).toBeNull();
     expect(
-      results.find((r) => r.name === "monetary-qualifying-spend")!.wagering_requirement,
+      results.find((r) => r.name === "absent-wagering")!.wagering_requirement,
+    ).toBeNull();
+    expect(
+      results.find((r) => r.name === "monetary-qualifying-spend")!
+        .wagering_requirement,
     ).toBeNull();
   });
 
@@ -190,7 +320,8 @@ describe("extraction contract golden corpus", () => {
     // digest in the same change.
     expect({ version: EXTRACTION_CONTRACT_VERSION, digest }).toEqual({
       version: "extraction-v2",
-      digest: "7aa5d434e5f3a7d86d026320c5254a45b241eafb9de8715a08544e1f201ddec7",
+      digest:
+        "7aa5d434e5f3a7d86d026320c5254a45b241eafb9de8715a08544e1f201ddec7",
     });
   });
 });

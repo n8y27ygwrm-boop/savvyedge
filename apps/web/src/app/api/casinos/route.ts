@@ -6,6 +6,8 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const slug = searchParams.get("slug");
+    // One request-scoped clock for both the query predicate and the runtime gate.
+    const now = new Date();
 
     if (slug) {
       const casino = await prisma.casino.findUnique({
@@ -13,8 +15,12 @@ export async function GET(request: Request) {
         include: {
           history_events: true,
           bonuses: {
-            where: PublicationGateService.whereBonusPublic(),
-            include: { history_events: true },
+            where: PublicationGateService.whereBonusPublic(now),
+            include: {
+              history_events: true,
+              // Validation input for the runtime freshness gate only.
+              ...PublicationGateService.bonusActiveEvidenceInclude(),
+            },
           },
           licenses: {
             include: {
@@ -38,7 +44,7 @@ export async function GET(request: Request) {
       if (!casino || !PublicationGateService.isCasinoPubliclyEligible(casino)) {
         return NextResponse.json(
           { error: "Casino not found" },
-          { status: 404, headers: { "Content-Type": "application/json" } }
+          { status: 404, headers: { "Content-Type": "application/json" } },
         );
       }
 
@@ -59,7 +65,9 @@ export async function GET(request: Request) {
             }
           : null,
         bonuses: casino.bonuses
-          .filter((b) => PublicationGateService.isBonusPubliclyEligible(b, casino))
+          .filter((b) =>
+            PublicationGateService.isBonusPubliclyEligible(b, casino, now),
+          )
           .map((b) => ({
             id: b.id,
             type: b.type,
@@ -132,7 +140,7 @@ export async function GET(request: Request) {
     console.error("[API /api/casinos] Error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
 }

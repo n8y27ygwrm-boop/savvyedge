@@ -24,13 +24,12 @@ export const EXTRACTION_CONTRACT_VERSION = "extraction-v2";
 export type ExtractionContext = "BONUS";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const CANONICAL_SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export class ExtractionContractError extends Error {
   public constructor(
     public readonly code:
-      | "INVALID_SNAPSHOT_LOCATOR"
-      | "INVALID_HTML_HASH"
-      | "INVALID_CONTENT_HASH",
+      "INVALID_SNAPSHOT_LOCATOR" | "INVALID_HTML_HASH" | "INVALID_CONTENT_HASH",
   ) {
     super(`Extraction contract input rejected (${code})`);
     this.name = "ExtractionContractError";
@@ -56,12 +55,16 @@ export function artifactIdentity(input: {
   htmlHash: string;
 }): string {
   const locator =
-    typeof input.snapshotLocator === "string" ? input.snapshotLocator.trim() : "";
+    typeof input.snapshotLocator === "string"
+      ? input.snapshotLocator.trim()
+      : "";
   if (!locator) {
     throw new ExtractionContractError("INVALID_SNAPSHOT_LOCATOR");
   }
   const htmlHash =
-    typeof input.htmlHash === "string" ? input.htmlHash.trim().toLowerCase() : "";
+    typeof input.htmlHash === "string"
+      ? input.htmlHash.trim().toLowerCase()
+      : "";
   if (!SHA256_PATTERN.test(htmlHash)) {
     throw new ExtractionContractError("INVALID_HTML_HASH");
   }
@@ -98,4 +101,44 @@ export function bonusExtractionKey(input: {
   const version = input.contractVersion || EXTRACTION_CONTRACT_VERSION;
 
   return `${version}:BONUS:${identity}:${contentHash}`;
+}
+
+export interface BonusExtractionIdentityInput {
+  extractionKey: unknown;
+  contractVersion: unknown;
+  extractionContext: unknown;
+}
+
+/**
+ * Proves that a persisted BONUS extraction identity belongs to the one contract
+ * this deployment supports. This intentionally validates only the stored
+ * identity grammar: recomputing the artifact digest would require loading the
+ * secret-adjacent snapshot locator and is outside the runtime policy boundary.
+ */
+export function isCanonicalBonusExtractionIdentity(
+  input: BonusExtractionIdentityInput,
+): boolean {
+  if (
+    input.contractVersion !== EXTRACTION_CONTRACT_VERSION ||
+    input.extractionContext !== "BONUS" ||
+    typeof input.extractionKey !== "string" ||
+    input.extractionKey === "" ||
+    input.extractionKey.trim() !== input.extractionKey
+  ) {
+    return false;
+  }
+
+  const segments = input.extractionKey.split(":");
+  if (segments.length !== 4) return false;
+
+  const [embeddedVersion, embeddedContext, artifactDigest, contentHash] =
+    segments;
+  return (
+    embeddedVersion === input.contractVersion &&
+    embeddedVersion === EXTRACTION_CONTRACT_VERSION &&
+    embeddedContext === input.extractionContext &&
+    embeddedContext === "BONUS" &&
+    CANONICAL_SHA256_PATTERN.test(artifactDigest) &&
+    CANONICAL_SHA256_PATTERN.test(contentHash)
+  );
 }

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // Typecheck-only configuration for packages/api/scripts.
+  //
+  // The runtime config (tsconfig.json) deliberately keeps `include: ["src"]` so
+  // `pnpm build` emits exactly the published surface. That left scripts/
+  // completely untypechecked, which is how a broken dynamic import in the
+  // coverage verifier reached a live run. This config closes that gap without
+  // touching what gets compiled: it is `noEmit`, so nothing here is ever built
+  // or bundled. Files imported by scripts (src/, tests/helpers/) are pulled in
+  // by the compiler automatically.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": "."
+  },
+  "include": ["scripts"],
+  // PRE-EXISTING DEBT, not introduced by the coverage work. Both fail today and
+  // are excluded so this gate can be enforced now rather than deferred:
+  //   - capture-desktop-screenshots.ts: imports `playwright`, which is not a
+  //     declared dependency of @savvyedge/api (TS2307).
+  //   - verify-vertical-slice.ts: line 156 omits the required `valid_from` and
+  //     `valid_until` fields (TS2345).
+  // Remove each entry as its underlying defect is fixed.
+  "exclude": [
+    "scripts/capture-desktop-screenshots.ts",
+    "scripts/verify-vertical-slice.ts"
+  ]
+}

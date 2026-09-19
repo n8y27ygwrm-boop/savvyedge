@@ -14,7 +14,11 @@ export async function GET(
       include: {
         bonuses: {
           where: PublicationGateService.whereBonusPublic(now),
-          include: { history_events: true },
+          include: {
+            history_events: true,
+            // Validation input for the runtime freshness gate only.
+            ...PublicationGateService.bonusActiveEvidenceInclude(),
+          },
         },
         licenses: true,
         history_events: true,
@@ -36,7 +40,9 @@ export async function GET(
       .filter((bonus) =>
         PublicationGateService.isBonusPubliclyEligible(bonus, casino, now),
       )
-      .map(({ history_events: _evidenceHistory, ...bonus }) => bonus);
+      .map(({ history_events: _evidenceHistory, ...bonus }) =>
+        PublicationGateService.toPublicBonus(bonus),
+      );
 
     return NextResponse.json({
       data: { ...casino, bonuses },

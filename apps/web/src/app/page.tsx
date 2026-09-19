@@ -42,9 +42,11 @@ function formatInterval(ms: number): string {
 export default async function HomePage() {
   const discoveryIntervalMs = parseInt(
     process.env.DISCOVERY_INTERVAL_MS || "300000",
-    10
+    10,
   );
   const updateCycleLabel = formatInterval(discoveryIntervalMs);
+  // One request-scoped clock for both the query predicate and the runtime gate.
+  const now = new Date();
 
   const [rawCasinos, rawBonuses, jurisdictionCount] = await Promise.all([
     prisma.casino.findMany({
@@ -64,9 +66,10 @@ export default async function HomePage() {
       },
     }),
     prisma.bonus.findMany({
-      where: PublicationGateService.whereBonusPublic(),
+      where: PublicationGateService.whereBonusPublic(now),
       include: {
         history_events: true,
+        ...PublicationGateService.bonusActiveEvidenceInclude(),
         casino: {
           include: {
             history_events: true,
@@ -88,8 +91,12 @@ export default async function HomePage() {
     }),
   ]);
 
-  const eligibleCasinos = rawCasinos.filter((c) => PublicationGateService.isCasinoPubliclyEligible(c));
-  const eligibleBonuses = rawBonuses.filter((b) => PublicationGateService.isBonusPubliclyEligible(b));
+  const eligibleCasinos = rawCasinos.filter((c) =>
+    PublicationGateService.isCasinoPubliclyEligible(c),
+  );
+  const eligibleBonuses = rawBonuses.filter((b) =>
+    PublicationGateService.isBonusPubliclyEligible(b, b.casino, now),
+  );
 
   const casinoCount = eligibleCasinos.length;
   const activeBonusCount = eligibleBonuses.length;
@@ -223,17 +230,16 @@ export default async function HomePage() {
       {/* ───── Trust Strip ───── */}
       <section className="text-center px-4">
         <p className="text-sm italic text-slate-400 max-w-3xl mx-auto leading-relaxed">
-          Data sourced from {casinoCount.toLocaleString("en-US")} regulated casinos across {jurisdictionCount.toLocaleString("en-US")} jurisdictions.
-          Source checked. No paid placements in rankings.
+          Data sourced from {casinoCount.toLocaleString("en-US")} regulated
+          casinos across {jurisdictionCount.toLocaleString("en-US")}{" "}
+          jurisdictions. Source checked. No paid placements in rankings.
         </p>
       </section>
 
       {/* ───── Recent Source Checks Feed ───── */}
       <section className="space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold text-white">
-            Recent Source Checks
-          </h2>
+          <h2 className="text-xl font-bold text-white">Recent Source Checks</h2>
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <span
               className="w-2 h-2 rounded-full bg-[#10b981]"
@@ -257,16 +263,14 @@ export default async function HomePage() {
               className="grid grid-cols-4 gap-4 px-5 py-3.5 text-sm border-b border-slate-800/40 last:border-b-0 hover:bg-slate-800/20 transition-colors"
               style={{ animation: `fade-up 0.4s ease ${i * 0.08}s both` }}
             >
-              <span className="font-semibold text-white text-xs">
-                {c.name}
-              </span>
+              <span className="font-semibold text-white text-xs">{c.name}</span>
               <span className="text-slate-400 text-xs">License Check</span>
-              <span className="font-mono text-slate-300 text-xs">
-                Just now
-              </span>
+              <span className="font-mono text-slate-300 text-xs">Just now</span>
               <span>
                 <VerificationBadge
-                  eligible={PublicationGateService.isVerificationBadgeEligible(c)}
+                  eligible={PublicationGateService.isVerificationBadgeEligible(
+                    c,
+                  )}
                   compact
                 />
               </span>

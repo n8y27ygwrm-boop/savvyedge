@@ -9,10 +9,12 @@ import {
   parseLicenceDataset,
   resolveAuthoritativeUkgcLicence,
   UkgcDatasets,
-  UkgcLicenseVerifierService,
-  UKGC_DATASET_URLS,
   PublicationGateService,
 } from "../src";
+import {
+  UkgcLicenseVerifierService,
+  UKGC_DATASET_URLS,
+} from "../src/services/ukgc-license-verifier.service";
 import {
   ActorKind,
   EvidenceType,
@@ -108,18 +110,33 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       expect(isApplicableRemoteCasinoActivity("Remote", "Casino")).toBe(true);
       expect(isApplicableRemoteCasinoActivity("remote", "casino")).toBe(true);
       expect(isApplicableRemoteCasinoActivity("Remote", "Bingo")).toBe(false);
-      expect(isApplicableRemoteCasinoActivity("Remote", "General Betting Standard - Real Event")).toBe(false);
-      expect(isApplicableRemoteCasinoActivity("Non-Remote", "Casino")).toBe(false);
-      expect(isApplicableRemoteCasinoActivity("Remote", "Gambling Software")).toBe(false);
+      expect(
+        isApplicableRemoteCasinoActivity(
+          "Remote",
+          "General Betting Standard - Real Event",
+        ),
+      ).toBe(false);
+      expect(isApplicableRemoteCasinoActivity("Non-Remote", "Casino")).toBe(
+        false,
+      );
+      expect(
+        isApplicableRemoteCasinoActivity("Remote", "Gambling Software"),
+      ).toBe(false);
     });
   });
 
   describe("2. Domain Normalization & Association Rules", () => {
     it("normalizes www. prefixes, protocol, and ports without stripping m.", () => {
-      expect(normalizeUkgcHost("https://www.unibet.co.uk/casino")).toBe("unibet.co.uk");
-      expect(normalizeUkgcHost("http://WWW.UNIBET.CO.UK:443/")).toBe("unibet.co.uk");
+      expect(normalizeUkgcHost("https://www.unibet.co.uk/casino")).toBe(
+        "unibet.co.uk",
+      );
+      expect(normalizeUkgcHost("http://WWW.UNIBET.CO.UK:443/")).toBe(
+        "unibet.co.uk",
+      );
       // Must NOT strip m. prefix
-      expect(normalizeUkgcHost("https://m.unibet.co.uk")).toBe("m.unibet.co.uk");
+      expect(normalizeUkgcHost("https://m.unibet.co.uk")).toBe(
+        "m.unibet.co.uk",
+      );
     });
 
     it("does not allow reverse-subdomain authorization", () => {
@@ -129,7 +146,10 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
         licencesCsv: MOCK_LICENCES_CSV,
       };
 
-      const res = resolveAuthoritativeUkgcLicence("unibet.co.uk", datasetsWithoutParent);
+      const res = resolveAuthoritativeUkgcLicence(
+        "unibet.co.uk",
+        datasetsWithoutParent,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("DOMAIN_NOT_FOUND");
     });
@@ -150,7 +170,9 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       expect(mapUkgcStrictStatus("Suspended")).toBe("SUSPENDED");
       expect(mapUkgcStrictStatus("Surrendered")).toBe("SURRENDERED");
       expect(mapUkgcStrictStatus("Revoked")).toBe("REVOKED");
-      expect(mapUkgcStrictStatus("Revoked (Non payment of fee)")).toBe("REVOKED");
+      expect(mapUkgcStrictStatus("Revoked (Non payment of fee)")).toBe(
+        "REVOKED",
+      );
       expect(mapUkgcStrictStatus("Expired")).toBe("EXPIRED");
       expect(mapUkgcStrictStatus("Lapsed")).toBe("LAPSED");
       expect(mapUkgcStrictStatus("Forfeited")).toBe("FORFEITED");
@@ -160,7 +182,10 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
 
   describe("4. Authoritative Domain -> Account -> Licence Resolution", () => {
     it("resolves exact active domain to account and actual operating licence number", () => {
-      const res = resolveAuthoritativeUkgcLicence("unibet.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "unibet.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(true);
       if (res.success) {
         expect(res.data.accountNumber).toBe("45322");
@@ -177,7 +202,10 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
 
     it("does not create false ambiguity when multiple rows share the same licence number for different activities", () => {
       // Account 45322 has rows for Casino and General Betting Standard both with licence '045322-R-324275-019'
-      const res = resolveAuthoritativeUkgcLicence("unibet.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "unibet.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(true);
       if (res.success) {
         expect(res.data.licenceNumber).toBe("045322-R-324275-019");
@@ -185,55 +213,82 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
     });
 
     it("fails closed when Remote + Bingo only (no Casino licence)", () => {
-      const res = resolveAuthoritativeUkgcLicence("bingo-only.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "bingo-only.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("NO_REMOTE_CASINO_LICENCE");
     });
 
     it("fails closed when Remote + General Betting Standard only (no Casino licence)", () => {
-      const res = resolveAuthoritativeUkgcLicence("betting-only.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "betting-only.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("NO_REMOTE_CASINO_LICENCE");
     });
 
     it("fails closed when Non-Remote + Casino only (no Remote Casino licence)", () => {
-      const res = resolveAuthoritativeUkgcLicence("non-remote-casino.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "non-remote-casino.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("NO_REMOTE_CASINO_LICENCE");
     });
 
     it("fails closed when Remote + Casino licence is Suspended", () => {
-      const res = resolveAuthoritativeUkgcLicence("suspended-licence.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "suspended-licence.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("LICENCE_STATUS_SUSPENDED");
     });
 
     it("fails closed when Remote + Casino licence is Expired", () => {
-      const res = resolveAuthoritativeUkgcLicence("expired-casino.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "expired-casino.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("LICENCE_STATUS_EXPIRED");
     });
 
     it("fails closed when two distinct active Remote Casino licence numbers exist (ambiguity)", () => {
-      const res = resolveAuthoritativeUkgcLicence("ambiguous-casino.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "ambiguous-casino.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("AMBIGUOUS_APPLICABLE_LICENCE");
     });
 
     it("fails closed when domain is Inactive", () => {
-      const res = resolveAuthoritativeUkgcLicence("old-brand.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "old-brand.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("DOMAIN_INACTIVE");
     });
 
     it("fails closed when domain is White Label in this boundary", () => {
-      const res = resolveAuthoritativeUkgcLicence("partner-whitelabel.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "partner-whitelabel.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("DOMAIN_WHITE_LABEL");
     });
 
     it("fails closed when domain is not in the dataset", () => {
-      const res = resolveAuthoritativeUkgcLicence("nonexistent-casino.co.uk", standardMockDatasets);
+      const res = resolveAuthoritativeUkgcLicence(
+        "nonexistent-casino.co.uk",
+        standardMockDatasets,
+      );
       expect(res.success).toBe(false);
       expect(res.reason).toBe("DOMAIN_NOT_FOUND");
     });
@@ -274,41 +329,46 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       const nextId = (prefix: string) => `${prefix}-${idCounter++}`;
 
       const mockDb: any = {
-        $transaction: vi.fn().mockImplementation(async (callback: (tx: any) => Promise<any>) => {
-          // Snapshot state for atomic rollback simulation
-          const snapshot = {
-            jurisdictions: new Map(state.jurisdictions),
-            regulators: new Map(state.regulators),
-            dataSources: new Map(state.dataSources),
-            reviewActors: new Map(state.reviewActors),
-            licenses: new Map(state.licenses),
-            evidenceRecords: new Map(state.evidenceRecords),
-            licenseEvidenceClaims: new Map(state.licenseEvidenceClaims),
-            workflowAuditEvents: new Map(state.workflowAuditEvents),
-            workflowEventClaims: new Map(state.workflowEventClaims),
-            casinos: new Map(
-              Array.from(state.casinos.entries()).map(([k, v]) => [k, { ...v }]),
-            ),
-            casinoHistoryEvents: new Map(state.casinoHistoryEvents),
-          };
-          try {
-            return await callback(mockDb);
-          } catch (err) {
-            // Restore snapshot on error
-            state.jurisdictions = snapshot.jurisdictions;
-            state.regulators = snapshot.regulators;
-            state.dataSources = snapshot.dataSources;
-            state.reviewActors = snapshot.reviewActors;
-            state.licenses = snapshot.licenses;
-            state.evidenceRecords = snapshot.evidenceRecords;
-            state.licenseEvidenceClaims = snapshot.licenseEvidenceClaims;
-            state.workflowAuditEvents = snapshot.workflowAuditEvents;
-            state.workflowEventClaims = snapshot.workflowEventClaims;
-            state.casinos = snapshot.casinos;
-            state.casinoHistoryEvents = snapshot.casinoHistoryEvents;
-            throw err;
-          }
-        }),
+        $transaction: vi
+          .fn()
+          .mockImplementation(async (callback: (tx: any) => Promise<any>) => {
+            // Snapshot state for atomic rollback simulation
+            const snapshot = {
+              jurisdictions: new Map(state.jurisdictions),
+              regulators: new Map(state.regulators),
+              dataSources: new Map(state.dataSources),
+              reviewActors: new Map(state.reviewActors),
+              licenses: new Map(state.licenses),
+              evidenceRecords: new Map(state.evidenceRecords),
+              licenseEvidenceClaims: new Map(state.licenseEvidenceClaims),
+              workflowAuditEvents: new Map(state.workflowAuditEvents),
+              workflowEventClaims: new Map(state.workflowEventClaims),
+              casinos: new Map(
+                Array.from(state.casinos.entries()).map(([k, v]) => [
+                  k,
+                  { ...v },
+                ]),
+              ),
+              casinoHistoryEvents: new Map(state.casinoHistoryEvents),
+            };
+            try {
+              return await callback(mockDb);
+            } catch (err) {
+              // Restore snapshot on error
+              state.jurisdictions = snapshot.jurisdictions;
+              state.regulators = snapshot.regulators;
+              state.dataSources = snapshot.dataSources;
+              state.reviewActors = snapshot.reviewActors;
+              state.licenses = snapshot.licenses;
+              state.evidenceRecords = snapshot.evidenceRecords;
+              state.licenseEvidenceClaims = snapshot.licenseEvidenceClaims;
+              state.workflowAuditEvents = snapshot.workflowAuditEvents;
+              state.workflowEventClaims = snapshot.workflowEventClaims;
+              state.casinos = snapshot.casinos;
+              state.casinoHistoryEvents = snapshot.casinoHistoryEvents;
+              throw err;
+            }
+          }),
         jurisdiction: {
           upsert: vi.fn().mockImplementation(async ({ create }: any) => {
             const row = { id: nextId("jurisdiction"), ...create };
@@ -346,7 +406,8 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
           }),
           findUnique: vi.fn().mockImplementation(async ({ where }: any) => {
             if (where.id) return state.reviewActors.get(where.id) || null;
-            if (where.stable_key) return state.reviewActors.get(where.stable_key) || null;
+            if (where.stable_key)
+              return state.reviewActors.get(where.stable_key) || null;
             return null;
           }),
         },
@@ -376,31 +437,38 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
             state.licenses.set(where.id, updated);
             return updated;
           }),
-          updateMany: vi.fn().mockImplementation(async ({ where, data }: any) => {
-            let count = 0;
-            for (const [id, license] of state.licenses.entries()) {
-              if (
-                (!where.id || where.id === id) &&
-                (!where.review_status || where.review_status === license.review_status) &&
-                (where.governance_version === undefined || where.governance_version === license.governance_version)
-              ) {
-                const newVersion =
-                  data.governance_version && typeof data.governance_version === "object" && "increment" in data.governance_version
-                    ? (license.governance_version || 0) + data.governance_version.increment
-                    : data.governance_version !== undefined
-                      ? data.governance_version
-                      : license.governance_version;
+          updateMany: vi
+            .fn()
+            .mockImplementation(async ({ where, data }: any) => {
+              let count = 0;
+              for (const [id, license] of state.licenses.entries()) {
+                if (
+                  (!where.id || where.id === id) &&
+                  (!where.review_status ||
+                    where.review_status === license.review_status) &&
+                  (where.governance_version === undefined ||
+                    where.governance_version === license.governance_version)
+                ) {
+                  const newVersion =
+                    data.governance_version &&
+                    typeof data.governance_version === "object" &&
+                    "increment" in data.governance_version
+                      ? (license.governance_version || 0) +
+                        data.governance_version.increment
+                      : data.governance_version !== undefined
+                        ? data.governance_version
+                        : license.governance_version;
 
-                state.licenses.set(id, {
-                  ...license,
-                  ...data,
-                  governance_version: newVersion,
-                });
-                count++;
+                  state.licenses.set(id, {
+                    ...license,
+                    ...data,
+                    governance_version: newVersion,
+                  });
+                  count++;
+                }
               }
-            }
-            return { count };
-          }),
+              return { count };
+            }),
         },
         evidenceRecord: {
           create: vi.fn().mockImplementation(async ({ data }: any) => {
@@ -421,8 +489,8 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
             return row;
           }),
           findMany: vi.fn().mockImplementation(async ({ where }: any) => {
-            return Array.from(state.licenseEvidenceClaims.values()).filter((c) =>
-              where.id.in.includes(c.id),
+            return Array.from(state.licenseEvidenceClaims.values()).filter(
+              (c) => where.id.in.includes(c.id),
             );
           }),
         },
@@ -519,28 +587,40 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       evidenceRecords.forEach((e) => {
         expect(e.observed_at.getTime()).toBe(now.getTime());
         expect(e.extracted_at.getTime()).toBe(now.getTime());
-        expect(e.expires_at.getTime()).toBe(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+        expect(e.expires_at.getTime()).toBe(
+          now.getTime() + 90 * 24 * 60 * 60 * 1000,
+        );
       });
 
       // Licence evidence valid_from is mapped from Start Date
-      const licenceEv = evidenceRecords.find((e) => e.source_url === UKGC_DATASET_URLS.licences);
-      expect(licenceEv?.valid_from).toEqual(new Date("2016-07-12T00:00:00+00:00"));
+      const licenceEv = evidenceRecords.find(
+        (e) => e.source_url === UKGC_DATASET_URLS.licences,
+      );
+      expect(licenceEv?.valid_from).toEqual(
+        new Date("2016-07-12T00:00:00+00:00"),
+      );
 
       // Verify License Evidence Claims with standard hash convention
       expect(state.licenseEvidenceClaims.size).toBe(4);
       const claims = Array.from(state.licenseEvidenceClaims.values());
       claims.forEach((c) => {
-        expect(c.normalized_value_hash).toMatch(/^normalizer-v1:[A-Z_]+:[0-9a-f]{16}$/);
+        expect(c.normalized_value_hash).toMatch(
+          /^normalizer-v1:[A-Z_]+:[0-9a-f]{16}$/,
+        );
         expect(c.verdict).toBe(EvidenceVerdict.SUPPORTS);
       });
 
-      const associationClaim = claims.find((c) => c.field === LicenseEvidenceField.CASINO_ASSOCIATION);
+      const associationClaim = claims.find(
+        (c) => c.field === LicenseEvidenceField.CASINO_ASSOCIATION,
+      );
       expect(associationClaim?.observed_value).toBe("unibet.co.uk");
       expect(associationClaim?.normalized_value_hash).toBe(
         `normalizer-v1:CASINO_ASSOCIATION:${hashString("unibet.co.uk")}`,
       );
 
-      const licenceNumClaim = claims.find((c) => c.field === LicenseEvidenceField.LICENSE_NUMBER);
+      const licenceNumClaim = claims.find(
+        (c) => c.field === LicenseEvidenceField.LICENSE_NUMBER,
+      );
       expect(licenceNumClaim?.observed_value).toBe("045322-R-324275-019");
       expect(licenceNumClaim?.normalized_value_hash).toBe(
         `normalizer-v1:LICENSE_NUMBER:${hashString("045322-R-324275-019")}`,
@@ -555,45 +635,6 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       expect(historyEvent.event_type).toBe("VERIFICATION");
       expect(historyEvent.occurred_at).toEqual(now);
       expect(historyEvent.source_url).toBe(UKGC_DATASET_URLS.domains);
-    });
-
-    it("approves license through legal workflow transitions when a genuine HUMAN actor is provided", async () => {
-      const { mockDb, state } = createMockDatabase();
-      const mockFetcher = vi.fn().mockResolvedValue(standardMockDatasets);
-      const now = new Date();
-
-      // Seed a real human reviewer
-      const humanReviewer = {
-        id: "human-reviewer-123",
-        kind: ActorKind.HUMAN,
-        stable_key: "human:john-reviewer",
-        display_name: "John Reviewer",
-        active: true,
-      };
-      state.reviewActors.set(humanReviewer.id, humanReviewer);
-      state.reviewActors.set(humanReviewer.stable_key, humanReviewer);
-
-      const result = await UkgcLicenseVerifierService.verifyCasinoLicense({
-        casinoId: "casino-123",
-        domain: "unibet.co.uk",
-        humanActorId: humanReviewer.id,
-        now,
-        fetcher: mockFetcher,
-        db: mockDb,
-      });
-
-      expect(result.verified).toBe(true);
-      expect(result.reviewStatus).toBe(ReviewStatus.APPROVED);
-      expect(result.humanApprovalRequired).toBe(false);
-      expect(result.governanceVersion).toBe(3); // NEW -> AWAITING_REVIEW (v1) -> IN_REVIEW (v2) -> APPROVED (v3)
-
-      const license = Array.from(state.licenses.values())[0];
-      expect(license.review_status).toBe(ReviewStatus.APPROVED);
-      expect(license.governance_version).toBe(3);
-
-      const casino = state.casinos.get("casino-123");
-      expect(casino.verified_at).toEqual(now);
-      expect(state.casinoHistoryEvents.size).toBe(1);
     });
 
     it("remains idempotent on re-verification without creating duplicate License records", async () => {
@@ -656,39 +697,44 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       const nextId = (prefix: string) => `${prefix}-${idCounter++}`;
 
       const mockDb: any = {
-        $transaction: vi.fn().mockImplementation(async (callback: (tx: any) => Promise<any>) => {
-          const snapshot = {
-            jurisdictions: new Map(state.jurisdictions),
-            regulators: new Map(state.regulators),
-            dataSources: new Map(state.dataSources),
-            reviewActors: new Map(state.reviewActors),
-            licenses: new Map(state.licenses),
-            evidenceRecords: new Map(state.evidenceRecords),
-            licenseEvidenceClaims: new Map(state.licenseEvidenceClaims),
-            workflowAuditEvents: new Map(state.workflowAuditEvents),
-            workflowEventClaims: new Map(state.workflowEventClaims),
-            casinos: new Map(
-              Array.from(state.casinos.entries()).map(([k, v]) => [k, { ...v }]),
-            ),
-            casinoHistoryEvents: new Map(state.casinoHistoryEvents),
-          };
-          try {
-            return await callback(mockDb);
-          } catch (err) {
-            state.jurisdictions = snapshot.jurisdictions;
-            state.regulators = snapshot.regulators;
-            state.dataSources = snapshot.dataSources;
-            state.reviewActors = snapshot.reviewActors;
-            state.licenses = snapshot.licenses;
-            state.evidenceRecords = snapshot.evidenceRecords;
-            state.licenseEvidenceClaims = snapshot.licenseEvidenceClaims;
-            state.workflowAuditEvents = snapshot.workflowAuditEvents;
-            state.workflowEventClaims = snapshot.workflowEventClaims;
-            state.casinos = snapshot.casinos;
-            state.casinoHistoryEvents = snapshot.casinoHistoryEvents;
-            throw err;
-          }
-        }),
+        $transaction: vi
+          .fn()
+          .mockImplementation(async (callback: (tx: any) => Promise<any>) => {
+            const snapshot = {
+              jurisdictions: new Map(state.jurisdictions),
+              regulators: new Map(state.regulators),
+              dataSources: new Map(state.dataSources),
+              reviewActors: new Map(state.reviewActors),
+              licenses: new Map(state.licenses),
+              evidenceRecords: new Map(state.evidenceRecords),
+              licenseEvidenceClaims: new Map(state.licenseEvidenceClaims),
+              workflowAuditEvents: new Map(state.workflowAuditEvents),
+              workflowEventClaims: new Map(state.workflowEventClaims),
+              casinos: new Map(
+                Array.from(state.casinos.entries()).map(([k, v]) => [
+                  k,
+                  { ...v },
+                ]),
+              ),
+              casinoHistoryEvents: new Map(state.casinoHistoryEvents),
+            };
+            try {
+              return await callback(mockDb);
+            } catch (err) {
+              state.jurisdictions = snapshot.jurisdictions;
+              state.regulators = snapshot.regulators;
+              state.dataSources = snapshot.dataSources;
+              state.reviewActors = snapshot.reviewActors;
+              state.licenses = snapshot.licenses;
+              state.evidenceRecords = snapshot.evidenceRecords;
+              state.licenseEvidenceClaims = snapshot.licenseEvidenceClaims;
+              state.workflowAuditEvents = snapshot.workflowAuditEvents;
+              state.workflowEventClaims = snapshot.workflowEventClaims;
+              state.casinos = snapshot.casinos;
+              state.casinoHistoryEvents = snapshot.casinoHistoryEvents;
+              throw err;
+            }
+          }),
         jurisdiction: {
           upsert: vi.fn().mockImplementation(async ({ create }: any) => {
             const row = { id: nextId("jurisdiction"), ...create };
@@ -726,7 +772,8 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
           }),
           findUnique: vi.fn().mockImplementation(async ({ where }: any) => {
             if (where.id) return state.reviewActors.get(where.id) || null;
-            if (where.stable_key) return state.reviewActors.get(where.stable_key) || null;
+            if (where.stable_key)
+              return state.reviewActors.get(where.stable_key) || null;
             return null;
           }),
         },
@@ -756,31 +803,38 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
             state.licenses.set(where.id, updated);
             return updated;
           }),
-          updateMany: vi.fn().mockImplementation(async ({ where, data }: any) => {
-            let count = 0;
-            for (const [id, license] of state.licenses.entries()) {
-              if (
-                (!where.id || where.id === id) &&
-                (!where.review_status || where.review_status === license.review_status) &&
-                (where.governance_version === undefined || where.governance_version === license.governance_version)
-              ) {
-                const newVersion =
-                  data.governance_version && typeof data.governance_version === "object" && "increment" in data.governance_version
-                    ? (license.governance_version || 0) + data.governance_version.increment
-                    : data.governance_version !== undefined
-                      ? data.governance_version
-                      : license.governance_version;
+          updateMany: vi
+            .fn()
+            .mockImplementation(async ({ where, data }: any) => {
+              let count = 0;
+              for (const [id, license] of state.licenses.entries()) {
+                if (
+                  (!where.id || where.id === id) &&
+                  (!where.review_status ||
+                    where.review_status === license.review_status) &&
+                  (where.governance_version === undefined ||
+                    where.governance_version === license.governance_version)
+                ) {
+                  const newVersion =
+                    data.governance_version &&
+                    typeof data.governance_version === "object" &&
+                    "increment" in data.governance_version
+                      ? (license.governance_version || 0) +
+                        data.governance_version.increment
+                      : data.governance_version !== undefined
+                        ? data.governance_version
+                        : license.governance_version;
 
-                state.licenses.set(id, {
-                  ...license,
-                  ...data,
-                  governance_version: newVersion,
-                });
-                count++;
+                  state.licenses.set(id, {
+                    ...license,
+                    ...data,
+                    governance_version: newVersion,
+                  });
+                  count++;
+                }
               }
-            }
-            return { count };
-          }),
+              return { count };
+            }),
         },
         evidenceRecord: {
           create: vi.fn().mockImplementation(async ({ data }: any) => {
@@ -801,8 +855,8 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
             return row;
           }),
           findMany: vi.fn().mockImplementation(async ({ where }: any) => {
-            return Array.from(state.licenseEvidenceClaims.values()).filter((c) =>
-              where.id.in.includes(c.id),
+            return Array.from(state.licenseEvidenceClaims.values()).filter(
+              (c) => where.id.in.includes(c.id),
             );
           }),
         },
@@ -860,7 +914,9 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       expect(initialCasino.verified_at).toBeNull();
       expect(initialCasino.status).toBe("ACTIVE");
       expect(initialCasino.review_status).toBe(ReviewStatus.NEW);
-      expect(initialCasino.publication_status).toBe(PublicationStatus.UNPUBLISHED);
+      expect(initialCasino.publication_status).toBe(
+        PublicationStatus.UNPUBLISHED,
+      );
       expect(initialCasino.governance_version).toBe(0);
 
       const result = await UkgcLicenseVerifierService.verifyCasinoLicense({
@@ -880,7 +936,9 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       // 2. Strict separation of machine verification from review/publication/governance
       expect(updatedCasino.status).toBe("ACTIVE");
       expect(updatedCasino.review_status).toBe(ReviewStatus.NEW);
-      expect(updatedCasino.publication_status).toBe(PublicationStatus.UNPUBLISHED);
+      expect(updatedCasino.publication_status).toBe(
+        PublicationStatus.UNPUBLISHED,
+      );
       expect(updatedCasino.governance_version).toBe(0);
 
       // 3. Exactly one history event with canonical values
@@ -917,7 +975,9 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
 
     it("C: leaves Casino.verified_at unchanged and creates 0 history events when authoritative datasets are unavailable", async () => {
       const { mockDb, state } = createMockDatabase();
-      const failingFetcher = vi.fn().mockRejectedValue(new Error("Network timeout contacting UKGC"));
+      const failingFetcher = vi
+        .fn()
+        .mockRejectedValue(new Error("Network timeout contacting UKGC"));
 
       const result = await UkgcLicenseVerifierService.verifyCasinoLicense({
         casinoId: "casino-abc",
@@ -993,12 +1053,14 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
 
       // Execute verification expecting transaction failure
       await expect(
-        UkgcLicenseVerifierService.verifyCasinoLicense({
-          casinoId: "casino-abc",
-          domain: "unibet.co.uk",
-          fetcher: mockFetcher,
-          db: mockDb,
-        }),
+        mockDb.$transaction((transaction: any) =>
+          UkgcLicenseVerifierService.verifyCasinoLicense({
+            casinoId: "casino-abc",
+            domain: "unibet.co.uk",
+            fetcher: mockFetcher,
+            db: transaction,
+          }),
+        ),
       ).rejects.toThrow("Prisma transaction serialization conflict");
 
       // Verify complete rollback: Casino verified_at remains null and no history events persist
@@ -1035,14 +1097,17 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
       };
 
       // 1. PublicationGate recognizes the history event as valid qualifying evidence
-      const qualifyingEvidence = PublicationGateService.getQualifyingCasinoEvidence(fullCasinoEntity);
+      const qualifyingEvidence =
+        PublicationGateService.getQualifyingCasinoEvidence(fullCasinoEntity);
       expect(qualifyingEvidence).not.toBeNull();
       expect(qualifyingEvidence.event_type).toBe("VERIFICATION");
       expect(qualifyingEvidence.source_url).toBe(UKGC_DATASET_URLS.domains);
       expect(qualifyingEvidence.occurred_at).toEqual(now);
 
       // 2. PublicationGate eligibility check before human approval (must fail closed)
-      expect(PublicationGateService.isCasinoPubliclyEligible(fullCasinoEntity)).toBe(false);
+      expect(
+        PublicationGateService.isCasinoPubliclyEligible(fullCasinoEntity),
+      ).toBe(false);
 
       // 3. After human review approval and publishing, proves full public eligibility
       const publishedApprovedCasino = {
@@ -1050,7 +1115,11 @@ describe("Authoritative UKGC License Verification (Real CSV Data Shapes)", () =>
         review_status: ReviewStatus.APPROVED,
         publication_status: PublicationStatus.PUBLISHED,
       };
-      expect(PublicationGateService.isCasinoPubliclyEligible(publishedApprovedCasino)).toBe(true);
+      expect(
+        PublicationGateService.isCasinoPubliclyEligible(
+          publishedApprovedCasino,
+        ),
+      ).toBe(true);
     });
   });
 });

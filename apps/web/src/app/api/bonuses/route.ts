@@ -4,11 +4,14 @@ import { PublicationGateService } from "@savvyedge/api/publication-gate";
 
 export async function GET() {
   try {
+    // One request-scoped clock for both the query predicate and the runtime gate.
+    const now = new Date();
     const rawBonuses = await prisma.bonus.findMany({
-      where: PublicationGateService.whereBonusPublic(),
+      where: PublicationGateService.whereBonusPublic(now),
       orderBy: { true_value_score: "desc" },
       include: {
         history_events: true,
+        ...PublicationGateService.bonusActiveEvidenceInclude(),
         casino: {
           include: {
             history_events: true,
@@ -19,7 +22,9 @@ export async function GET() {
     });
 
     const bonuses = rawBonuses
-      .filter((b) => PublicationGateService.isBonusPubliclyEligible(b))
+      .filter((b) =>
+        PublicationGateService.isBonusPubliclyEligible(b, b.casino, now),
+      )
       .slice(0, 50);
 
     const data = bonuses.map((b) => ({
@@ -43,7 +48,7 @@ export async function GET() {
     console.error("[API /api/bonuses] Error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
 }
