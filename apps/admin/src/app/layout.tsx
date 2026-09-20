@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import { verifyAdminSession } from "@/lib/auth";
 import { AdminShell } from "@/components/ui/AdminShell";
 import "./globals.css";
@@ -22,6 +23,7 @@ export default async function RootLayout({
         <AdminShell authenticated={authenticated} user={user}>
           {children}
         </AdminShell>
+        <SpeedInsights />
       </body>
     </html>
   );
